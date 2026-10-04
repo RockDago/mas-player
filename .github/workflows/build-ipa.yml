@@ -8,19 +8,25 @@ on:
 jobs:
   build-ipa:
     name: Build Unsigned iOS IPA
-    runs-on: macos-15
+    runs-on: macos-14
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🍏 Select newest Xcode & set DEVELOPER_DIR
+      - name: 🍏 Select Xcode 16.2 (Stable for React Native 0.86)
         run: |
           echo "Available Xcode versions on runner:"
           ls -d /Applications/Xcode*.app
-          NEWEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
-          echo "Selecting: $NEWEST_XCODE"
-          sudo xcode-select -s "$NEWEST_XCODE/Contents/Developer"
-          DEV_DIR="$NEWEST_XCODE/Contents/Developer"
+          if [ -d "/Applications/Xcode_16.2.app" ]; then
+            SELECTED="/Applications/Xcode_16.2.app"
+          elif [ -d "/Applications/Xcode_16.1.app" ]; then
+            SELECTED="/Applications/Xcode_16.1.app"
+          else
+            SELECTED=$(ls -d /Applications/Xcode_16*.app | head -n 1)
+          fi
+          echo "Selecting: $SELECTED"
+          sudo xcode-select -s "$SELECTED/Contents/Developer"
+          DEV_DIR="$SELECTED/Contents/Developer"
           echo "DEVELOPER_DIR=$DEV_DIR" >> $GITHUB_ENV
           export DEVELOPER_DIR="$DEV_DIR"
           xcodebuild -version
@@ -37,14 +43,13 @@ jobs:
 
       - name: 🩹 Patch SwiftPM and ExpoModulesJSI toolchain compatibility
         run: |
-          echo "Checking Swift version..."
-          SWIFT_VER=$(swift --version | head -n 1)
-          echo "$SWIFT_VER"
-          # 1. If Swift version is not 6.2+, patch Package.swift tools-version from 6.2 to 6.0
+          # 1. Adapt tools-version from 6.2 to 6.0
           find node_modules -name "Package.swift" -exec sed -i '' 's/swift-tools-version: 6.2/swift-tools-version: 6.0/g' {} +
-          # 2. Patch RuntimeScheduler.h to remove invalid SWIFT_RETURNS_RETAINED attribute from constructors
+          # 2. Remove invalid SWIFT_RETURNS_RETAINED attribute on RuntimeScheduler constructors
           find node_modules -name "RuntimeScheduler.h" -exec sed -i '' 's/SWIFT_RETURNS_RETAINED RuntimeScheduler/RuntimeScheduler/g' {} +
-          # 3. Remove -quiet flag in build-xcframework.sh so full compiler logs are visible
+          # 3. Disable upcoming NonisolatedNonsendingByDefault feature that triggers pointer data race errors
+          find node_modules -name "Package.swift" -exec sed -i '' '/NonisolatedNonsendingByDefault/d' {} +
+          # 4. Remove -quiet flag in build-xcframework.sh so full compiler logs are visible
           find node_modules -name "build-xcframework.sh" -exec sed -i '' 's/-quiet//g' {} +
 
       - name: 🛠️ Expo Prebuild (Generate iOS native project)
