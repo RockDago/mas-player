@@ -865,10 +865,16 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
     const points: { x: number; y: number }[] = [];
     const bands = effectiveBands;
     const count = bands.length;
+    // `?? 0` comme dans la boucle ci-dessous : `bands` vient d'un `.map` sur le
+    // tableau DSP, et un tableau plus court que la grille de labels y laisse des
+    // trous. `undefined / 12` donnerait NaN, et le chemin SVG « M 0 NaN » fait
+    // jeter react-native-svg au parsing de l'attribut `d` côté natif.
+    const firstGain = bands[0] ?? 0;
+    const lastGain = bands[count - 1] ?? 0;
 
     points.push({
       x: 0,
-      y: spectrumHeight / 2 - (bands[0] / 12) * (spectrumHeight * 0.38),
+      y: spectrumHeight / 2 - (firstGain / 12) * (spectrumHeight * 0.38),
     });
 
     for (let i = 0; i < count; i++) {
@@ -886,9 +892,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 
     points.push({
       x: spectrumWidth,
-      y:
-        spectrumHeight / 2 -
-        (bands[count - 1] / 12) * (spectrumHeight * 0.38),
+      y: spectrumHeight / 2 - (lastGain / 12) * (spectrumHeight * 0.38),
     });
 
     let d = `M ${points[0].x} ${points[0].y}`;
@@ -997,7 +1001,9 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     : styles.gainZero,
                 ]}
               >
-                {dsp.preamp > 0 ? `+${dsp.preamp.toFixed(1)}` : dsp.preamp.toFixed(1)}
+                {((dsp.preamp ?? 0) > 0
+                  ? `+${(dsp.preamp ?? 0).toFixed(1)}`
+                  : (dsp.preamp ?? 0).toFixed(1))}
               </Text>
             </View>
 

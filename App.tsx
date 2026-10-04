@@ -42,6 +42,23 @@ import { SongActionModal } from './src/components/SongActionModal';
 import { QueueDrawerModal } from './src/components/QueueDrawerModal';
 import { APP_VERSION } from './src/constants/version';
 
+/**
+ * Morceau de repli affiché quand la bibliothèque est vide.
+ *
+ * Sans lui, `tracks[currentTrackIndex] || tracks[0]` vaut `undefined` après la
+ * suppression du dernier morceau, et le rendu déréférence `currentTrack.title`.
+ * Ce n'est qu'un garde-fou : aucun son ne lui est associé, donc la lecture est
+ * inerte tant que la bibliothèque est vide.
+ */
+const EMPTY_TRACK: Track = {
+  id: '__empty__',
+  title: 'Aucune piste',
+  artist: 'Importez un morceau',
+  album: '',
+  duration: 0,
+  uri: '',
+};
+
 // Apply global pure black background and title to document body on Web
 if (Platform.OS === 'web' && typeof document !== 'undefined') {
   document.title = 'MAS Player';
@@ -150,7 +167,11 @@ export default function App() {
     tempoEnabled: false,
   });
 
-  const currentTrack = tracks[currentTrackIndex] || tracks[0];
+  // Bibliothèque vide possible : supprimer le dernier morceau laisse `tracks`
+// à `[]`, et les deux accès ci-dessous renverraient alors `undefined` — que le
+// rendu déréférence (`currentTrack.title`), d'où un crash natif. On garde donc
+// un objet de repli plutôt que de laisser fuire `undefined`.
+const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
 
   // Sync volume and playback tempo with audio player
   useEffect(() => {

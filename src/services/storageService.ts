@@ -26,6 +26,62 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   replayGain: true,
 };
 
+const DEFAULT_DSP: DSPState = {
+  enabled: true,
+  presetId: 'flat',
+  bass: 0,
+  treble: 0,
+  preamp: 0,
+  stereoExpansion: 0,
+  tempo: 1.0,
+  bands: new Array(10).fill(0),
+  balance: 0,
+  volume: 75,
+  mono: false,
+  tempoEnabled: false,
+};
+
+/** Nombre de bandes attendu par l'UI et par les moteurs DSP. */
+const DSP_BAND_COUNT = 10;
+
+/**
+ * Rend un état DSP persisté conforme au type attendu.
+ *
+ * `JSON.parse` ne valide rien : une écriture tronquée, un schéma d'une version
+ * antérieure ou un `bands` absent produirait un `undefined` que le rendu
+ * déréférence (`dsp.bands.join(',')` dans le dep-array de `App.tsx`) — écran
+ * blanc au lancement, avant tout affichage. On ramène donc chaque champ à son
+ * type, et `bands` à exactement 10 gains finis.
+ */
+function normalizeDSP(raw: unknown): DSPState {
+  const input = (raw ?? {}) as Partial<DSPState>;
+  const num = (value: unknown, fallback: number): number =>
+    typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+  const bands = Array.isArray(input.bands)
+    ? Array.from({ length: DSP_BAND_COUNT }, (_, i) => {
+        const gain = (input.bands as unknown[])[i];
+        return typeof gain === 'number' && Number.isFinite(gain) ? gain : 0;
+      })
+    : new Array(DSP_BAND_COUNT).fill(0);
+
+  return {
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : DEFAULT_DSP.enabled,
+    presetId: typeof input.presetId === 'string' ? input.presetId : DEFAULT_DSP.presetId,
+    bass: num(input.bass, DEFAULT_DSP.bass),
+    treble: num(input.treble, DEFAULT_DSP.treble),
+    preamp: num(input.preamp, DEFAULT_DSP.preamp),
+    stereoExpansion: num(input.stereoExpansion, DEFAULT_DSP.stereoExpansion),
+    tempo: num(input.tempo, DEFAULT_DSP.tempo),
+    bands,
+    balance: num(input.balance, DEFAULT_DSP.balance),
+    volume: num(input.volume, DEFAULT_DSP.volume),
+    mono: typeof input.mono === 'boolean' ? input.mono : DEFAULT_DSP.mono,
+    tempoEnabled:
+      typeof input.tempoEnabled === 'boolean' ? input.tempoEnabled : DEFAULT_DSP.tempoEnabled,
+  };
+}
+
 const STORAGE_KEYS = {
   SETTINGS: 'mas_player_settings_v1',
   LAST_PLAYBACK: 'mas_player_last_playback_v1',
@@ -181,7 +237,7 @@ class StorageService {
     try {
       const data = await getItem(STORAGE_KEYS.DSP);
       if (data) {
-        return JSON.parse(data) as DSPState;
+        return normalizeDSP(JSON.parse(data));
       }
     } catch (e) {
       console.warn('Erreur lecture DSP:', e);

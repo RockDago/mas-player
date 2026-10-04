@@ -54,6 +54,13 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   // que le curseur ne saute pas si le doigt revient sur la zone.
   const startMsRef = useRef(0);
 
+  // Miroirs pour que le PanResponder puisse être figé (voir plus bas) sans
+  // capturer des valeurs périmées.
+  const durationRef = useRef(0);
+  durationRef.current = durationMillis > 0 ? durationMillis : 0;
+  const onSeekCommitRef = useRef(onSeekCommit);
+  onSeekCommitRef.current = onSeekCommit;
+
   const duration = durationMillis > 0 ? durationMillis : 0;
 
   const clamp = useCallback(
@@ -89,45 +96,77 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
     if (target !== null) onSeekCommit(target);
   }, [onSeekCommit]);
 
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        // Sur le web, la barre doit capter le geste horizontal avant que le
-        // navigateur ne l'utilise pour défiler la page.
-        onPanResponderTerminationRequest: () => false,
+  /**
+   * PanResponder figé dans une ref, créé UNE seule fois.
+   *
+   * En `useMemo`, il était recréé dès que `commit` changeait d'identité — donc
+   * à chaque rendu du parent, y compris les 4 fois/seconde du poll de position.
+   * Chaque recréation réinitialise l'état interne du geste : `gestureState.dx`
+   * repart de zéro et la barre sautait en arrière sous le doigt, par à-coups.
+   * Les valeurs variables passent donc par `durationRef` / `onSeekCommitRef` /
+   * `previewRef`, toutes relues au moment du geste.
+   */
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      // Sur le web, la barre doit capter le geste horizontal avant que le
+      // navigateur ne l'utilise pour défiler la page.
+      onPanResponderTerminationRequest: () => false,
 
-        onPanResponderGrant: (event) => {
-          // `locationX` est relatif à la vue qui reçoit le geste. Les enfants
-          // portent `pointerEvents="none"`, donc la cible est toujours la zone
-          // tactile — sans quoi le repère serait mesuré depuis la ligne interne.
-          const locationX = event.nativeEvent.locationX ?? 0;
-          startMsRef.current = xToMs(locationX);
-          writePreview(startMsRef.current);
-          try {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          } catch {}
-        },
+      onPanResponderGrant: (event) => {
+        // `locationX` est relatif à la vue qui reçoit le geste. Les enfants
+        // portent `pointerEvents="none"`, donc la cible est toujours la zone
+        // tactile — sans quoi le repère serait mesuré depuis la ligne interne.
+        const width = widthRef.current;
+        const dur = durationRef.current;
+        const locationX = event.nativeEvent.locationX ?? 0;
+        startMsRef.current = width > 0 && dur > 0
+          ? Math.max(0, Math.min(dur, (locationX / width) * dur))
+          : 0;
+        previewRef.current = startMsRef.current;
+        setPreviewMs(startMsRef.current);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      },
 
-        onPanResponderMove: (_event, gesture) => {
-          const width = widthRef.current;
-          if (width <= 0 || duration <= 0) return;
-          const deltaMs = (gesture.dx / width) * duration;
-          writePreview(clamp(startMsRef.current + deltaMs));
-        },
+      onPanResponderMove: (_event, gesture) => {
+        const width = widthRef.current;
+        const dur = durationRef.current;
+        if (width <= 0 || dur <= 0) return;
+        const deltaMs = (gesture.dx / width) * dur;
+        const next = Math.max(0, Math.min(dur, startMsRef.current + deltaMs));
+        previewRef.current = next;
+        setPreviewMs(next);
+      },
 
-        onPanResponderRelease: commit,
-        // Geste interrompu (notification, changement d'onglet) : on valide ce qui
-        // était prévisualisé plutôt que d'ignorer le geste.
-        onPanResponderTerminate: commit,
-      }),
-    [duration, xToMs, clamp, writePreview, commit]
-  );
+      onPanResponderRelease: () => {
+        const target = previewRef.current;
+        previewRef.current = null;
+        // Remis à null AVANT le commit : sinon le curseur revient brièvement à
+        // l'ancienne position le temps que le seek prenne effet.
+        setPreviewMs(null);
+        if (target !== null) onSeekCommitRef.current(target);
+      },
+
+      // Geste interrompu (notification, changement d'onglet) : on valide ce qui
+      // était prévisualisé plutôt que d'ignorer le geste.
+      onPanResponderTerminate: () => {
+        const target = previewRef.current;
+        previewRef.current = null;
+        setPreviewMs(null);
+        if (target !== null) onSeekCommitRef.current(target);
+      },
+    })
+  ).current;
 
   const effectiveMs = previewMs ?? positionMillis;
+  // `Number.isFinite` et pas seulement `duration > 0` : le moteur audio peut
+  // rapporter `NaN` avant le premier chargement, et `Math.min(1, NaN)` propage
+  // le `NaN` jusqu'au `width: 'NaN%'` — que le moteur de layout natif refuse.
   const playedRatio =
-    duration > 0 ? Math.max(0, Math.min(1, effectiveMs / duration)) : 0;
+    Number.isFinite(duration) && duration > 0 && Number.isFinite(effectiveMs)
+      ? Math.max(0, Math.min(1, effectiveMs / duration))
+      : 0;
 
   const fmt = (total: number) => {
     const mins = Math.floor(total / 60);

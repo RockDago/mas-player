@@ -50,16 +50,22 @@ export const KnobControl: React.FC<KnobControlProps> = ({
   const startValRef = useRef<number>(value);
 
   // Normalize angle between -135deg and +135deg (270deg total sweep)
+  // `range` peut valoir 0 (min == max) : sans ce garde, `0 / 0` donne NaN et
+  // part dans `rotate: 'NaNdeg'`, rejeté par le moteur de style natif.
   const range = max - min;
-  const normalized = Math.max(0, Math.min(1, (value - min) / range));
+  const normalized =
+    range > 0 && Number.isFinite(value)
+      ? Math.max(0, Math.min(1, (value - min) / range))
+      : 0;
   const angle = -135 + normalized * 270;
 
   const triggerHaptic = () => {
-    try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch {
-      // Haptics fallback on unsupported platforms
-    }
+    // `impactAsync` renvoie une Promesse : un `try/catch` synchrone ne capture
+    // pas son rejet. Sur un appareil sans Taptic Engine (iPad, vieux modèle),
+    // chaque appel produirait un rejet non géré, à la fréquence du geste.
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {
+      // Haptics indisponible : sans conséquence.
+    });
   };
 
   const panResponder = useRef(
@@ -80,7 +86,13 @@ export const KnobControl: React.FC<KnobControlProps> = ({
         const deltaVal = (combinedDelta / totalDistance) * totalRange;
         const rawNewVal = startValRef.current + deltaVal;
         const currentStep = stepRef.current;
-        const steppedVal = Math.round(rawNewVal / currentStep) * currentStep;
+        // Un `step` nul donnerait `rawNewVal / 0` = Infinity, que le clamp
+        // (`Math.min(max, Infinity)`) laisse passer : le `NaN` remonterait
+        // alors dans l'état parent et gagnait toute la chaîne DSP.
+        const steppedVal =
+          currentStep > 0 && Number.isFinite(rawNewVal)
+            ? Math.round(rawNewVal / currentStep) * currentStep
+            : rawNewVal;
         const clampedVal = Math.max(minRef.current, Math.min(maxRef.current, steppedVal));
 
         if (clampedVal !== valRef.current) {
