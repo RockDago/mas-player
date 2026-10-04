@@ -430,6 +430,26 @@ class UniversalPlayerManager {
     }, 1000);
   }
 
+  /**
+   * Réactive la détection de rythme après un seek ou un buffering.
+   *
+   * Le chien de garde coupe sur absence d'échantillons pendant plus de
+   * `BEAT_SOURCE_TIMEOUT_MS` — ce qui arrive à chaque seek. Or `setSource`
+   * ignorerait un retour à `'native'` si la source est déjà `'none'`… sauf
+   * que rien ne la faisait revenir : le logo restait mort jusqu'au prochain
+   * changement de piste. Ce rattrapage est donc nécessaire.
+   */
+  private resumeBeatSampling() {
+    if (Platform.OS !== 'ios' && Platform.OS !== 'android') return;
+    if (!this.player) return;
+    try {
+      this.player.setAudioSamplingEnabled(true);
+      beatStore.setSource('native');
+    } catch (err) {
+      console.warn('Réactivation échantillonnage audio impossible:', err);
+    }
+  }
+
   private stopBeatWatchdog() {
     if (this.beatWatchdog) {
       clearInterval(this.beatWatchdog);
@@ -461,6 +481,8 @@ class UniversalPlayerManager {
       void this.enqueueNative(() => playNative());
     } else if (this.player) {
       this.player.play();
+      // Même raison qu'après un seek : la reprise relance aussi le flux.
+      this.resumeBeatSampling();
     }
     // Immédiat : sans cela le logo resterait en respiration jusqu'au prochain
     // tick de progression (jusqu'à 250 ms sur natif).
@@ -485,6 +507,9 @@ class UniversalPlayerManager {
       await this.enqueueNative(() => seekNative(seconds));
     } else if (this.player) {
       await this.player.seekTo(seconds);
+      // Un seek coupe le flux d'échantillons : sans ce rattrapage, le chien
+      // de garde finit par basculer sur 'none' et le logo ne revient plus.
+      this.resumeBeatSampling();
     }
   }
 
