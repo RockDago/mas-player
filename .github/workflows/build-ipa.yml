@@ -51,40 +51,13 @@ jobs:
 
       - name: 🩹 Patch ExpoModulesJSI for the Swift 6.2 compiler
         run: |
-          # 1. Remove invalid SWIFT_RETURNS_RETAINED attribute on RuntimeScheduler constructors.
-          #    expo-modules-jsi@57.1.1 ships this attribute on two constructors, but a
-          #    SWIFT_SHARED_REFERENCE return is only legal on the ObjC-imported
-          #    React scheduler. These return a plain C++ value type, so Swift 6.2
-          #    rejects it (Xcode 16 tolerated it). Required on every Xcode version.
-          find node_modules -name "RuntimeScheduler.h" -exec sed -i '' 's/SWIFT_RETURNS_RETAINED RuntimeScheduler/RuntimeScheduler/g' {} +
-
-          # 2. Swift 6.2 region isolation (SE-0461) rejects the host-callback result
-          #    writes: `writeJSIValue(to:)` is an instance method on an actor-isolated
-          #    type, so calling it makes its `self` (and therefore `resultPtr`) `sending`,
-          #    giving "sending 'resultPtr' risks causing data races" on all 7 sites in
-          #    Runtime/JavaScriptRuntime.swift.
-          #    expo-modules-jsi@58.0.8 fixes this upstream by binding the result to a
-          #    local `var` and calling a *static* writer, so no `sending` occurs. This
-          #    backports that shape onto 57.1.1, whose SDK 57 pin prevents the upgrade.
-          RUNNER_SWIFT_SITE="node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/JavaScriptRuntime.swift"
-          if [ -f "$RUNNER_SWIFT_SITE" ]; then
-            # Static `write(_:to:)` shim: without `isKnownUniquelyReferenced`/`emplaceMovedValue`
-            # (both absent in 57.1.1) this is the safe, move-only-if-unique path of 58.
-            perl -0pi -e 's{(  internal func writeJSIValue\(to slot: UnsafeMutablePointer<facebook\.jsi\.Value>\) \{)}{  internal static func write(_ value: inout JavaScriptValue, to slot: UnsafeMutablePointer<facebook.jsi.Value>) {\n    value.writeJSIValue(to: slot)\n  }\n\n$1}' \
-              node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/Values/JavaScriptValue.swift
-
-            # 3. Rewrite the 3 result-write sites to the 58.0.8 form.
-            perl -0pi -e 's{try context\.get\(propertyName\)\.writeJSIValue\(to: resultPtr\)}{var result = try context.get(propertyName)\n            JavaScriptValue.write(&result, to: resultPtr)}g' "$RUNNER_SWIFT_SITE"
-            perl -0pi -e 's{try context\.call\(thisValue, consume arguments\)\.writeJSIValue\(to: resultPtr\)}{var result = try context.call(thisValue, consume arguments)\n          JavaScriptValue.write(&result, to: resultPtr)}g' "$RUNNER_SWIFT_SITE"
-          fi
-
-          # 4. Drop -quiet so a Swift/C++ failure inside build-xcframework.sh is
-          #    visible in the job log instead of a bare "did not produce" error.
+          # Run robust JavaScript/C++ patcher covering all 7 pointer data race sites
+          # and RuntimeScheduler.h constructor attributes
+          node scripts/patch-expo-jsi.cjs
+          
+          # Drop -quiet so a Swift/C++ failure inside build-xcframework.sh is
+          # visible in the job log instead of a bare "did not produce" error.
           find node_modules -name "build-xcframework.sh" -exec sed -i '' 's/-quiet//g' {} +
-          # NOTE: the tools-version downgrade (6.2 -> 6.0) and the
-          # NonisolatedNonsendingByDefault removal were deleted deliberately.
-          # Both only existed to run this package under Xcode 16; on Swift 6.2
-          # they are either unparseable or unnecessary.
 
       - name: 🛠️ Expo Prebuild (Generate iOS native project)
         run: npx expo prebuild --platform ios --clean
