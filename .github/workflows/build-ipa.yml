@@ -59,6 +59,7 @@ jobs:
           SCHEME_NAME=$(xcodebuild -list -json | grep -A 10 "schemes" | grep -v "schemes" | tr -d '", ' | head -n 1)
           echo "Using workspace: $WORKSPACE_NAME with scheme: $SCHEME_NAME"
           
+          set -o pipefail
           xcodebuild build \
             -workspace "$WORKSPACE_NAME" \
             -scheme "$SCHEME_NAME" \
@@ -68,7 +69,11 @@ jobs:
             -derivedDataPath ./build \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO 2>&1 | tee xcodebuild.log || {
+              echo "::error::Xcode build failed! Here are the exact errors:"
+              grep -E -C 2 "(error:|fatal error:|\*\* BUILD FAILED \*\*)" xcodebuild.log | tail -n 120
+              exit 1
+            }
 
       - name: 📦 Package into IPA (Payload format)
         working-directory: ios
