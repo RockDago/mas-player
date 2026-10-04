@@ -1,0 +1,39 @@
+{
+  "name": "mas-player",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@expo/vector-icons": "^15.1.1",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-native-community/slider": "^5.2.1",
+    "expo": "~57.0.26",
+    "expo-audio": "^57.0.5",
+    "expo-document-picker": "^57.0.3",
+    "expo-file-system": "~57.0.7",
+    "expo-haptics": "^57.0.3",
+    "expo-linear-gradient": "^57.0.2",
+    "expo-modules-core": "^57.0.20",
+    "expo-status-bar": "~57.0.1",
+    "jszip": "^3.10.2",
+    "lucide-react-native": "^1.52.0",
+    "react": "19.2.3",
+    "react-dom": "^19.2.3",
+    "react-native": "0.86.3",
+    "react-native-svg": "15.15.4",
+    "react-native-web": "^0.21.3"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "verify:dsp": "node scripts/verify-dsp.cjs && node scripts/q-bandwidth.cjs",
+    "verify:sync": "node scripts/sync-check.cjs"
+  },
+  "private": true
+}

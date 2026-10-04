@@ -1,0 +1,9 @@
+{
+  "name": "expo-audio-dsp",
+  "version": "1.0.0",
+  "description": "Égaliseur 10 bandes appliqué au lecteur iOS via un graphe AVAudioEngine dédié",
+  "private": true,
+  "peerDependencies": {
+    "expo": "*"
+  }
+}
