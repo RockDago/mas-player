@@ -148,7 +148,7 @@ public class AudioDSPModule: Module {
  * *et* le code HTTP. `Exception(name:description:)` stocke déjà le message dans
  * `customReason`, que `reason` retourne par défaut — inutile de le redéfinir.
  */
-public class AudioDSPModuleException: Exception {
+public class AudioDSPModuleException: Exception, @unchecked Sendable {
     public static func invalidUrl(_ uri: String) -> AudioDSPModuleException {
         AudioDSPModuleException(name: "AudioDSPModuleException.invalidUrl",
                                 description: "URL de morceau invalide : \(uri)")

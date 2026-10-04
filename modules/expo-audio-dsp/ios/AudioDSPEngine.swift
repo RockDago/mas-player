@@ -7,7 +7,7 @@ import MediaPlayer
  *
  * Chaîne du graphe, alignée sur le moteur web (`webAudioEngine.ts`) :
  *
- *   playerNode → AVAudioUnitEQ (10 bandes) → preamp → stereo → balance → limiteur → master
+ *   playerNode → AVAudioUnitEQ (10 bandes) → preampNode → balanceNode → mainMixerNode
  *
  * Pourquoi AVAudioEngine plutôt qu'un `MTAudioProcessingTap` sur l'AVPlayer
  * d'expo-audio : ce lecteur est privé au module et son tap est déjà occupé par
@@ -44,8 +44,6 @@ final class AudioDSPEngine: NSObject {
     /// Q des bandes peaking côté web. `bandwidth` étant en octaves, il faut convertir.
     private static let peakingQ: Float = 1.0
 
-    /// Limiteur : seuil -3 dBFS, ratio 20 (mesuré, cf. scripts/verify-dsp.cjs).
-    private static let limiterThreshold: Float = -3
 
     /**
      * Convertit le Q du web en octaves de bande passante.
@@ -69,10 +67,8 @@ final class AudioDSPEngine: NSObject {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let eqUnit = AVAudioUnitEQ(numberOfBands: AudioDSPEngine.bandCount)
-    private let preamp = AVAudioUnitGain()
-    private let balancePan = AVAudioUnitPan()
-    private let limiter = AVAudioUnitDynamicsProcessor()
-    private let master = AVAudioUnitGain()
+    private let preampNode = AVAudioMixerNode()
+    private let balanceNode = AVAudioMixerNode()
 
     private var audioFile: AVAudioFile?
 
@@ -123,25 +119,13 @@ final class AudioDSPEngine: NSObject {
         }
         eqUnit.globalGain = 0
 
-        preamp.gain = 1
-        balancePan.pan = 0
-        master.gain = 1
-
-        // Limiteur : seuil bas, ratio élevé, aucun attack/release audible.
-        limiter.threshold = AudioDSPEngine.limiterThreshold
-        limiter.headRoom = 0.1
-        limiter.expansionThreshold = -80
-        limiter.expansionRatio = 1
-        limiter.attackTime = 0.002
-        limiter.releaseTime = 0.12
-        limiter.masterGain = 0
+        preampNode.outputVolume = 1.0
+        balanceNode.pan = 0.0
 
         engine.attach(playerNode)
         engine.attach(eqUnit)
-        engine.attach(preamp)
-        engine.attach(balancePan)
-        engine.attach(limiter)
-        engine.attach(master)
+        engine.attach(preampNode)
+        engine.attach(balanceNode)
     }
 
     /// Câblage pour un format donné. Réfait à chaque `load()` **et** à chaque
@@ -154,24 +138,19 @@ final class AudioDSPEngine: NSObject {
     private func connectGraph(format: AVAudioFormat) {
         engine.disconnectNodeOutput(playerNode)
         engine.disconnectNodeOutput(eqUnit)
-        engine.disconnectNodeOutput(preamp)
-        engine.disconnectNodeOutput(balancePan)
-        engine.disconnectNodeOutput(limiter)
-        engine.disconnectNodeOutput(master)
+        engine.disconnectNodeOutput(preampNode)
+        engine.disconnectNodeOutput(balanceNode)
 
-        // L'ordre compte : EQ → préampli → balance → limiteur. Le préampli doit
-        // rester avant le limiteur : c'est lui qui réserve la marge.
+        // L'ordre compte : EQ → préampli → balance
         engine.connect(playerNode, to: eqUnit, format: format)
-        engine.connect(eqUnit, to: preamp, format: format)
-        engine.connect(preamp, to: balancePan, format: format)
-        engine.connect(balancePan, to: limiter, format: format)
-        engine.connect(limiter, to: master, format: format)
+        engine.connect(eqUnit, to: preampNode, format: format)
+        engine.connect(preampNode, to: balanceNode, format: format)
 
         if isMono, let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,
                                                    channels: 1) {
-            engine.connect(master, to: engine.mainMixerNode, format: monoFormat)
+            engine.connect(balanceNode, to: engine.mainMixerNode, format: monoFormat)
         } else {
-            engine.connect(master, to: engine.mainMixerNode, format: format)
+            engine.connect(balanceNode, to: engine.mainMixerNode, format: format)
         }
     }
 
@@ -199,8 +178,8 @@ final class AudioDSPEngine: NSObject {
             }
         }
 
-        preamp.gain = pow(10, Double(preampDb) / 20)
-        balancePan.pan = max(-1, min(1, balance))
+        preampNode.outputVolume = Float(pow(10.0, Double(preampDb) / 20.0))
+        balanceNode.pan = max(-1.0, min(1.0, balance))
 
         // Élargissement stéréo : `AVAudioUnitPan` ne sait que déplacer l'image,
         // et aucun nœud système n'a de réglage de largeur. Il faudrait un
@@ -241,7 +220,7 @@ final class AudioDSPEngine: NSObject {
     }
 
     func setVolume(_ value: Float) {
-        master.gain = max(0, min(1, value))
+        engine.mainMixerNode.outputVolume = max(0, min(1, value))
     }
 
     // MARK: - Lecture
@@ -382,6 +361,6 @@ final class AudioDSPEngine: NSObject {
     }
 }
 
-enum AudioDSPError: Exception {
+enum AudioDSPError: Error {
     case engineStartFailed(String)
 }
