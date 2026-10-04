@@ -49,10 +49,16 @@ jobs:
       - name: 📦 Install npm dependencies
         run: npm ci || npm install
 
-      - name: 🩹 Surface full ExpoModulesJSI xcframework compiler logs
+      - name: 🩹 Patch ExpoModulesJSI for the Swift 6.2 compiler
         run: |
-          # Drop -quiet so a Swift/C++ failure inside build-xcframework.sh is
-          # visible in the job log instead of a bare "did not produce" error.
+          # 1. Remove invalid SWIFT_RETURNS_RETAINED attribute on RuntimeScheduler constructors.
+          #    expo-modules-jsi@57.1.1 ships this attribute on two constructors, but a
+          #    SWIFT_SHARED_REFERENCE return is only legal on the ObjC-imported
+          #    React scheduler. These return a plain C++ value type, so Swift 6.2
+          #    rejects it (Xcode 16 tolerated it). Required on every Xcode version.
+          find node_modules -name "RuntimeScheduler.h" -exec sed -i '' 's/SWIFT_RETURNS_RETAINED RuntimeScheduler/RuntimeScheduler/g' {} +
+          # 2. Drop -quiet so a Swift/C++ failure inside build-xcframework.sh is
+          #    visible in the job log instead of a bare "did not produce" error.
           find node_modules -name "build-xcframework.sh" -exec sed -i '' 's/-quiet//g' {} +
           # NOTE: the tools-version downgrade (6.2 -> 6.0) and the
           # NonisolatedNonsendingByDefault removal were deleted deliberately.
