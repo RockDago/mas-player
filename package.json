@@ -34,6 +34,7 @@
     "typecheck": "tsc --noEmit",
     "verify:dsp": "node scripts/verify-dsp.cjs && node scripts/q-bandwidth.cjs",
     "verify:sync": "node scripts/sync-check.cjs",
+    "verify:restore": "node scripts/test-dsp-restore.cjs",
     "build:ios:ipa": "eas build -p ios --profile preview",
     "build:ios:prod": "eas build -p ios --profile production"
   },

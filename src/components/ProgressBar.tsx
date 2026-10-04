@@ -63,39 +63,6 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
 
   const duration = durationMillis > 0 ? durationMillis : 0;
 
-  const clamp = useCallback(
-    (value: number) => Math.max(0, Math.min(duration, value)),
-    [duration]
-  );
-
-  const xToMs = useCallback(
-    (x: number) => {
-      const width = widthRef.current;
-      if (width <= 0 || duration <= 0) return 0;
-      return clamp((x / width) * duration);
-    },
-    [clamp, duration]
-  );
-
-  /**
-   * Écrit la prévisualisation dans l'état ET dans la ref. Les deux doivent être
-   * synchronisées : l'état redessine, la ref est lue au relâchement.
-   */
-  const writePreview = useCallback((value: number | null) => {
-    previewRef.current = value;
-    setPreviewMs(value);
-  }, []);
-
-  /** Validation finale, appelée depuis le geste — jamais pendant un rendu. */
-  const commit = useCallback(() => {
-    const target = previewRef.current;
-    previewRef.current = null;
-    // Remis à null AVANT le commit : sinon le curseur revient brièvement à
-    // l'ancienne position le temps que le seek prenne effet.
-    setPreviewMs(null);
-    if (target !== null) onSeekCommit(target);
-  }, [onSeekCommit]);
-
   /**
    * PanResponder figé dans une ref, créé UNE seule fois.
    *

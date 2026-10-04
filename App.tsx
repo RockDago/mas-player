@@ -92,6 +92,9 @@ export default function App() {
   const [restoredNotice, setRestoredNotice] = useState<string | null>(null);
 
   // Synchronisation des références pour callbacks et écouteurs d'événements
+  // Verrou de ré-entrance du passage automatique à la piste suivante : le
+  // lecteur réémet `didFinish` tant que la nouvelle piste n'est pas chargée.
+  const isAdvancingRef = useRef(false);
   const tracksRef = useRef<Track[]>(tracks);
   tracksRef.current = tracks;
   const currentTrackIndexRef = useRef<number>(currentTrackIndex);
@@ -437,6 +440,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
         targetTrack.uri,
         shouldPlay,
         (status) => {
+          if (!status) return;
           const curMs = (status.currentTime || 0) * 1000;
           setPositionMillis(curMs);
           positionMillisRef.current = curMs;
@@ -448,7 +452,15 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
           setIsPlaying(status.isPlaying);
           isPlayingRef.current = status.isPlaying;
 
-          if (status.didFinish) {
+          // Garde de ré-entrance : le lecteur peut émettre `didFinish` à
+          // plusieurs reprises tant que la piste suivante n'est pas chargée.
+          // Sans ce verrou, chaque émission empile un nouveau `loadTrack` et
+          // donc un nouvel écouteur de statut auprès du moteur natif.
+          if (status.didFinish && !isAdvancingRef.current) {
+            isAdvancingRef.current = true;
+            // Libère le verrou une fois la piste suivante montée, sans quoi un
+            // Libère le verrou une fois la piste suivante montée, sans quoi
+            // un simple redémarrage de la lecture ne déclencherait plus la fin.
             if (queueRef.current.length > 0) {
               const nextFromQueue = queueRef.current[0];
               setQueue((prev) => prev.slice(1));

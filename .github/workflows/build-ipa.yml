@@ -8,21 +8,29 @@ on:
 jobs:
   build-ipa:
     name: Build Unsigned iOS IPA
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: 📥 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🍏 Select Xcode 16.2 (Stable for React Native 0.86)
+      - name: 🍏 Select Xcode 26.3 (Swift 6.2 — required by expo-modules-jsi tools-version)
         run: |
           echo "Available Xcode versions on runner:"
           ls -d /Applications/Xcode*.app
-          if [ -d "/Applications/Xcode_16.2.app" ]; then
-            SELECTED="/Applications/Xcode_16.2.app"
-          elif [ -d "/Applications/Xcode_16.1.app" ]; then
-            SELECTED="/Applications/Xcode_16.1.app"
-          else
-            SELECTED=$(ls -d /Applications/Xcode_16*.app | head -n 1)
+          # Xcode 26 needs macOS 15.5+, so this runner image is the floor.
+          # expo-modules-jsi ships swift-tools-version 6.2 and SE-0439 trailing
+          # commas in argument lists (Swift 6.1+); anything older fails to parse.
+          # Newest-first, newest wins if several are absent. (macOS sort has no -V.)
+          SELECTED=""
+          for CANDIDATE in 26.3 26.2 26.1.1 26.0.1; do
+            if [ -d "/Applications/Xcode_${CANDIDATE}.app" ]; then
+              SELECTED="/Applications/Xcode_${CANDIDATE}.app"
+              break
+            fi
+          done
+          if [ -z "$SELECTED" ]; then
+            echo "::error::No Xcode 26.x found on this runner image."
+            exit 1
           fi
           echo "Selecting: $SELECTED"
           sudo xcode-select -s "$SELECTED/Contents/Developer"
@@ -41,16 +49,15 @@ jobs:
       - name: 📦 Install npm dependencies
         run: npm ci || npm install
 
-      - name: 🩹 Patch SwiftPM and ExpoModulesJSI toolchain compatibility
+      - name: 🩹 Surface full ExpoModulesJSI xcframework compiler logs
         run: |
-          # 1. Adapt tools-version from 6.2 to 6.0
-          find node_modules -name "Package.swift" -exec sed -i '' 's/swift-tools-version: 6.2/swift-tools-version: 6.0/g' {} +
-          # 2. Remove invalid SWIFT_RETURNS_RETAINED attribute on RuntimeScheduler constructors
-          find node_modules -name "RuntimeScheduler.h" -exec sed -i '' 's/SWIFT_RETURNS_RETAINED RuntimeScheduler/RuntimeScheduler/g' {} +
-          # 3. Disable upcoming NonisolatedNonsendingByDefault feature that triggers pointer data race errors
-          find node_modules -name "Package.swift" -exec sed -i '' '/NonisolatedNonsendingByDefault/d' {} +
-          # 4. Remove -quiet flag in build-xcframework.sh so full compiler logs are visible
+          # Drop -quiet so a Swift/C++ failure inside build-xcframework.sh is
+          # visible in the job log instead of a bare "did not produce" error.
           find node_modules -name "build-xcframework.sh" -exec sed -i '' 's/-quiet//g' {} +
+          # NOTE: the tools-version downgrade (6.2 -> 6.0) and the
+          # NonisolatedNonsendingByDefault removal were deleted deliberately.
+          # Both only existed to run this package under Xcode 16; on Swift 6.2
+          # they are either unparseable or unnecessary.
 
       - name: 🛠️ Expo Prebuild (Generate iOS native project)
         run: npx expo prebuild --platform ios --clean

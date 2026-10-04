@@ -205,7 +205,11 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   // Tracks for the currently selected group (or playlist, or all songs)
   const displayTracks = useMemo(() => {
     if (selectedPlaylist) {
-      return tracks.filter((t) => selectedPlaylist.trackIds.includes(t.id));
+      // `Set` plutôt que `includes` : ce filtre est O(n·m), donc 25 millions de
+      // comparaisons de chaînes sur une playlist et une bibliothèque de 5000
+      // morceaux — plusieurs centaines de ms de gel à l'ouverture.
+      const wanted = new Set(selectedPlaylist.trackIds);
+      return tracks.filter((t) => wanted.has(t.id));
     }
     if (selectedGroupKey) {
       const found = groupedData.find((g) => g.id === selectedGroupKey);

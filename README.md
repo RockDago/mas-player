@@ -10,7 +10,7 @@ Dans votre terminal PowerShell ou Invite de commandes :
 
 ```bash
 # 1. Rendez-vous dans le dossier du projet
-cd poweramp-ios
+cd mas-player-ios
 
 # 2. Démarrer le serveur de développement
 npx expo start
