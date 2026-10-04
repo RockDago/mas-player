@@ -40,9 +40,11 @@ jobs:
           echo "Checking Swift version..."
           SWIFT_VER=$(swift --version | head -n 1)
           echo "$SWIFT_VER"
-          # If Swift version is not 6.2+, patch Package.swift tools-version from 6.2 to 6.0
+          # 1. If Swift version is not 6.2+, patch Package.swift tools-version from 6.2 to 6.0
           find node_modules -name "Package.swift" -exec sed -i '' 's/swift-tools-version: 6.2/swift-tools-version: 6.0/g' {} +
-          # Remove -quiet flag in build-xcframework.sh so full compiler logs are visible
+          # 2. Patch RuntimeScheduler.h to remove invalid SWIFT_RETURNS_RETAINED attribute from constructors
+          find node_modules -name "RuntimeScheduler.h" -exec sed -i '' 's/SWIFT_RETURNS_RETAINED RuntimeScheduler/RuntimeScheduler/g' {} +
+          # 3. Remove -quiet flag in build-xcframework.sh so full compiler logs are visible
           find node_modules -name "build-xcframework.sh" -exec sed -i '' 's/-quiet//g' {} +
 
       - name: 🛠️ Expo Prebuild (Generate iOS native project)
