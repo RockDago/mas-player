@@ -33,7 +33,9 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "verify:dsp": "node scripts/verify-dsp.cjs && node scripts/q-bandwidth.cjs",
-    "verify:sync": "node scripts/sync-check.cjs"
+    "verify:sync": "node scripts/sync-check.cjs",
+    "build:ios:ipa": "eas build -p ios --profile preview",
+    "build:ios:prod": "eas build -p ios --profile production"
   },
   "private": true
 }
