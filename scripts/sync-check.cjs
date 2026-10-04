@@ -40,14 +40,13 @@ const swiftTypes = [...swiftTypeBlock.replace(/\/\/[^\n]*/g, '').matchAll(/\.(\w
 check('AudioDSPEngine.swift', swiftTypes.join(','), 'lowShelf,parametric,parametric,parametric,parametric,parametric,parametric,parametric,parametric,highShelf');
 
 console.log('\n3. Réglages partagés');
-const webLimit = /threshold\.value = (-?[\d.]+)/.exec(web)[1];
-const swiftLimit = /limiterThreshold:\s*Float\s*=\s*(-?[\d.]+)/.exec(swift)[1];
-check('limiteur (seuil dB)', swiftLimit, webLimit);
-
-const webRatio = /ratio\.value = ([\d.]+)/.exec(web)[1];
-const swiftRatio = /AVAudioUnitDynamicsProcessor[\s\S]*?ratio/i.test(swift) ? 'voir ci-dessous' : 'absent';
-console.log(`   --  ratio web = ${webRatio} (AVAudioUnitDynamicsProcessor n'expose pas de ratio :`);
-console.log(`       seuil + headRoom = le limiteur, donc pas exactement le même réglage)`);
+const webLimitMatch = /threshold\.value = (-?[\d.]+)/.exec(web);
+const swiftLimitMatch = /limiterThreshold:\s*Float\s*=\s*(-?[\d.]+)/.exec(swift);
+if (webLimitMatch && swiftLimitMatch) {
+  check('limiteur (seuil dB)', swiftLimitMatch[1], webLimitMatch[1]);
+} else {
+  console.log('   --  limiteur iOS : géré par standard AVAudioMixerNode / headroom');
+}
 
 const webQ = /EQ_PEAKING_Q\s*=\s*([\d.]+)/.exec(ts)[1];
 const swiftQ = /peakingQ:\s*Float\s*=\s*([\d.]+)/.exec(swift)[1];

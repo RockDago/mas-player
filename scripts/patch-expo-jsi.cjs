@@ -18,7 +18,7 @@ if (fs.existsSync(runtimeSchedulerPath)) {
   console.log('[patch-expo-jsi] RuntimeScheduler.h not found, skipping.');
 }
 
-// 2. Patch JavaScriptRuntime.swift (fixes sending ... risks causing data races)
+// 2. Patch JavaScriptRuntime.swift (fixes sending ... risks causing data races without nil crashes)
 const jsRuntimePath = path.resolve(__dirname, '../node_modules/expo-modules-jsi/apple/Sources/ExpoModulesJSI/Runtime/JavaScriptRuntime.swift');
 if (fs.existsSync(jsRuntimePath)) {
   let content = fs.readFileSync(jsRuntimePath, 'utf8');
@@ -32,36 +32,56 @@ if (fs.existsSync(jsRuntimePath)) {
 
       return withGuaranteedContext(context) { (context: HostObjectContext, runtime) in
         return JavaScriptActor.assumeIsolated {
-          let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits)!`
+          guard let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits) else { return false }`
+    );
+  } else if (content.includes('let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits)!')) {
+    content = content.replace(
+      /let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>\(bitPattern: resultPtrBits\)!/g,
+      'guard let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits) else { return false }'
     );
   }
 
-  // Fix 2: createFunctionClosure first overload
-  content = content.replace(
-    /nonisolated\(unsafe\) let thisPtr = thisPtr\s+nonisolated\(unsafe\) let argumentsPtr = argumentsPtr\s+nonisolated\(unsafe\) let resultPtr = resultPtr\s+\/\/ See `withGuaranteedContext`[^\n]*\s+\/\/[^\n]*\s+return withGuaranteedContext\(context\) { \(context: HostFunctionContext, runtime\) in\s+return JavaScriptActor\.assumeIsolated {/m,
-    `let thisPtrBits = Int(bitPattern: thisPtr)
+  // Fix 2 & 3: createFunctionClosure overloads (handling both pristine and partially patched)
+  if (content.includes('nonisolated(unsafe) let thisPtr = thisPtr')) {
+    content = content.replace(
+      /nonisolated\(unsafe\) let thisPtr = thisPtr\s+nonisolated\(unsafe\) let argumentsPtr = argumentsPtr\s+nonisolated\(unsafe\) let resultPtr = resultPtr\s+\/\/ See `withGuaranteedContext`[^\n]*\s+\/\/[^\n]*\s+return withGuaranteedContext\(context\) { \(context: HostFunctionContext, runtime\) in\s+return JavaScriptActor\.assumeIsolated {/m,
+      `let thisPtrBits = Int(bitPattern: thisPtr)
     let argumentsPtrBits = Int(bitPattern: argumentsPtr)
     let resultPtrBits = Int(bitPattern: resultPtr)
 
     return withGuaranteedContext(context) { (context: HostFunctionContext, runtime) in
       return JavaScriptActor.assumeIsolated {
-        let thisPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: thisPtrBits)!
-        let argumentsPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsPtrBits)!
-        let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits)!`
-  );
+        guard let thisPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: thisPtrBits),
+              let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits) else { return false }
+        let argumentsPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsPtrBits)`
+    );
 
-  // Fix 3: createFunctionClosure second overload
-  content = content.replace(
-    /nonisolated\(unsafe\) let thisPtr = thisPtr\s+nonisolated\(unsafe\) let argumentsPtr = argumentsPtr\s+nonisolated\(unsafe\) let resultPtr = resultPtr\s+\/\/ See `withGuaranteedContext`[^\n]*\s+\/\/[^\n]*\s+return withGuaranteedContext\(context\) { \(context: UnownedThisHostFunctionContext, runtime\) in\s+return JavaScriptActor\.assumeIsolated {/m,
-    `let thisPtrBits = Int(bitPattern: thisPtr)
+    content = content.replace(
+      /nonisolated\(unsafe\) let thisPtr = thisPtr\s+nonisolated\(unsafe\) let argumentsPtr = argumentsPtr\s+nonisolated\(unsafe\) let resultPtr = resultPtr\s+\/\/ See `withGuaranteedContext`[^\n]*\s+\/\/[^\n]*\s+return withGuaranteedContext\(context\) { \(context: UnownedThisHostFunctionContext, runtime\) in\s+return JavaScriptActor\.assumeIsolated {/m,
+      `let thisPtrBits = Int(bitPattern: thisPtr)
     let argumentsPtrBits = Int(bitPattern: argumentsPtr)
     let resultPtrBits = Int(bitPattern: resultPtr)
 
     return withGuaranteedContext(context) { (context: UnownedThisHostFunctionContext, runtime) in
       return JavaScriptActor.assumeIsolated {
-        let thisPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: thisPtrBits)!
-        let argumentsPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsPtrBits)!
-        let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits)!`
+        guard let thisPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: thisPtrBits),
+              let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits) else { return false }
+        let argumentsPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsPtrBits)`
+    );
+  }
+
+  // Clean up any remaining force-unwraps on thisPtr, argumentsPtr, resultPtr
+  content = content.replace(
+    /let thisPtr = UnsafePointer<facebook\.jsi\.Value>\(bitPattern: thisPtrBits\)!\s+let argumentsPtr = UnsafePointer<facebook\.jsi\.Value>\(bitPattern: argumentsPtrBits\)\s+guard let resultPtr = UnsafeMutablePointer<facebook\.jsi\.Value>\(bitPattern: resultPtrBits\) else \{ return false \}/g,
+    `guard let thisPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: thisPtrBits),
+              let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits) else { return false }
+        let argumentsPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsPtrBits)`
+  );
+  content = content.replace(
+    /let thisPtr = UnsafePointer<facebook\.jsi\.Value>\(bitPattern: thisPtrBits\)!\s+let argumentsPtr = UnsafePointer<facebook\.jsi\.Value>\(bitPattern: argumentsPtrBits\)!\s+let resultPtr = UnsafeMutablePointer<facebook\.jsi\.Value>\(bitPattern: resultPtrBits\)!/g,
+    `guard let thisPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: thisPtrBits),
+              let resultPtr = UnsafeMutablePointer<facebook.jsi.Value>(bitPattern: resultPtrBits) else { return false }
+        let argumentsPtr = UnsafePointer<facebook.jsi.Value>(bitPattern: argumentsPtrBits)`
   );
 
   fs.writeFileSync(jsRuntimePath, content, 'utf8');
