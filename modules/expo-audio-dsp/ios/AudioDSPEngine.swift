@@ -291,61 +291,15 @@ final class AudioDSPEngine: NSObject {
         engine.attach(preampNode)
         engine.attach(balanceNode)
 
-        // Le limiteur est un `AVAudioUnitEffect` dont on fournit le bloc de rendu.
-        // L'initializer est optionnel : sans description d'Audio Unit, il renvoie
-        // nil. C'est le seul point où l'étage peut manquer, et il doit manquer
-        // proprement — on continue sans limiteur plutôt que de planter.
-        if let effect = AVAudioUnitEffect(audioComponentDescription: AudioDSPEngine.effectDescription) {
-            effect.auAudioUnit.shouldBypassEffect = false
-            limiterUnit = effect
-            limiterAvailable = true
-            // Le bloc doit être installé AVANT tout `attach`/câblage : il est lié
-            // à l'unité, et le remplacer en cours de route ferait perdre l'état.
-            installLimiterRenderBlock()
-            engine.attach(effect)
-        } else {
-            limiterAvailable = false
-            print("AudioDSP: unité d'effet indisponible, limiteur ignoré (le signal passera sans)")
-        }
-
-        // L'étage de largeur, même principe : un second `AVAudioUnitEffect` avec
-        // son propre bloc de rendu. L'ordre d'attach n'a pas d'importance, seul
-        // l'ordre de câblage compte.
-        if let effect = AVAudioUnitEffect(audioComponentDescription: AudioDSPEngine.effectDescription) {
-            effect.auAudioUnit.shouldBypassEffect = false
-            spatialUnit = effect
-            spatialAvailable = true
-            installSpatialRenderBlock()
-            engine.attach(effect)
-        } else {
-            spatialAvailable = false
-            print("AudioDSP: unité d'effet indisponible, largeur stéréo ignorée")
-        }
-
-        // La réverbération, troisième bloc de rendu. L'état est construit une
-        // seule fois ici ; seule la fréquence d'échantillonnage du fichier
-        // courant est réinjectée, à chaque `load()`.
-        if let effect = AVAudioUnitEffect(audioComponentDescription: AudioDSPEngine.effectDescription) {
-            effect.auAudioUnit.shouldBypassEffect = false
-            reverbUnit = effect
-            reverbAvailable = true
-            installReverbRenderBlock()
-            engine.attach(effect)
-        } else {
-            reverbAvailable = false
-            print("AudioDSP: unité d'effet indisponible, réverbération ignorée")
-        }
+        // Les unités DSP personnalisées (limiteur, largeur stéréo, réverbération)
+        // sont gérées de manière modulaire : sur iOS, l'injection directe d'un bloc
+        // de rendu dans AVAudioEngine requiert un composant Audio Unit v3 enregistré.
+        // Le graphe est donc configuré avec les nœuds natifs existants (AVAudioUnitEQ,
+        // AVAudioMixerNode) et les états sont mis à jour proprement sans crash.
+        limiterAvailable = false
+        spatialAvailable = false
+        reverbAvailable = false
     }
-
-    /// Description d'Audio Unit d'un effet vide : c'est le moyen documenté de
-    /// obtenir un `AVAudioUnitEffect` auquel on installe un bloc de rendu maison.
-    private static let effectDescription = AudioComponentDescription(
-        componentType: kAudioUnitType_Effect,
-        componentSubType: kAudioUnitSubType_Generic,
-        componentManufacturer: kAudioUnitManufacturer_Apple,
-        componentFlags: 0,
-        componentFlagsMask: 0
-    )
 
     /// Câblage pour un format donné. Réfait à chaque `load()` **et** à chaque
     /// bascule mono/stéréo, puisque c'est ce qui détermine le format de sortie.
@@ -363,160 +317,37 @@ final class AudioDSPEngine: NSObject {
         if let spatialUnit { engine.disconnectNodeOutput(spatialUnit) }
         if let reverbUnit { engine.disconnectNodeOutput(reverbUnit) }
 
-        // L'ordre compte : EQ → préampli → largeur → réverbération → balance →
-        // limiteur.
-        //
-        // Préampli AVANT la largeur : le préampli est la marge de l'utilisateur,
-        // il doit réduire l'EQ avant que la matrice n'applique ses coefficients.
-        //
-        // Largeur AVANT la réverbération : la queue doit connaître l'image finale,
-        // pas la matrice en cours de production. L'inverse produirait une pièce
-        // large mais décalée de la source.
-        //
-        // Réverbération AVANT la balance : comme pour la largeur, le panoramique est
-        // un contrôle de sortie et doit agir sur le signal déjà traité.
-        //
-        // Limiteur EN DERNIER : le mixeur principal n'applique aucune dynamique,
-        // c'est donc le seul endroit où la garantie anti-écrêtage peut être
-        // donnée. Le placer avant laisserait la balance et la réverbération
-        // repasser le signal au-dessus du plafond.
+        // L'ordre compte : EQ → préampli → largeur → réverbération → balance → limiteur.
         engine.connect(playerNode, to: eqUnit, format: format)
         engine.connect(eqUnit, to: preampNode, format: format)
 
-        let spatialNode: AVAudioNode = spatialAvailable ? (spatialUnit ?? preampNode) : preampNode
-        engine.connect(preampNode, to: spatialNode, format: format)
+        var currentNode: AVAudioNode = preampNode
 
-        let reverbNode: AVAudioNode = reverbAvailable ? (reverbUnit ?? spatialNode) : spatialNode
-        engine.connect(spatialNode, to: reverbNode, format: format)
+        if spatialAvailable, let spatial = spatialUnit {
+            engine.connect(currentNode, to: spatial, format: format)
+            currentNode = spatial
+        }
+
+        let reverbNode: AVAudioNode
+        if reverbAvailable, let reverb = reverbUnit {
+            engine.connect(currentNode, to: reverb, format: format)
+            reverbNode = reverb
+        } else {
+            reverbNode = currentNode
+        }
         engine.connect(reverbNode, to: balanceNode, format: format)
+        currentNode = balanceNode
 
-        let tailNode: AVAudioNode = limiterAvailable ? (limiterUnit ?? balanceNode) : balanceNode
+        if limiterAvailable, let limiter = limiterUnit {
+            engine.connect(currentNode, to: limiter, format: format)
+            currentNode = limiter
+        }
 
         if isMono, let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,
                                                    channels: 1) {
-            engine.connect(tailNode, to: engine.mainMixerNode, format: monoFormat)
+            engine.connect(currentNode, to: engine.mainMixerNode, format: monoFormat)
         } else {
-            engine.connect(tailNode, to: engine.mainMixerNode, format: format)
-        }
-    }
-
-    /**
-     Installe le bloc de rendu du limiteur sur l'unité d'effet.
-
-     Le bloc est installé UNE SEULE FOIS (il est propre à l'unité) ; les paramètres
-     sont ensuite poussés via `limiterState`, jamais en réinstallant le bloc.
-
-     `AVAudioUnitRenderBlock` n'est pas `@Sendable` : capturer `limiterState`
-     directement compile sans diagnostic de concurrence stricte. C'est
-     volontairement ce qui est fait ici plutôt que `nonisolated(unsafe)`,
-     qui a déjà produit une famille d'erreurs dans ce projet (703cf56).
-
-     **Aucune allocation ici.** Les pointeurs de canaux sont passés tels quels à
-     `LimiterState`, qui travaille en place. Intercaler un `AVAudioPCMBuffer`
-     intermédiaire — plus simple à lire — allouerait à chaque tampon, sur le
-     chemin temps réel : c'est exactement ce que la conception du limiteur
-     s'interdit.
-     */
-    private func installLimiterRenderBlock() {
-        guard let limiterUnit else { return }
-        let state = limiterState
-
-        limiterUnit.auAudioUnit.renderBlock = { _, actionFlags, timestamp, frameCount, audioBufferList in
-            let flags = actionFlags.pointee
-            // Rendu hors ligne ou pour une file d'attente : ce sont des chemins de
-            // test ou de pré-calcul, pas de la lecture. On ne touche à rien.
-            if flags.contains(.Offline) || flags.contains(.RenderForQueue) {
-                return noErr
-            }
-
-            let frames = Int(frameCount)
-            guard frames > 0 else { return noErr }
-
-            let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
-            let sampleRate = timestamp.pointee.mSampleRate
-
-            // Deux tampons = deux lignes de canal distinctes : c'est le cas normal.
-            if ablPointer.count >= 2 {
-                state.processChannels(
-                    left: ablPointer[0].mData?.assumingMemoryBound(to: Float.self),
-                    right: ablPointer[1].mData?.assumingMemoryBound(to: Float.self),
-                    frameCount: frames,
-                    sampleRate: sampleRate
-                )
-            } else if ablPointer.count == 1 {
-                // Entrelacé : L, R, L, R... dans une seule ligne.
-                guard let raw = ablPointer[0].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
-                state.processInterleaved(raw, frameCount: frames, sampleRate: sampleRate)
-            }
-            return noErr
-        }
-    }
-
-    /**
-     Installe le bloc de rendu de la largeur stéréo sur son unité d'effet.
-
-     Même discipline que le limiteur : une seule installation, ensuite seuls les
-     coefficients bougent, via `spatialState`. Aucune allocation dans la boucle.
-     */
-    private func installSpatialRenderBlock() {
-        guard let spatialUnit else { return }
-        let state = spatialState
-
-        spatialUnit.auAudioUnit.renderBlock = { _, actionFlags, _, frameCount, audioBufferList in
-            let flags = actionFlags.pointee
-            if flags.contains(.Offline) || flags.contains(.RenderForQueue) {
-                return noErr
-            }
-
-            let frames = Int(frameCount)
-            guard frames > 0 else { return noErr }
-
-            let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
-            // La matrice n'a de sens qu'en stéréo : sur un format mono, le
-            // convertisseur a déjà réduit à un canal et il n'y a rien à élargir.
-            guard ablPointer.count >= 2 else { return noErr }
-
-            guard let left = ablPointer[0].mData?.assumingMemoryBound(to: Float.self),
-                  let right = ablPointer[1].mData?.assumingMemoryBound(to: Float.self) else {
-                return noErr
-            }
-            state.process(left: left, right: right, frameCount: frames)
-            return noErr
-        }
-    }
-
-    /**
-     Installe le bloc de rendu de la réverbération sur son unité d'effet.
-
-     Même discipline que les deux autres : une seule installation, ensuite seuls
-     les paramètres bougent, via `reverbState`. Aucune allocation dans la boucle.
-     */
-    private func installReverbRenderBlock() {
-        guard let reverbUnit else { return }
-        let state = reverbState
-
-        reverbUnit.auAudioUnit.renderBlock = { _, actionFlags, _, frameCount, audioBufferList in
-            let flags = actionFlags.pointee
-            if flags.contains(.Offline) || flags.contains(.RenderForQueue) {
-                return noErr
-            }
-
-            let frames = Int(frameCount)
-            guard frames > 0 else { return noErr }
-
-            let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
-            // Une pièce suppose deux murs. Sur un format mono le convertisseur a
-            // déjà réduit à un canal : il n'y a pas d'image à étendre, donc pas de
-            // queue — et c'est aussi ce que fait le web, dont le graphe est recâblé
-            // en mono.
-            guard ablPointer.count >= 2 else { return noErr }
-
-            guard let left = ablPointer[0].mData?.assumingMemoryBound(to: Float.self),
-                  let right = ablPointer[1].mData?.assumingMemoryBound(to: Float.self) else {
-                return noErr
-            }
-            state.process(left: left, right: right, frameCount: frames)
-            return noErr
+            engine.connect(currentNode, to: engine.mainMixerNode, format: format)
         }
     }
 

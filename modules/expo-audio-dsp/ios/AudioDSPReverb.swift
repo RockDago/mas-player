@@ -249,7 +249,7 @@ final class ReverbState {
         let dampPct = max(0, min(100, dampingPercent)) / 100.0
         let cutoff = 80.0 * pow(3600.0 / 80.0, dampPct)
 
-        let coeffs = lowpassFor(cutoff: cutoff, sampleRate: rate)
+        let coeffs = lowpassFor(cutoffHz: cutoff, sampleRate: rate)
 
         // Pas de lecture, arrondi une fois ici et jamais dans le rendu. Bornés par
         // la capacité : un fichier en 192 kHz avec la plus grande pièce doit tenir

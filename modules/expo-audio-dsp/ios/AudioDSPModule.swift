@@ -154,21 +154,19 @@ public class AudioDSPModule: Module {
         AsyncFunction("setDSPAsync") {
             (bands: [Float], preamp: Float, balance: Float, mono: Bool,
              stereoExpansion: Float, enabled: Bool, crossfeed: Float,
-             reverbEnabled: Bool = false, roomSize: Float = 0, damping: Float = 0,
-             reverbMix: Float = 0, reverbWet: Float = 0, reverbDry: Float = 1,
-             limitEnabled: Bool = true) -> Void in
+             reverbEnabled: Bool, roomSize: Float, damping: Float,
+             reverbMix: Float, reverbWet: Float, reverbDry: Float,
+             limitEnabled: Bool) -> Void in
 
-            var normalized = bands
-            if normalized.count < AudioDSPEngine.bandCount {
-                normalized += Array(repeating: 0, count: AudioDSPEngine.bandCount - normalized.count)
-            }
-            self.engine.apply(gains: normalized, preampDb: preamp, balance: balance,
-                              mono: mono, stereoExpansion: stereoExpansion, enabled: enabled,
-                              crossfeed: crossfeed,
-                              reverbEnabled: reverbEnabled, roomSize: roomSize,
-                              damping: damping, reverbMix: reverbMix,
-                              reverbWet: reverbWet, reverbDry: reverbDry,
-                              limitEnabled: limitEnabled)
+            self.applyDSP(
+                bands: bands, preamp: preamp, balance: balance,
+                mono: mono, stereoExpansion: stereoExpansion, enabled: enabled,
+                crossfeed: crossfeed,
+                reverbEnabled: reverbEnabled, roomSize: roomSize,
+                damping: damping, reverbMix: reverbMix,
+                reverbWet: reverbWet, reverbDry: reverbDry,
+                limitEnabled: limitEnabled
+            )
         }
 
         OnStartObserving {
@@ -220,6 +218,28 @@ public class AudioDSPModule: Module {
             .joined()
         let ext = remote.pathExtension.isEmpty ? "mp3" : remote.pathExtension
         return cacheDirectory.appendingPathComponent("\(digest).\(ext)")
+    }
+
+    private func applyDSP(
+        bands: [Float], preamp: Float, balance: Float, mono: Bool,
+        stereoExpansion: Float, enabled: Bool, crossfeed: Float,
+        reverbEnabled: Bool = false, roomSize: Float = 0, damping: Float = 0,
+        reverbMix: Float = 0, reverbWet: Float = 0, reverbDry: Float = 1,
+        limitEnabled: Bool = true
+    ) {
+        var normalized = bands
+        if normalized.count < AudioDSPEngine.bandCount {
+            normalized += Array(repeating: 0, count: AudioDSPEngine.bandCount - normalized.count)
+        }
+        self.engine.apply(
+            gains: normalized, preampDb: preamp, balance: balance,
+            mono: mono, stereoExpansion: stereoExpansion, enabled: enabled,
+            crossfeed: crossfeed,
+            reverbEnabled: reverbEnabled, roomSize: roomSize,
+            damping: damping, reverbMix: reverbMix,
+            reverbWet: reverbWet, reverbDry: reverbDry,
+            limitEnabled: limitEnabled
+        )
     }
 }
 
