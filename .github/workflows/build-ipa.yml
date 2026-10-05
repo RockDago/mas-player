@@ -1,4 +1,4 @@
-name: Build iOS IPA (Free / Sideload)
+name: Build iOS IPA & Android APK (Free / Sideload)
 
 on:
   push:
@@ -104,4 +104,48 @@ jobs:
         with:
           name: MAS-Player-iOS-IPA
           path: MAS-Player.ipa
+          retention-days: 14
+
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ☕ Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: 17
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 📦 Install npm dependencies
+        run: npm ci || npm install
+
+      - name: 🛠️ Expo Prebuild (Generate Android native project)
+        run: npx expo prebuild --platform android --clean
+
+      - name: 🐘 Build Android Release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: 📦 Locate and Package APK
+        run: |
+          APK_PATH=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          echo "Found APK at: $APK_PATH"
+          cp "$APK_PATH" MAS-Player.apk
+
+      - name: 🚀 Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MAS-Player-Android-APK
+          path: MAS-Player.apk
           retention-days: 14
