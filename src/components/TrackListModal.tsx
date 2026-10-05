@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Modal,
   View,
@@ -12,6 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
+import { useScreenInsets, insetPadding } from '../theme/insets';
 import { pickAudioFolder, pickAudioFiles, isIOSDevice } from '../services/filePickerService';
 
 interface TrackListModalProps {
@@ -33,12 +34,41 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
   onAddTracks,
   onTrackAction,
 }) => {
+  // Marge système mesurée, lue par contexte : la modale est montée hors de
+  // l'écran et n'en hérite pas. Voir src/theme/insets.ts.
+  const insets = useScreenInsets();
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  const flatListRef = useRef<FlatList<Track>>(null);
+
+  const currentIndex = useMemo(() => {
+    if (!currentTrackId || tracks.length === 0) return -1;
+    return tracks.findIndex((t) => t.id === currentTrackId);
+  }, [tracks, currentTrackId]);
+
+  useEffect(() => {
+    if (visible && currentIndex >= 0) {
+      const timer = setTimeout(() => {
+        try {
+          flatListRef.current?.scrollToIndex({
+            index: currentIndex,
+            animated: true,
+            viewPosition: 0.35,
+          });
+        } catch {
+          flatListRef.current?.scrollToOffset({
+            offset: Math.max(0, currentIndex * 74 - 60),
+            animated: true,
+          });
+        }
+      }, 150);
+      return () => clearTimeout(timer);
+    }
+  }, [visible, currentIndex]);
 
   // IMPORTATION D'UN DOSSIER COMPLET (1 SEUL CLIC)
   const handlePickFolder = async () => {
     try {
-      const res = await pickAudioFolder();
+      const res = await pickAudioFolder(tracks);
       if (res && res.tracks.length > 0) {
         onAddTracks(res.tracks);
         setImportMessage(`Dossier "${res.folderName}" : +${res.count} morceaux`);
@@ -52,7 +82,7 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
   // IMPORTATION DE FICHIERS INDIVIDUELS
   const handlePickFiles = async () => {
     try {
-      const res = await pickAudioFiles();
+      const res = await pickAudioFiles(tracks);
       if (res && res.tracks.length > 0) {
         onAddTracks(res.tracks);
         setImportMessage(`+${res.count} morceaux importés`);
@@ -133,7 +163,13 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
       onRequestClose={onClose}
     >
       <SafeAreaView style={styles.container}>
-        <View style={styles.header}>
+        <View
+          style={[
+            styles.header,
+            // Marge système mesurée : l'en-tête se collait à l'horloge.
+            { paddingTop: insetPadding(insets, 'top', 14) },
+          ]}
+        >
           <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
             <Ionicons name="close" size={26} color="#FFFFFF" />
           </TouchableOpacity>
@@ -175,21 +211,35 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
           </Text>
         </View>
 
-        {isIOSDevice() && (
-          <View style={styles.iosTipMiniBox}>
-            <Ionicons name="information-circle-outline" size={16} color="#38BDF8" />
-            <Text style={styles.iosTipMiniText}>
-              Sur iPhone/iPad : choisissez votre dossier, une archive .zip d'album, ou « Tout sélectionner » dans Fichiers.
-            </Text>
-          </View>
-        )}
 
         <FlatList
+          ref={flatListRef}
           data={tracks}
           keyExtractor={(item) => item.id}
           renderItem={renderTrackItem}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
+          initialScrollIndex={currentIndex >= 0 && currentIndex < tracks.length ? currentIndex : undefined}
+          onScrollToIndexFailed={(info) => {
+            flatListRef.current?.scrollToOffset({
+              offset: Math.max(0, info.index * 74 - 60),
+              animated: false,
+            });
+            setTimeout(() => {
+              try {
+                flatListRef.current?.scrollToIndex({
+                  index: info.index,
+                  animated: true,
+                  viewPosition: 0.35,
+                });
+              } catch {}
+            }, 100);
+          }}
+          getItemLayout={(data, index) => ({
+            length: 74,
+            offset: 74 * index,
+            index,
+          })}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Ionicons name="musical-notes-outline" size={48} color="#333333" />
@@ -343,8 +393,8 @@ const styles = StyleSheet.create({
     borderColor: '#191C24',
   },
   trackItemActive: {
-    backgroundColor: '#161C26',
-    borderColor: '#3B4252',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderColor: '#38BDF8',
   },
   artworkPlaceholder: {
     width: 42,
@@ -365,7 +415,8 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   trackTitleActive: {
-    color: '#ECEFF4',
+    color: '#38BDF8',
+    fontWeight: '800',
   },
   trackArtist: {
     color: '#64748B',

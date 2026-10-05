@@ -1,16 +1,29 @@
-import React, { useEffect, useRef } from 'react';
-import { View, Animated, StyleSheet, Image, Dimensions, Platform } from 'react-native';
+import React, { useEffect, useRef, useMemo } from 'react';
+import { View, Animated, StyleSheet, Image, useWindowDimensions, Platform } from 'react-native';
 import { beatStore } from '../services/beatStore';
 
-const { width: windowWidth } = Dimensions.get('window');
-const LOGO_SIZE = Math.min(210, Math.max(160, Math.round(windowWidth * 0.5)));
+interface BeatLogoProps {
+  size?: number;
+}
 
 /**
  * Logo MAS Player officiel, animé et réactif en temps réel au rythme de la musique.
  *
+ * S'adapte dynamiquement à la taille de l'écran (smartphone compact, grand écran, tablette).
  * Utilise la boucle ultra-légère synchronisée avec `beatStore` (60 fps direct sans re-render React).
  */
-export const BeatLogo: React.FC = () => {
+export const BeatLogo: React.FC<BeatLogoProps> = ({ size: propSize }) => {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+
+  // Calcul adaptatif : prend en compte la largeur ET la hauteur disponible
+  const logoSize = useMemo(() => {
+    if (propSize && propSize > 0) return propSize;
+    // Sur petits écrans verticaux (Android 16:9 / 18:9), on borne par la hauteur pour ne pas étouffer les contrôles
+    const maxByHeight = Math.round(windowHeight * 0.22);
+    const maxByWidth = Math.round(windowWidth * 0.46);
+    return Math.min(205, Math.max(115, Math.min(maxByWidth, maxByHeight)));
+  }, [propSize, windowWidth, windowHeight]);
+
   const containerRef = useRef<any>(null);
   const glowRef = useRef<any>(null);
   const ring1Ref = useRef<any>(null);
@@ -88,40 +101,61 @@ export const BeatLogo: React.FC = () => {
     };
   }, []);
 
+  // Dimensions proportionnelles fluides
+  const radius = Math.round(logoSize * 0.18);
+  const ring1Size = logoSize + Math.round(logoSize * 0.18);
+  const ring2Size = logoSize + Math.round(logoSize * 0.36);
+  const glowSize = logoSize + Math.round(logoSize * 0.22);
+  const wrapperSize = logoSize + Math.round(logoSize * 0.38);
+
   return (
-    <View style={styles.wrapper}>
-      {/* Anneaux d'ondes acoustiques réactives (inspirées des ondes du logo MAS) */}
+    <View style={[styles.wrapper, { width: wrapperSize, height: wrapperSize }]}>
+      {/* Anneaux d'ondes acoustiques réactives */}
       <View
         ref={ring2Ref}
-        style={[styles.waveRing, styles.waveRingOuter]}
-        pointerEvents="none"
+        style={[
+          styles.waveRing,
+          styles.waveRingOuter,
+          { width: ring2Size, height: ring2Size, borderRadius: ring2Size / 2 },
+        ]}
       />
       <View
         ref={ring1Ref}
-        style={[styles.waveRing, styles.waveRingInner]}
-        pointerEvents="none"
+        style={[
+          styles.waveRing,
+          styles.waveRingInner,
+          { width: ring1Size, height: ring1Size, borderRadius: ring1Size / 2 },
+        ]}
       />
 
       {/* Halo néon violet / cyan / ambre derrière le logo */}
       <View
         ref={glowRef}
-        style={styles.ambientGlow}
-        pointerEvents="none"
+        style={[
+          styles.ambientGlow,
+          { width: glowSize, height: glowSize, borderRadius: glowSize / 2 },
+        ]}
       />
 
       {/* Badge central du logo MAS Player */}
       <Animated.View
         ref={containerRef}
-        style={styles.logoContainer}
-        pointerEvents="none"
+        style={[
+          styles.logoContainer,
+          {
+            width: logoSize,
+            height: logoSize,
+            borderRadius: radius,
+          },
+        ]}
       >
         <Image
           source={require('../../assets/mas_icon_square.png')}
-          style={styles.logoImage}
+          style={[styles.logoImage, { borderRadius: radius }]}
           resizeMode="cover"
         />
         {/* Bordure subtile en verre néon */}
-        <View style={styles.neonBorderOverlay} />
+        <View style={[styles.neonBorderOverlay, { borderRadius: radius }]} />
       </Animated.View>
     </View>
   );
@@ -129,17 +163,12 @@ export const BeatLogo: React.FC = () => {
 
 const styles = StyleSheet.create({
   wrapper: {
-    width: LOGO_SIZE + 70,
-    height: LOGO_SIZE + 70,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',
   },
   ambientGlow: {
     position: 'absolute',
-    width: LOGO_SIZE + 40,
-    height: LOGO_SIZE + 40,
-    borderRadius: (LOGO_SIZE + 40) / 2,
     backgroundColor: '#7C3AED',
     opacity: 0.4,
     shadowColor: '#38BDF8',
@@ -147,34 +176,29 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.9,
     shadowRadius: 35,
     elevation: 20,
+    pointerEvents: 'none',
     ...(Platform.OS === 'web'
-      ? {
+      ? ({
           filter: 'blur(30px)',
-          background: 'radial-gradient(circle, rgba(56, 189, 248, 0.45) 0%, rgba(139, 92, 246, 0.35) 45%, rgba(249, 115, 22, 0.2) 75%, transparent 100%)',
-        }
+          backgroundImage:
+            'radial-gradient(circle, rgba(56, 189, 248, 0.45) 0%, rgba(139, 92, 246, 0.35) 45%, rgba(249, 115, 22, 0.2) 75%, transparent 100%)',
+        } as any)
       : {}),
   },
   waveRing: {
     position: 'absolute',
-    borderRadius: 9999,
     borderWidth: 1.5,
+    pointerEvents: 'none',
   },
   waveRingInner: {
-    width: LOGO_SIZE + 32,
-    height: LOGO_SIZE + 32,
     borderColor: 'rgba(56, 189, 248, 0.45)',
     borderStyle: 'solid',
   },
   waveRingOuter: {
-    width: LOGO_SIZE + 64,
-    height: LOGO_SIZE + 64,
     borderColor: 'rgba(168, 85, 247, 0.3)',
     borderStyle: 'solid',
   },
   logoContainer: {
-    width: LOGO_SIZE,
-    height: LOGO_SIZE,
-    borderRadius: 36,
     overflow: 'hidden',
     backgroundColor: '#0A0C10',
     justifyContent: 'center',
@@ -184,15 +208,14 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.7,
     shadowRadius: 20,
     elevation: 15,
+    pointerEvents: 'none',
   },
   logoImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 36,
   },
   neonBorderOverlay: {
     ...StyleSheet.absoluteFill,
-    borderRadius: 36,
     borderWidth: 1.2,
     borderColor: 'rgba(255, 255, 255, 0.15)',
     pointerEvents: 'none',

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -10,26 +10,35 @@ import {
   Image,
   TextInput,
   Alert,
+  Modal,
 } from 'react-native';
 import { MaterialCommunityIcons, Ionicons, Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { pickAudioFolder, pickAudioFiles, isIOSDevice } from '../services/filePickerService';
 import { Track, Playlist } from '../types/audio';
 import { formatTime } from '../services/audioService';
+import { useScreenInsets, insetPadding } from '../theme/insets';
 
 interface LibraryViewProps {
   tracks: Track[];
   currentTrack: Track;
   isPlaying: boolean;
   playlists: Playlist[];
+  activePlaylistId?: string | null;
+  activeCategory?: string | null;
+  selectedGroupKey?: string | null;
+  isVisible?: boolean;
   onPlayPause: () => void;
-  onSelectTrack: (track: Track) => void;
+  onSelectTrack: (track: Track, playlist?: Playlist | null, category?: string | null, groupKey?: string | null) => void;
   onAddTracks: (newTracks: Track[]) => void;
   onBackToPlayer: () => void;
-  onTrackAction: (track: Track) => void;
+  onTrackAction: (track: Track, playlistId?: string | null) => void;
   onCreatePlaylist: (name: string) => void;
   onDeletePlaylist: (id: string) => void;
+  onDeleteFolder?: (folderName: string) => void;
+  onRenameFolder?: (oldFolderName: string, newFolderName: string) => void;
   onOpenQueueDrawer: () => void;
+  onNavigateCategory?: (category: string | null, groupKey?: string | null, playlist?: Playlist | null) => void;
 }
 
 interface CategoryItem {
@@ -57,6 +66,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   currentTrack,
   isPlaying,
   playlists,
+  activePlaylistId,
+  activeCategory: propActiveCategory,
+  selectedGroupKey: propSelectedGroupKey,
+  isVisible,
   onPlayPause,
   onSelectTrack,
   onAddTracks,
@@ -64,21 +77,55 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onTrackAction,
   onCreatePlaylist,
   onDeletePlaylist,
+  onDeleteFolder,
+  onRenameFolder,
   onOpenQueueDrawer,
+  onNavigateCategory,
 }) => {
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(null);
+  // Marge système mesurée (encoche / barre d'état). Remplace
+  // `StatusBar.currentHeight` — voir src/theme/insets.ts.
+  const insets = useScreenInsets();
+  const [activeCategory, setActiveCategory] = useState<string | null>(propActiveCategory ?? null);
+  const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(propSelectedGroupKey ?? null);
+  // La playlist ouverte dans la vue ne part JAMAIS de `activePlaylistId` : cet
+  // identifiant décrit le *contexte de lecture* (ce que lit le lecteur), pas la
+  // position dans l'arborescence. Au démarrage on affiche donc la racine.
   const [selectedPlaylist, setSelectedPlaylist] = useState<Playlist | null>(null);
   const [showMenuPopup, setShowMenuPopup] = useState<boolean>(false);
   const [isCreatingPlaylist, setIsCreatingPlaylist] = useState<boolean>(false);
   const [newPlaylistTitle, setNewPlaylistTitle] = useState<string>('');
   const [importSuccessMessage, setImportSuccessMessage] = useState<string | null>(null);
 
+  // Folder 3-dots menu & rename states
+  const [folderMenuTarget, setFolderMenuTarget] = useState<{
+    id: string;
+    title: string;
+    trackCount: number;
+  } | null>(null);
+  const [isRenamingFolder, setIsRenamingFolder] = useState<boolean>(false);
+  const [renameFolderText, setRenameFolderText] = useState<string>('');
+  const [isConfirmingDeleteFolder, setIsConfirmingDeleteFolder] = useState<boolean>(false);
+
+  // Synchronisation automatique lorsqu'on navigue ou revient depuis l'accueil
+  useEffect(() => {
+    // `activePlaylistId` n'ouvre plus rien ici : c'est le contexte de lecture,
+    // pas la navigation. Sans ce retour, relancer l'app avec une lecture en
+    // cours dans une playlist réouvrait directement SON contenu au lieu de la
+    // racine de la bibliothèque.
+    if (propActiveCategory) {
+      setActiveCategory(propActiveCategory);
+      setSelectedGroupKey(propSelectedGroupKey ?? null);
+      if (propActiveCategory !== 'playlists') {
+        setSelectedPlaylist(null);
+      }
+    }
+  }, [propActiveCategory, propSelectedGroupKey, isVisible]);
+
   // IMPORTATION D'UN DOSSIER COMPLET EN UN SEUL CLIC
   const handlePickFolder = async () => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      const res = await pickAudioFolder();
+      const res = await pickAudioFolder(tracks);
       if (res && res.tracks.length > 0) {
         onAddTracks(res.tracks);
         setImportSuccessMessage(
@@ -87,8 +134,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         setTimeout(() => setImportSuccessMessage(null), 5000);
       } else if (res && res.count === 0) {
         Alert.alert(
-          'Aucun fichier audio',
-          'Aucun fichier audio supporté (.mp3, .flac, .wav, .m4a, etc.) n\'a été trouvé dans ce dossier.'
+          'Aucun nouveau fichier audio',
+          'Aucun nouveau morceau n\'a été importé (fichiers absents ou morceaux déjà présents dans la bibliothèque).'
         );
       }
     } catch (err) {
@@ -100,7 +147,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const handlePickFiles = async () => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      const res = await pickAudioFiles();
+      const res = await pickAudioFiles(tracks);
       if (res && res.tracks.length > 0) {
         onAddTracks(res.tracks);
         setImportSuccessMessage(
@@ -120,6 +167,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     setSelectedGroupKey(null);
     setSelectedPlaylist(null);
     setActiveCategory(category.id);
+    onNavigateCategory?.(category.id, null, null);
   };
 
   // Grouped data for albums, artists, genres, years, folders
@@ -127,7 +175,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     if (activeCategory === 'folders' || activeCategory === 'folders_hierarchy') {
       const map = new Map<string, Track[]>();
       tracks.forEach((t) => {
-        const key = t.folder || 'Démos MAS Player';
+        // « Démos MAS Player » désignait le dossier des pistes de démonstration,
+        // retirées de l'application : ce repli rangerait aujourd'hui tout
+        // fichier importé sans dossier sous un nom qui n'existe plus.
+        const key = t.folder || 'Musique importée';
         if (!map.has(key)) map.set(key, []);
         map.get(key)!.push(t);
       });
@@ -231,17 +282,66 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const handleHeaderBack = () => {
     if (selectedPlaylist) {
       setSelectedPlaylist(null);
+      onNavigateCategory?.('playlists', null, null);
     } else if (selectedGroupKey) {
       setSelectedGroupKey(null);
+      onNavigateCategory?.(activeCategory, null, null);
     } else {
       setActiveCategory(null);
+      onNavigateCategory?.(null, null, null);
     }
   };
+
+  const flatListRef = useRef<FlatList<Track>>(null);
+
+  const currentIndex = useMemo(() => {
+    if (!currentTrack?.id || displayTracks.length === 0) return -1;
+    return displayTracks.findIndex((t) => t.id === currentTrack.id);
+  }, [displayTracks, currentTrack?.id]);
+
+  const scrollToCurrentTrack = (animated: boolean = false) => {
+    if (currentIndex >= 0 && flatListRef.current) {
+      try {
+        flatListRef.current.scrollToIndex({
+          index: currentIndex,
+          animated,
+          viewPosition: 0.35,
+        });
+      } catch {
+        const headerHeight = (selectedPlaylist || selectedGroupKey || activeCategory === 'all_songs') ? 56 : 0;
+        flatListRef.current?.scrollToOffset({
+          offset: Math.max(0, headerHeight + currentIndex * 66 - 60),
+          animated,
+        });
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (isVisible && currentIndex >= 0) {
+      const timer = setTimeout(() => {
+        scrollToCurrentTrack(false);
+      }, 120);
+      return () => clearTimeout(timer);
+    }
+  }, [isVisible, currentIndex, selectedPlaylist?.id, activeCategory]);
 
   return (
     <View style={styles.container}>
       {/* Top Header matching Screenshot 1 */}
-      <View style={styles.header}>
+      <View
+        style={[
+          styles.header,
+          {
+            paddingTop:
+              Platform.OS === 'android'
+                ? insetPadding(insets, 'top', 10)
+                : Platform.OS === 'ios'
+                ? 12
+                : 20,
+          },
+        ]}
+      >
         {activeCategory ? (
           <TouchableOpacity
             style={styles.backCategoryBtn}
@@ -447,45 +547,64 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               </Text>
             </View>
           ) : (
-            playlists.map((pl) => (
-              <TouchableOpacity
-                key={pl.id}
-                style={styles.playlistItemCard}
-                onPress={() => setSelectedPlaylist(pl)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.playlistIconBox}>
-                  <MaterialCommunityIcons name="playlist-music" size={26} color="#FFFFFF" />
-                </View>
-
-                <View style={{ flex: 1, marginLeft: 16 }}>
-                  <Text style={styles.playlistCardTitle}>{pl.name}</Text>
-                  <Text style={styles.playlistCardSub}>
-                    {pl.trackIds.length} morceau{pl.trackIds.length > 1 ? 'x' : ''}
-                  </Text>
-                </View>
-
+            playlists.map((pl) => {
+              const isPlActive = activePlaylistId === pl.id;
+              return (
                 <TouchableOpacity
-                  style={{ padding: 8 }}
+                  key={pl.id}
+                  style={[styles.playlistItemCard, isPlActive && styles.playlistItemCardActive]}
                   onPress={() => {
-                    Alert.alert(
-                      'Supprimer la playlist',
-                      `Supprimer la playlist "${pl.name}" ?`,
-                      [
-                        { text: 'Annuler', style: 'cancel' },
-                        {
-                          text: 'Supprimer',
-                          style: 'destructive',
-                          onPress: () => onDeletePlaylist(pl.id),
-                        },
-                      ]
-                    );
+                    setSelectedPlaylist(pl);
+                    onNavigateCategory?.('playlists', null, pl);
                   }}
+                  activeOpacity={0.7}
                 >
-                  <Ionicons name="trash-outline" size={20} color="#71717A" />
+                  <View style={[styles.playlistIconBox, isPlActive && styles.playlistIconBoxActive]}>
+                    <MaterialCommunityIcons
+                      name={isPlActive ? 'volume-high' : 'playlist-music'}
+                      size={26}
+                      color={isPlActive ? '#38BDF8' : '#FFFFFF'}
+                    />
+                  </View>
+
+                  <View style={{ flex: 1, marginLeft: 16 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={[styles.playlistCardTitle, isPlActive && styles.playlistCardTitleActive]}>
+                        {pl.name}
+                      </Text>
+                      {isPlActive && (
+                        <View style={styles.activePillBadge}>
+                          <Text style={styles.activePillBadgeText}>EN LECTURE</Text>
+                        </View>
+                      )}
+                    </View>
+                    <Text style={styles.playlistCardSub}>
+                      {pl.trackIds.length} morceau{pl.trackIds.length > 1 ? 'x' : ''}
+                    </Text>
+                  </View>
+
+                  <TouchableOpacity
+                    style={{ padding: 8 }}
+                    onPress={() => {
+                      Alert.alert(
+                        'Supprimer la playlist',
+                        `Supprimer la playlist "${pl.name}" ?`,
+                        [
+                          { text: 'Annuler', style: 'cancel' },
+                          {
+                            text: 'Supprimer',
+                            style: 'destructive',
+                            onPress: () => onDeletePlaylist(pl.id),
+                          },
+                        ]
+                      );
+                    }}
+                  >
+                    <Ionicons name="trash-outline" size={20} color="#71717A" />
+                  </TouchableOpacity>
                 </TouchableOpacity>
-              </TouchableOpacity>
-            ))
+              );
+            })
           )}
           <View style={{ height: 90 }} />
         </ScrollView>
@@ -532,16 +651,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             </Text>
           </TouchableOpacity>
 
-          {/* iOS Tip Banner */}
-          {isIOSDevice() && (
-            <View style={styles.iosTipBox}>
-              <Ionicons name="information-circle-outline" size={18} color="#38BDF8" />
-              <Text style={styles.iosTipText}>
-                <Text style={{ fontWeight: '700', color: '#BAE6FD' }}>Astuce iOS : </Text>
-                Sur iPhone/iPad, vous pouvez sélectionner votre dossier de musique complet, importer un fichier .zip d'album, ou toucher « Tout sélectionner » dans l'app Fichiers pour tout ajouter d'un coup.
-              </Text>
-            </View>
-          )}
+
 
           {/* Success Banner */}
           {importSuccessMessage && (
@@ -602,6 +712,25 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <Ionicons name="play" size={16} color="#38BDF8" />
                 </TouchableOpacity>
 
+                {/* 3-dots Folder Menu Button */}
+                <TouchableOpacity
+                  style={styles.folderMenuBtn}
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    try {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    } catch {}
+                    setFolderMenuTarget({ id: f.id, title: f.title, trackCount: f.tracks.length });
+                    setRenameFolderText(f.title);
+                    setIsRenamingFolder(false);
+                    setIsConfirmingDeleteFolder(false);
+                  }}
+                  activeOpacity={0.7}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
+                  <MaterialCommunityIcons name="dots-vertical" size={20} color="#CBD5E1" />
+                </TouchableOpacity>
+
                 <Ionicons name="chevron-forward" size={18} color="#52525B" style={{ marginLeft: 6 }} />
               </TouchableOpacity>
             ))
@@ -650,18 +779,44 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
       ) : (
         /* SONGS LIST (All Songs, Playlist tracks, or Group tracks) */
         <FlatList
+          ref={flatListRef}
           data={displayTracks}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.songsListContent}
           showsVerticalScrollIndicator={false}
+          initialScrollIndex={currentIndex >= 0 && currentIndex < displayTracks.length ? currentIndex : undefined}
+          onScrollToIndexFailed={(info) => {
+            const headerHeight = (selectedPlaylist || selectedGroupKey || activeCategory === 'all_songs') ? 56 : 0;
+            flatListRef.current?.scrollToOffset({
+              offset: Math.max(0, headerHeight + info.index * 66 - 60),
+              animated: false,
+            });
+            setTimeout(() => {
+              try {
+                flatListRef.current?.scrollToIndex({
+                  index: info.index,
+                  animated: true,
+                  viewPosition: 0.35,
+                });
+              } catch {}
+            }, 100);
+          }}
+          getItemLayout={(data, index) => {
+            const headerHeight = (selectedPlaylist || selectedGroupKey || activeCategory === 'all_songs') ? 56 : 0;
+            return {
+              length: 66,
+              offset: headerHeight + 66 * index,
+              index,
+            };
+          }}
           ListHeaderComponent={
-            selectedGroupKey ? (
+            (selectedPlaylist || selectedGroupKey || activeCategory === 'all_songs') ? (
               <View style={styles.groupDetailHeaderBar}>
                 <TouchableOpacity
                   style={styles.groupPlayAllBtn}
                   onPress={() => {
                     if (displayTracks.length > 0) {
-                      onSelectTrack(displayTracks[0]);
+                      onSelectTrack(displayTracks[0], selectedPlaylist, activeCategory, selectedGroupKey);
                       onBackToPlayer();
                     }
                   }}
@@ -678,7 +833,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   onPress={() => {
                     if (displayTracks.length > 0) {
                       const randIdx = Math.floor(Math.random() * displayTracks.length);
-                      onSelectTrack(displayTracks[randIdx]);
+                      onSelectTrack(displayTracks[randIdx], selectedPlaylist, activeCategory, selectedGroupKey);
                       onBackToPlayer();
                     }
                   }}
@@ -687,6 +842,64 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <Ionicons name="shuffle" size={16} color="#94A3B8" />
                   <Text style={styles.groupShuffleText}>Aléatoire</Text>
                 </TouchableOpacity>
+
+                {selectedPlaylist && (
+                  <TouchableOpacity
+                    style={styles.groupDeleteHeaderBtn}
+                    onPress={() => {
+                      Alert.alert(
+                        'Supprimer la playlist',
+                        `Supprimer la playlist "${selectedPlaylist.name}" ?`,
+                        [
+                          { text: 'Annuler', style: 'cancel' },
+                          {
+                            text: 'Supprimer',
+                            style: 'destructive',
+                            onPress: () => {
+                              onDeletePlaylist(selectedPlaylist.id);
+                              setSelectedPlaylist(null);
+                            },
+                          },
+                        ]
+                      );
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="trash-outline" size={15} color="#F87171" />
+                    <Text style={styles.groupDeleteHeaderText}>Supprimer</Text>
+                  </TouchableOpacity>
+                )}
+
+                {selectedGroupKey && (activeCategory === 'folders' || activeCategory === 'folders_hierarchy') && (
+                  <TouchableOpacity
+                    style={styles.groupDeleteHeaderBtn}
+                    onPress={() => {
+                      setFolderMenuTarget({
+                        id: selectedGroupKey,
+                        title: selectedGroupKey,
+                        trackCount: displayTracks.length,
+                      });
+                      setRenameFolderText(selectedGroupKey);
+                      setIsRenamingFolder(false);
+                      setIsConfirmingDeleteFolder(false);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialCommunityIcons name="dots-vertical" size={16} color="#38BDF8" />
+                    <Text style={[styles.groupDeleteHeaderText, { color: '#38BDF8' }]}>Options</Text>
+                  </TouchableOpacity>
+                )}
+
+                {currentIndex >= 0 && (
+                  <TouchableOpacity
+                    style={styles.jumpToActiveBtn}
+                    onPress={() => scrollToCurrentTrack(true)}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialCommunityIcons name="crosshairs-gps" size={16} color="#38BDF8" />
+                    <Text style={styles.jumpToActiveText}>En cours</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             ) : null
           }
@@ -699,19 +912,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   try {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                   } catch {}
-                  onSelectTrack(item);
+                  onSelectTrack(item, selectedPlaylist, activeCategory, selectedGroupKey);
                   onBackToPlayer();
                 }}
                 onLongPress={() => {
                   try {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                   } catch {}
-                  onTrackAction(item);
+                  onTrackAction(item, selectedPlaylist?.id);
                 }}
                 delayLongPress={300}
                 activeOpacity={0.7}
               >
-                <View style={styles.trackIconBox}>
+                <View style={[styles.trackIconBox, isPlayingThis && styles.trackIconBoxActive]}>
                   {item.artwork ? (
                     <Image source={{ uri: item.artwork }} style={styles.trackThumb} />
                   ) : (
@@ -724,19 +937,26 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </View>
 
                 <View style={styles.trackMetaBox}>
-                  <Text
-                    numberOfLines={1}
-                    style={[styles.trackTitleText, isPlayingThis && styles.trackTitleTextActive]}
-                  >
-                    {item.title}
-                  </Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text
+                      numberOfLines={1}
+                      style={[styles.trackTitleText, isPlayingThis && styles.trackTitleTextActive, { flexShrink: 1 }]}
+                    >
+                      {item.title}
+                    </Text>
+                    {isPlayingThis && (
+                      <View style={styles.playingBadgePill}>
+                        <Text style={styles.playingBadgePillText}>EN LECTURE</Text>
+                      </View>
+                    )}
+                  </View>
                   <Text numberOfLines={1} style={styles.trackArtistText}>
                     {item.artist} • {item.album}
                   </Text>
                 </View>
 
-                <Text style={styles.trackDurationText}>
-                  {formatTime(item.duration || 180)}
+                <Text style={[styles.trackDurationText, isPlayingThis && { color: '#38BDF8' }]}>
+                  {formatTime(item.duration || 0)}
                 </Text>
 
                 {/* 3-dots Context menu trigger button */}
@@ -747,7 +967,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     try {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     } catch {}
-                    onTrackAction(item);
+                    onTrackAction(item, selectedPlaylist?.id);
                   }}
                 >
                   <MaterialCommunityIcons name="dots-vertical" size={20} color="#71717A" />
@@ -815,6 +1035,171 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           />
         </TouchableOpacity>
       </TouchableOpacity>
+      {/* FOLDER ACTIONS MODAL (RENOMMER & SUPPRIMER) */}
+      <Modal
+        visible={!!folderMenuTarget}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFolderMenuTarget(null)}
+      >
+        <TouchableOpacity
+          style={styles.folderModalOverlay}
+          activeOpacity={1}
+          onPress={() => setFolderMenuTarget(null)}
+        >
+          <TouchableOpacity
+            style={styles.folderModalCard}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
+            {/* EN-TÊTE DU DOSSIER */}
+            <View style={styles.folderModalHeader}>
+              <View style={styles.folderModalIconBox}>
+                <MaterialCommunityIcons name="folder-music" size={26} color="#60A5FA" />
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.folderModalTitle} numberOfLines={1}>
+                  {folderMenuTarget?.title}
+                </Text>
+                <Text style={styles.folderModalSub}>
+                  {folderMenuTarget?.trackCount} morceau{folderMenuTarget && folderMenuTarget.trackCount > 1 ? 'x' : ''}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => setFolderMenuTarget(null)}
+                style={styles.folderModalCloseBtn}
+              >
+                <Ionicons name="close" size={20} color="#71717A" />
+              </TouchableOpacity>
+            </View>
+
+            {/* CONTENU SELON L'ÉTAT DU MENU */}
+            {isRenamingFolder ? (
+              /* ÉCRAN DE RENOMMAGE DU DOSSIER */
+              <View style={styles.folderModalBody}>
+                <Text style={styles.folderModalSectionLabel}>
+                  RENOMMER LE DOSSIER
+                </Text>
+                <TextInput
+                  style={styles.folderRenameInput}
+                  value={renameFolderText}
+                  onChangeText={setRenameFolderText}
+                  placeholder="Nouveau nom du dossier..."
+                  placeholderTextColor="#64748B"
+                  autoFocus
+                  selectTextOnFocus
+                />
+                <View style={styles.folderModalActionRow}>
+                  <TouchableOpacity
+                    style={styles.folderModalCancelBtn}
+                    onPress={() => setIsRenamingFolder(false)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.folderModalCancelText}>Annuler</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.folderModalConfirmBtn}
+                    onPress={() => {
+                      const trimmed = renameFolderText.trim();
+                      if (trimmed && folderMenuTarget && trimmed !== folderMenuTarget.title) {
+                        onRenameFolder?.(folderMenuTarget.title, trimmed);
+                      }
+                      setFolderMenuTarget(null);
+                      setIsRenamingFolder(false);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.folderModalConfirmText}>Enregistrer</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : isConfirmingDeleteFolder ? (
+              /* ÉCRAN DE CONFIRMATION DE SUPPRESSION (100% FIABLE SUR MOBILE ET WEB) */
+              <View style={styles.folderModalBody}>
+                <View style={styles.folderDeleteWarningBox}>
+                  <Ionicons name="warning-outline" size={28} color="#F87171" />
+                  <Text style={styles.folderDeleteWarningTitle}>
+                    Supprimer ce dossier ?
+                  </Text>
+                  <Text style={styles.folderDeleteWarningText}>
+                    Cette action va retirer le dossier "{folderMenuTarget?.title}" et ses {folderMenuTarget?.trackCount} morceau{folderMenuTarget && folderMenuTarget.trackCount > 1 ? 'x' : ''} de votre bibliothèque musicale.
+                  </Text>
+                </View>
+
+                <View style={styles.folderModalActionRow}>
+                  <TouchableOpacity
+                    style={styles.folderModalCancelBtn}
+                    onPress={() => setIsConfirmingDeleteFolder(false)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={styles.folderModalCancelText}>Annuler</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.folderModalDangerBtn}
+                    onPress={() => {
+                      if (folderMenuTarget) {
+                        const targetName = folderMenuTarget.title;
+                        setFolderMenuTarget(null);
+                        setIsConfirmingDeleteFolder(false);
+                        onDeleteFolder?.(targetName);
+                        if (selectedGroupKey === targetName) {
+                          setSelectedGroupKey(null);
+                        }
+                      }
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="trash-outline" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                    <Text style={styles.folderModalDangerText}>Supprimer</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : (
+              /* MENU D'OPTIONS PRINCIPALES */
+              <View style={styles.folderModalMenu}>
+                <TouchableOpacity
+                  style={styles.folderMenuItem}
+                  onPress={() => {
+                    setRenameFolderText(folderMenuTarget?.title || '');
+                    setIsRenamingFolder(true);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.folderMenuItemIconBox, { backgroundColor: 'rgba(56, 189, 248, 0.12)' }]}>
+                    <MaterialCommunityIcons name="pencil-outline" size={20} color="#38BDF8" />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 14 }}>
+                    <Text style={styles.folderMenuItemTitle}>Renommer le dossier</Text>
+                    <Text style={styles.folderMenuItemSub}>Modifier l'étiquette de ce dossier</Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#52525B" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.folderMenuItem}
+                  onPress={() => {
+                    setIsConfirmingDeleteFolder(true);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.folderMenuItemIconBox, { backgroundColor: 'rgba(239, 68, 68, 0.12)' }]}>
+                    <MaterialCommunityIcons name="trash-can-outline" size={20} color="#F87171" />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 14 }}>
+                    <Text style={[styles.folderMenuItemTitle, { color: '#F87171' }]}>
+                      Supprimer le dossier
+                    </Text>
+                    <Text style={styles.folderMenuItemSub}>
+                      Retirer le dossier et tous ses morceaux
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#52525B" />
+                </TouchableOpacity>
+              </View>
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };
@@ -829,7 +1214,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 12 : 20,
     paddingBottom: 16,
   },
   headerTitle: {
@@ -1066,24 +1450,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  iosTipBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: '#082F49',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#0284C7',
-  },
-  iosTipText: {
-    color: '#7DD3FC',
-    fontSize: 12,
-    lineHeight: 17,
-    flex: 1,
-  },
   successBanner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1158,6 +1524,186 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     borderWidth: 1,
     borderColor: '#334155',
+  },
+  folderMenuBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#1E232D',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 6,
+    borderWidth: 1,
+    borderColor: '#2A3441',
+  },
+  folderModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  folderModalCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: '#161519',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#2A2930',
+    overflow: 'hidden',
+  },
+  folderModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#232228',
+  },
+  folderModalIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#1E232D',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  folderModalTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  folderModalSub: {
+    color: '#94A3B8',
+    fontSize: 12.5,
+    marginTop: 2,
+  },
+  folderModalCloseBtn: {
+    padding: 6,
+    borderRadius: 8,
+  },
+  folderModalMenu: {
+    paddingVertical: 8,
+  },
+  folderMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 18,
+  },
+  folderMenuItemIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  folderMenuItemTitle: {
+    color: '#FFFFFF',
+    fontSize: 14.5,
+    fontWeight: '600',
+  },
+  folderMenuItemSub: {
+    color: '#71717A',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  folderModalBody: {
+    padding: 18,
+  },
+  folderModalSectionLabel: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    marginBottom: 8,
+  },
+  folderRenameInput: {
+    backgroundColor: '#0F0E13',
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#38BDF8',
+    color: '#FFFFFF',
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 15,
+    marginBottom: 16,
+  },
+  folderModalActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  folderModalCancelBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: '#27272A',
+  },
+  folderModalCancelText: {
+    color: '#E4E4E7',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
+  folderModalConfirmBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    backgroundColor: '#0284C7',
+  },
+  folderModalConfirmText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  folderModalDangerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    backgroundColor: '#DC2626',
+  },
+  folderModalDangerText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  folderDeleteWarningBox: {
+    alignItems: 'center',
+    paddingVertical: 6,
+    marginBottom: 14,
+  },
+  folderDeleteWarningTitle: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 8,
+    marginBottom: 6,
+  },
+  folderDeleteWarningText: {
+    color: '#94A3B8',
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  groupDeleteHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#27171A',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#4C1D24',
+  },
+  groupDeleteHeaderText: {
+    color: '#F87171',
+    fontSize: 12,
+    fontWeight: '700',
   },
   groupDetailHeaderBar: {
     flexDirection: 'row',
@@ -1240,7 +1786,66 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   trackRowActive: {
-    backgroundColor: '#18181B',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    paddingLeft: 10,
+  },
+  trackIconBoxActive: {
+    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+    borderColor: '#38BDF8',
+    borderWidth: 1,
+  },
+  playingBadgePill: {
+    backgroundColor: '#38BDF8',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 4,
+  },
+  playingBadgePillText: {
+    color: '#000000',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  jumpToActiveBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.4)',
+    marginLeft: 'auto',
+  },
+  jumpToActiveText: {
+    color: '#38BDF8',
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  playlistItemCardActive: {
+    borderColor: '#38BDF8',
+    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+  },
+  playlistIconBoxActive: {
+    backgroundColor: 'rgba(56, 189, 248, 0.25)',
+  },
+  playlistCardTitleActive: {
+    color: '#38BDF8',
+  },
+  activePillBadge: {
+    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+  },
+  activePillBadgeText: {
+    color: '#38BDF8',
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   trackIconBox: {
     width: 42,

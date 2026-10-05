@@ -39,6 +39,7 @@ function loadStorageService() {
         /^import \{ Track.*$/m,
         'type Track = any; type Playlist = any; type DSPState = any; type EqualizerPreset = any;'
       )
+      .replace(/^import.*audioStorage.*$/m, 'const normalizeTracks = (x: any) => x;')
   );
 
   const program = ts.createProgram([file], {
@@ -69,12 +70,36 @@ const CASES = [
   ['tableau', []],
   ['texte', 'pas du JSON'],
   ['valide', { enabled: false, volume: 33, bands: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }],
+  // Une sauvegarde d'une version antérieure à `crossfeed` : le champ est absent,
+  // et c'est exactement le cas que `normalizeDSP` doit rattraper.
+  ['sans crossfeed', { enabled: true, volume: 80, stereoExpansion: 40 }],
+  // Le cas inverse : des champs parasites ou du mauvais type ne doivent pas
+  // non plus produire de `NaN` dans le dep-array de App.tsx.
+  ['crossfeed pourri', { crossfeed: 'large', stereoExpansion: {}, tempo: [] }],
 ];
 
 const isFiniteArray = (a) =>
   Array.isArray(a) &&
   a.length === 10 &&
   a.every((v) => typeof v === 'number' && Number.isFinite(v));
+
+/**
+ * Tous les champs numériques de DSPState qui atteignent le moteur. Un seul
+ * `undefined` parmi eux fait planter le rendu au premier rendu, via le
+ * dep-array de App.tsx — c'est ce que ce test vérifie, pas seulement `bands`.
+ */
+const NUMERIC_FIELDS = [
+  'bass',
+  'treble',
+  'preamp',
+  'stereoExpansion',
+  'crossfeed',
+  'tempo',
+  'balance',
+  'volume',
+];
+
+const BOOL_FIELDS = ['enabled', 'mono', 'tempoEnabled'];
 
 async function main() {
   const storageService = loadStorageService();
@@ -86,19 +111,24 @@ async function main() {
     globalThis.__STUB = JSON.stringify(payload);
     try {
       const dsp = await storageService.getDSP();
-      const good =
-        isFiniteArray(dsp && dsp.bands) &&
-        typeof dsp.volume === 'number' &&
-        Number.isFinite(dsp.volume);
+      const bad = [];
+      if (!isFiniteArray(dsp && dsp.bands)) bad.push('bands');
+      for (const f of NUMERIC_FIELDS) {
+        if (typeof dsp[f] !== 'number' || !Number.isFinite(dsp[f])) bad.push(`${f}=${dsp[f]}`);
+      }
+      for (const f of BOOL_FIELDS) {
+        if (typeof dsp[f] !== 'boolean') bad.push(`${f}=${dsp[f]}`);
+      }
+      const good = bad.length === 0;
       ok &&= good;
       console.log(
-        `   ${good ? 'OK  ' : 'FAIL'} ${label.padEnd(14)} bands=${
+        `   ${good ? 'OK  ' : 'FAIL'} ${label.padEnd(18)} bands=${
           dsp && dsp.bands ? dsp.bands.length : 'null'
-        } volume=${dsp ? dsp.volume : '-'}`
+        } crossfeed=${dsp ? dsp.crossfeed : '-'}` + (bad.length ? `  FUITE: ${bad.join(', ')}` : '')
       );
     } catch (e) {
       ok = false;
-      console.log(`   THROW ${label.padEnd(14)} ${e.message}`);
+      console.log(`   THROW ${label.padEnd(18)} ${e.message}`);
     }
   }
 

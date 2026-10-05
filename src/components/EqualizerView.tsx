@@ -20,11 +20,24 @@ import {
   MAS_PLAYER_BAND_LABELS,
   EQ_GAIN_MAX,
   EQ_GAIN_MIN,
+  BASS_WEIGHTS,
+  TREBLE_WEIGHTS,
+  reverbDecayMs,
 } from '../constants/presets';
 import { storageService } from '../services/storageService';
+import { useScreenInsets, insetPadding } from '../theme/insets';
+import { playerManager } from '../services/playerManager';
 
 interface EqualizerViewProps {
   dsp: DSPState;
+  /**
+   * Volume de l'appareil en pourcentage, ou `null` quand il est illisible.
+   *
+   * Non `null`, le knob reflète l'OS en lecture seule et l'atténuateur logiciel
+   * est neutralisé : l'OS est alors la seule autorité du volume. `null`, aucun
+   * navigateur ne sait le dire, et le knob reste une attestation app-locale.
+   */
+  systemVolume?: number | null;
   onUpdateDSP: (newDsp: DSPState) => void;
   onOpenPresets: () => void;
   customPresets?: EqualizerPreset[];
@@ -74,6 +87,53 @@ function describeArc(
   ].join(' ');
 }
 
+/**
+ * Rendu de couleur unifié pour toutes les balances et faders :
+ * - Au milieu (moyen / 0 dB / neutre) : Vert pur (#22C55E)
+ * - En haut au max (+12 dB / 100% / pan max) : Rouge vif (#EF4444)
+ * - Dégradé fluide : Vert (#22C55E) -> Jaune-Vert (#84CC16) -> Jaune (#EAB308) -> Orange (#F97316) -> Rouge (#EF4444)
+ * - Vers le bas (atténuation négative) : Vert (#22C55E) -> Cyan (#38BDF8)
+ */
+function interpolateRgb(rgb1: [number, number, number], rgb2: [number, number, number], t: number): string {
+  const clampedT = Math.max(0, Math.min(1, t));
+  const r = Math.round(rgb1[0] + (rgb2[0] - rgb1[0]) * clampedT);
+  const g = Math.round(rgb1[1] + (rgb2[1] - rgb1[1]) * clampedT);
+  const b = Math.round(rgb1[2] + (rgb2[2] - rgb1[2]) * clampedT);
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+export function getUnifiedGainColor(value: number, min: number = -12, max: number = 12): string {
+  if (value === 0) return '#94A3B8';
+  return '#FFFFFF';
+}
+
+export function getUnifiedPercentColor(percent: number): string {
+  // Pour les réglages unilatéraux (0% à 100%) :
+  // À 0% (neutre) : Vert (#22C55E)
+  // Montée vers 100% (max en haut) : Vert -> Jaune -> Orange -> Rouge (#EF4444)
+  const ratio = Math.min(1, Math.max(0, percent / 100));
+  if (ratio <= 0.33) {
+    return interpolateRgb([34, 197, 94], [132, 204, 22], ratio / 0.33);
+  } else if (ratio <= 0.66) {
+    return interpolateRgb([132, 204, 22], [249, 115, 22], (ratio - 0.33) / 0.33);
+  } else {
+    return interpolateRgb([249, 115, 22], [239, 68, 68], (ratio - 0.66) / 0.34);
+  }
+}
+
+export function getUnifiedBalanceColor(balance: number): string {
+  // Au centre 0 (moyen) : Vert (#22C55E)
+  // Vers l'extrême Gauche (-1) ou Droite (+1) : dégradé vers le Rouge (#EF4444)
+  const intensity = Math.min(1, Math.max(0, Math.abs(balance)));
+  if (intensity <= 0.33) {
+    return interpolateRgb([34, 197, 94], [132, 204, 22], intensity / 0.33);
+  } else if (intensity <= 0.66) {
+    return interpolateRgb([132, 204, 22], [249, 115, 22], (intensity - 0.33) / 0.33);
+  } else {
+    return interpolateRgb([249, 115, 22], [239, 68, 68], (intensity - 0.66) / 0.34);
+  }
+}
+
 interface RotaryKnobProps {
   value: number; // min to max
   min: number;
@@ -91,6 +151,12 @@ interface RotaryKnobProps {
   isSemiCircle?: boolean; // 0% at bottom-left, 50% at top-center, 100% at bottom-right
   centerValue?: number; // value that must land on top center (e.g. 1.0 for tempo)
   isBalance?: boolean; // cyan for left, emerald for right
+  /**
+   * Affiche la valeur sans jamais l'écrire : le knob devient un simple miroir.
+   * Utilisé pour le volume quand l'OS en est l'autorité — laisser le geste
+   * modifier une valeur que le graphe n'applique plus serait un piège.
+   */
+  readOnly?: boolean;
   onChange: (val: number) => void;
 }
 
@@ -111,6 +177,7 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
   isSemiCircle = false,
   centerValue,
   isBalance = false,
+  readOnly = false,
   onChange,
 }) => {
   const valRef = useRef(value);
@@ -190,11 +257,16 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
   };
 
   // Standard React Native PanResponder for iOS & Android & Web touch
+  // `readOnly` est lu via un ref : le PanResponder est construit une seule fois,
+  // il ne peut donc pas capturer la prop directement.
+  const readOnlyRef = useRef(readOnly);
+  readOnlyRef.current = readOnly;
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => !readOnlyRef.current,
       onMoveShouldSetPanResponder: (_, gs) =>
-        Math.abs(gs.dx) > 1 || Math.abs(gs.dy) > 1,
+        !readOnlyRef.current &&
+        (Math.abs(gs.dx) > 1 || Math.abs(gs.dy) > 1),
       onPanResponderTerminationRequest: () => false,
       onPanResponderGrant: () => {
         isDraggingRef.current = false;
@@ -209,6 +281,7 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
         lastTapRef.current = now;
       },
       onPanResponderMove: (_, gs) => {
+        if (readOnlyRef.current) return;
         isDraggingRef.current = true;
         const combinedDrag = -gs.dy * 1.0 + gs.dx * 0.85;
         const dragSensitivity = 130;
@@ -217,6 +290,7 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
         updateValue(startValRef.current + deltaVal);
       },
       onPanResponderRelease: (evt, gs) => {
+        if (readOnlyRef.current) return;
         if (!isDraggingRef.current && Math.abs(gs.dx) < 4 && Math.abs(gs.dy) < 4) {
           const locX = (evt.nativeEvent as any).locationX;
           if (typeof locX === 'number') {
@@ -235,10 +309,21 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
   // Web Mouse Drag support
   const handlePointerDownWeb = (e: any) => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    if (readOnlyRef.current) return;
+    e.preventDefault?.();
+    playerManager.resumeAudioContext().catch(() => {});
     const startY = e.clientY;
     const startX = e.clientX;
     const initialVal = valRef.current;
     let didMove = false;
+
+    const target = e.currentTarget as HTMLElement | null;
+    const pointerId = e.pointerId;
+    if (target?.setPointerCapture && pointerId !== undefined) {
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {}
+    }
 
     const onPointerMove = (moveEvt: MouseEvent) => {
       const dy = moveEvt.clientY - startY;
@@ -254,8 +339,13 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
     const onPointerUp = (upEvt: MouseEvent) => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
+      if (target?.releasePointerCapture && pointerId !== undefined) {
+        try {
+          target.releasePointerCapture(pointerId);
+        } catch {}
+      }
       if (!didMove) {
-        const rect = (e.currentTarget as HTMLElement)?.getBoundingClientRect();
+        const rect = target?.getBoundingClientRect();
         if (rect) {
           const clickX = upEvt.clientX - rect.left;
           if (clickX > rect.width / 2) {
@@ -307,22 +397,20 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
       );
     }
   } else if (isBalance) {
+    const balColor = getUnifiedBalanceColor(value);
+    activeColor = balColor;
     if (value < -0.02) {
-      // Left pan: arc from angle up to 0° (top) in bright neon cyan
       activeArcPath = describeArc(center, center, arcRadius, Math.max(-135, angle), 0);
-      activeColor = '#38BDF8';
     } else if (value > 0.02) {
-      // Right pan: arc from 0° (top) down to angle in bright emerald green
       activeArcPath = describeArc(center, center, arcRadius, 0, Math.min(135, angle));
-      activeColor = '#10B981';
     }
   } else if (isBipolar) {
+    const bColor = getUnifiedGainColor(value, min, max);
+    activeColor = bColor;
     if (value > 0.05) {
       activeArcPath = describeArc(center, center, arcRadius, 0, Math.min(135, angle));
-      activeColor = arcColor;
     } else if (value < -0.05) {
       activeArcPath = describeArc(center, center, arcRadius, Math.max(-135, angle), 0);
-      activeColor = '#38BDF8';
     }
   } else {
     // Unipolar from -135° up to current angle
@@ -401,7 +489,7 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
                   touchAction: 'none',
                 } as any),
             ]}
-            {...panResponder.panHandlers}
+            {...(Platform.OS === 'web' ? {} : panResponder.panHandlers)}
             // @ts-ignore
             onPointerDown={Platform.OS === 'web' ? handlePointerDownWeb : undefined}
             // @ts-ignore
@@ -418,9 +506,7 @@ export const RotaryKnob: React.FC<RotaryKnobProps> = ({
                 style={[
                   styles.rotaryNeedle,
                   isBalance
-                    ? { backgroundColor: value < -0.05 ? '#38BDF8' : value > 0.05 ? '#10B981' : '#FFFFFF' }
-                    : isBipolar && value < 0
-                    ? { backgroundColor: '#38BDF8' }
+                    ? { backgroundColor: Math.abs(value) < 0.05 ? '#22C55E' : activeColor }
                     : { backgroundColor: activeColor || '#22C55E' },
                 ]}
               />
@@ -545,12 +631,22 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
   // Web Mouse Drag & Direct Click support
   const handlePointerDownWeb = (e: any) => {
     if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+    e.preventDefault?.();
+    playerManager.resumeAudioContext().catch(() => {});
     const startY = e.clientY;
     const initialVal = valRef.current;
     let didMove = false;
 
+    const target = e.currentTarget as HTMLElement | null;
+    const pointerId = e.pointerId;
+    if (target?.setPointerCapture && pointerId !== undefined) {
+      try {
+        target.setPointerCapture(pointerId);
+      } catch {}
+    }
+
     // Direct click jump to tapped position
-    const rect = (e.currentTarget as HTMLElement)?.getBoundingClientRect();
+    const rect = target?.getBoundingClientRect();
     if (rect) {
       const clickY = e.clientY - rect.top;
       const ratio = Math.max(0, Math.min(1, 1 - clickY / rect.height));
@@ -573,6 +669,11 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
     const onPointerUp = () => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
+      if (target?.releasePointerCapture && pointerId !== undefined) {
+        try {
+          target.releasePointerCapture(pointerId);
+        } catch {}
+      }
     };
 
     window.addEventListener('pointermove', onPointerMove);
@@ -605,6 +706,8 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
     ? `${thumbPercent - centerPercent}%`
     : '0%';
 
+  const currentColor = getUnifiedGainColor(value, min, max);
+
   return (
     <View
       style={[
@@ -623,7 +726,7 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
       onPointerDown={Platform.OS === 'web' ? handlePointerDownWeb : undefined}
       // @ts-ignore
       onDoubleClick={Platform.OS === 'web' ? resetToZero : undefined}
-      {...panResponder.panHandlers}
+      {...(Platform.OS === 'web' ? {} : panResponder.panHandlers)}
     >
       {/* Background vertical center line */}
       <View style={styles.faderCenterLine} />
@@ -637,9 +740,17 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
       ))}
 
       {/* Center 0 dB Reference Tick Line */}
-      <View style={[styles.centerZeroTick, { top: `${centerPercent}%` }]} />
+      <View
+        style={[
+          styles.centerZeroTick,
+          {
+            top: `${centerPercent}%`,
+            backgroundColor: value === 0 ? '#94A3B8' : '#475569',
+          },
+        ]}
+      />
 
-      {/* Active Glowing Bar from 0 dB center to thumb (Neon Green when >0, Cyan when <0) */}
+      {/* Active Glowing Bar from 0 dB center to thumb with unified gradient color */}
       {(isPositive || isNegative) && (
         <View
           style={[
@@ -647,8 +758,8 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
             {
               top: barTop as any,
               height: barHeight as any,
-              backgroundColor: isPositive ? '#22C55E' : '#38BDF8',
-              shadowColor: isPositive ? '#22C55E' : '#38BDF8',
+              backgroundColor: '#FFFFFF',
+              shadowColor: '#FFFFFF',
             },
           ]}
         />
@@ -660,18 +771,15 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
           styles.faderThumb,
           {
             top: `${thumbPercent}%`,
-            borderColor: isPositive ? '#22C55E' : isNegative ? '#38BDF8' : '#334155',
+            borderColor: value === 0 ? '#94A3B8' : '#FFFFFF',
+            shadowColor: '#FFFFFF',
           },
         ]}
       >
         <View
           style={[
             styles.faderIndicatorLine,
-            isPositive
-              ? { backgroundColor: '#22C55E' }
-              : isNegative
-              ? { backgroundColor: '#38BDF8' }
-              : { backgroundColor: '#FFFFFF' },
+            { backgroundColor: value === 0 ? '#94A3B8' : '#FFFFFF' },
           ]}
         />
       </View>
@@ -681,6 +789,7 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
 
 export const EqualizerView: React.FC<EqualizerViewProps> = ({
   dsp,
+  systemVolume = null,
   onUpdateDSP,
   onOpenPresets,
   customPresets = [],
@@ -688,18 +797,20 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
   onDeleteCustomPreset,
 }) => {
   const { height: screenHeight, width: screenWidth } = useWindowDimensions();
+  // Marge système mesurée (encoche / barre d'état). Remplace
+  // `StatusBar.currentHeight` — voir src/theme/insets.ts.
+  const insets = useScreenInsets();
 
   const isShortScreen = screenHeight < 720;
   const isExtraShort = screenHeight < 640;
 
   const [activeTab, setActiveTab] = React.useState<'eq' | 'knobs' | 'fx'>('eq');
-  const [toneEnabled, setToneEnabled] = React.useState<boolean>(true);
-  const [limitEnabled, setLimitEnabled] = React.useState<boolean>(false);
 
-  // FX tab states
-  const [reverbEnabled, setReverbEnabled] = React.useState<boolean>(false);
-  const [reverbRoom, setReverbRoom] = React.useState<number>(40);
-  const [reverbDamp, setReverbDamp] = React.useState<number>(50);
+  // Ni la réverbération, ni TONE, ni LIMIT n'ont d'état local : leurs six champs
+  // vivent dans `DSPState`, donc dans le préréglage persisté et dans le pont
+  // natif. Avant, `reverbEnabled` / `reverbRoom` / `reverbDamp` et les deux
+  // pastilles étaient cinq `useState` que rien ne lisait — les six contrôles
+  // étaient manœuvrables sans produire le moindre son.
 
   // Save Preset Modal states
   const [isSaveModalVisible, setIsSaveModalVisible] = React.useState<boolean>(false);
@@ -719,12 +830,35 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 
   const handleToggleTone = () => {
     triggerHaptic();
-    setToneEnabled(!toneEnabled);
+    onUpdateDSP({ ...dsp, toneEnabled: !dsp.toneEnabled });
   };
 
   const handleToggleLimit = () => {
     triggerHaptic();
-    setLimitEnabled(!limitEnabled);
+    onUpdateDSP({ ...dsp, limitEnabled: !dsp.limitEnabled });
+  };
+
+  const handleToggleReverb = () => {
+    triggerHaptic();
+    onUpdateDSP({ ...dsp, reverbEnabled: !dsp.reverbEnabled });
+  };
+
+  /**
+   * Écrit un des trois knobs de réverbération dans `DSPState`.
+   *
+   * Un seul point d'écriture : `onUpdateDSP` remonte au `playerManager`, qui
+   * applique l'état aux DEUX moteurs (Web Audio et natif). C'est ce qui garantit
+   * qu'une même valeur ne peut pas diverger entre plateformes.
+   */
+  const handleSetReverb = (
+    field: 'roomSize' | 'damping' | 'reverbMix',
+    value: number
+  ) => {
+    onUpdateDSP({
+      ...dsp,
+      [field]: Math.max(0, Math.min(100, value)),
+      reverbEnabled: true,
+    });
   };
 
   const handleResetEQ = () => {
@@ -733,8 +867,8 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
     onUpdateDSP({
       ...dsp,
       presetId: 'flat',
-      bass: 0,
-      treble: 0,
+      bass: dsp.bass,
+      treble: dsp.treble,
       preamp: 0,
       bands: [...flat.bands],
     });
@@ -746,6 +880,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
       ...dsp,
       balance: 0.0,
       stereoExpansion: 0,
+      crossfeed: 0,
       tempo: 1.0,
       mono: false,
       tempoEnabled: false,
@@ -850,11 +985,11 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
   const effectiveBands = useMemo(() => {
     const bass = dsp.bass ?? 0;
     const treble = dsp.treble ?? 0;
-    const bassWeights = [1.0, 0.8, 0.5, 0.25];
-    const trebleWeights: { [idx: number]: number } = { 6: 0.25, 7: 0.5, 8: 0.8, 9: 1.0 };
+    const bassWeights = BASS_WEIGHTS;
+    const trebleWeights = TREBLE_WEIGHTS;
     return dsp.bands.map((band, idx) => {
       let g = band ?? 0;
-      if (idx < 4) g += bass * bassWeights[idx];
+      if (idx < 4) g += bass * (bassWeights[idx] ?? 0);
       else if (idx >= 6) g += treble * (trebleWeights[idx] ?? 0);
       return Math.max(EQ_GAIN_MIN, Math.min(EQ_GAIN_MAX, g));
     });
@@ -924,7 +1059,12 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
     : 'PRESET';
 
   return (
-    <View style={styles.container}>
+    <View
+      style={[
+        styles.container,
+        { paddingTop: Platform.OS === 'android' ? insetPadding(insets, 'top', 4) : 2 },
+      ]}
+    >
       {/* Top 3 Tab Buttons: Equalizer, Knobs, Speaker/FX */}
       <View style={styles.topTabBar}>
         <TouchableOpacity
@@ -994,11 +1134,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
               <Text
                 style={[
                   styles.faderGainLabel,
-                  dsp.preamp > 0
-                    ? styles.gainPositive
-                    : dsp.preamp < 0
-                    ? styles.gainNegative
-                    : styles.gainZero,
+                  { color: (dsp.preamp ?? 0) === 0 ? '#94A3B8' : '#FFFFFF' },
                 ]}
               >
                 {((dsp.preamp ?? 0) > 0
@@ -1034,11 +1170,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     <Text
                       style={[
                         styles.faderGainLabel,
-                        gain > 0
-                          ? styles.gainPositive
-                          : gain < 0
-                          ? styles.gainNegative
-                          : styles.gainZero,
+                        { color: gain === 0 ? '#94A3B8' : '#FFFFFF' },
                       ]}
                     >
                       {gain > 0 ? `+${gain.toFixed(1)}` : gain.toFixed(1)}
@@ -1062,14 +1194,25 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     spectrumHeight * 0.5 + gain * 1.2
                   )
                 );
+                const bandColor = getUnifiedGainColor(gain, EQ_GAIN_MIN, EQ_GAIN_MAX);
                 return (
-                  <View key={i} style={[styles.spectrumBar, { height: barH }]} />
+                  <View
+                    key={i}
+                    style={[
+                      styles.spectrumBar,
+                      {
+                        height: barH,
+                        backgroundColor: '#FFFFFF',
+                        opacity: gain === 0 ? 0.25 : 0.85,
+                      },
+                    ]}
+                  />
                 );
               })}
             </View>
 
             {curveSvgPath ? (
-              <View style={StyleSheet.absoluteFill} pointerEvents="none">
+              <View style={[StyleSheet.absoluteFill, { pointerEvents: 'none' }]}>
                 <Svg
                   width="100%"
                   height="100%"
@@ -1118,13 +1261,13 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 
               <TouchableOpacity
                 onPress={handleToggleTone}
-                style={[styles.leftPillBtn, toneEnabled && styles.leftPillBtnActive]}
+                style={[styles.leftPillBtn, dsp.toneEnabled && styles.leftPillBtnActive]}
                 activeOpacity={0.7}
               >
                 <Text
                   style={[
                     styles.leftPillText,
-                    toneEnabled && styles.leftPillTextActive,
+                    dsp.toneEnabled && styles.leftPillTextActive,
                   ]}
                 >
                   TONE
@@ -1135,14 +1278,14 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                 onPress={handleToggleLimit}
                 style={[
                   styles.leftPillBtn,
-                  limitEnabled && styles.leftPillBtnActive,
+                  dsp.limitEnabled && styles.leftPillBtnActive,
                 ]}
                 activeOpacity={0.7}
               >
                 <Text
                   style={[
                     styles.leftPillText,
-                    limitEnabled && styles.leftPillTextActive,
+                    dsp.limitEnabled && styles.leftPillTextActive,
                   ]}
                 >
                   LIMIT
@@ -1189,7 +1332,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 
               {/* Bass & Treble Knobs: Independent Tone Boost on top of preset */}
               <View style={styles.knobsRow}>
-                {/* Bass Knob — half circle, 0% to 100% (+12 dB) */}
+                {/* Bass Knob — half circle with unified gradient */}
                 <View style={styles.knobWithStackedTextRow}>
                   <TouchableOpacity
                     onPress={() => handleBassPercentChange(0)}
@@ -1200,12 +1343,19 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     <Text
                       style={[
                         styles.knobSidePercent,
-                        { color: bassPercent > 0 ? '#22C55E' : '#64748B' },
+                        { color: '#FFFFFF' },
                       ]}
                     >
                       {bassPercent}%
                     </Text>
-                    <Text style={styles.knobSideDb}>{bassDb.toFixed(1)} dB</Text>
+                    <Text
+                      style={[
+                        styles.knobSideDb,
+                        { color: '#94A3B8' },
+                      ]}
+                    >
+                      {bassDb.toFixed(1)} dB
+                    </Text>
                   </TouchableOpacity>
                   <RotaryKnob
                     value={bassPercent}
@@ -1216,12 +1366,12 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     defaultValue={0}
                     isSemiCircle
                     topIndicator
-                    arcColor="#22C55E"
+                    arcColor="#FFFFFF"
                     onChange={handleBassPercentChange}
                   />
                 </View>
 
-                {/* Treble Knob — half circle, 0% to 100% (+12 dB) */}
+                {/* Treble Knob — half circle with unified gradient */}
                 <View style={styles.knobWithStackedTextRow}>
                   <TouchableOpacity
                     onPress={() => handleTreblePercentChange(0)}
@@ -1232,12 +1382,19 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     <Text
                       style={[
                         styles.knobSidePercent,
-                        { color: treblePercent > 0 ? '#38BDF8' : '#64748B' },
+                        { color: '#FFFFFF' },
                       ]}
                     >
                       {treblePercent}%
                     </Text>
-                    <Text style={styles.knobSideDb}>{trebleDb.toFixed(1)} dB</Text>
+                    <Text
+                      style={[
+                        styles.knobSideDb,
+                        { color: '#94A3B8' },
+                      ]}
+                    >
+                      {trebleDb.toFixed(1)} dB
+                    </Text>
                   </TouchableOpacity>
                   <RotaryKnob
                     value={treblePercent}
@@ -1248,7 +1405,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     defaultValue={0}
                     isSemiCircle
                     topIndicator
-                    arcColor="#38BDF8"
+                    arcColor="#FFFFFF"
                     onChange={handleTreblePercentChange}
                   />
                 </View>
@@ -1263,7 +1420,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
         <View style={styles.tab2Body}>
           {/* Row 1: Balance (Left) & Stereo Expand (Right) with rich colors */}
           <View style={styles.tab2TopRow}>
-            {/* Balance Knob with colored L (#38BDF8) & R (#10B981) */}
+            {/* Balance Knob with unified dynamic gradient */}
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
                 value={dsp.balance ?? 0}
@@ -1272,9 +1429,9 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                 step={0.05}
                 size={knobSizeTab2Top}
                 leftSubLabel="L"
-                leftSubColor="#38BDF8"
+                leftSubColor={getUnifiedBalanceColor(-1)}
                 rightSubLabel="R"
-                rightSubColor="#10B981"
+                rightSubColor={getUnifiedBalanceColor(1)}
                 topIndicator
                 defaultValue={0}
                 isBalance
@@ -1284,18 +1441,14 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
               <Text
                 style={[
                   styles.tab2KnobValue,
-                  dsp.balance < -0.05
-                    ? { color: '#38BDF8' }
-                    : dsp.balance > 0.05
-                    ? { color: '#10B981' }
-                    : { color: '#94A3B8' },
+                  { color: getUnifiedBalanceColor(dsp.balance ?? 0) },
                 ]}
               >
                 {formatBalance(dsp.balance ?? 0)}
               </Text>
             </View>
 
-            {/* Stereo Expand Knob (Neon Purple) */}
+            {/* Stereo Expand Knob */}
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
                 value={dsp.stereoExpansion ?? 0}
@@ -1305,12 +1458,47 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                 size={knobSizeTab2Top}
                 topIndicator
                 defaultValue={0}
-                arcColor="#A855F7"
+                arcColor={getUnifiedPercentColor(dsp.stereoExpansion ?? 0)}
                 onChange={(val) => onUpdateDSP({ ...dsp, stereoExpansion: val })}
               />
               <Text style={styles.tab2KnobTitle}>Stereo Expand</Text>
-              <Text style={[styles.tab2KnobValue, { color: '#C084FC' }]}>
+              <Text
+                style={[
+                  styles.tab2KnobValue,
+                  { color: getUnifiedPercentColor(dsp.stereoExpansion ?? 0) },
+                ]}
+              >
                 {Math.round(dsp.stereoExpansion ?? 0)}%
+              </Text>
+            </View>
+
+            {/*
+              Crossfeed : mélange croisé L→R / R→L, le geste qui rend l'écoute
+              casque_support naturel. Placé en face de Stereo Expand parce que
+              les deux settings s'annulent partiellement : le moteur Native réduit
+              le crossfeed quand la largeur monte (`1 - width/100`), donc les deux
+              knobs se répondent au lieu de se contredire.
+            */}
+            <View style={styles.tab2KnobItem}>
+              <RotaryKnob
+                value={dsp.crossfeed ?? 0}
+                min={0}
+                max={100}
+                step={5}
+                size={knobSizeTab2Top}
+                topIndicator
+                defaultValue={0}
+                arcColor={getUnifiedPercentColor(dsp.crossfeed ?? 0)}
+                onChange={(val) => onUpdateDSP({ ...dsp, crossfeed: val })}
+              />
+              <Text style={styles.tab2KnobTitle}>Crossfeed</Text>
+              <Text
+                style={[
+                  styles.tab2KnobValue,
+                  { color: getUnifiedPercentColor(dsp.crossfeed ?? 0) },
+                ]}
+              >
+                {Math.round(dsp.crossfeed ?? 0)}%
               </Text>
             </View>
           </View>
@@ -1328,14 +1516,22 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
               ]}
               activeOpacity={0.7}
             >
-              <Text
-                style={[
-                  styles.tempoPillText,
-                  dsp.tempoEnabled && styles.tempoPillTextActive,
-                ]}
-              >
-                TEMPO
-              </Text>
+              <View style={styles.btnWithDotRow}>
+                <View
+                  style={[
+                    styles.indicatorDot,
+                    { backgroundColor: dsp.tempoEnabled ? '#FFFFFF' : '#475569' },
+                  ]}
+                />
+                <Text
+                  style={[
+                    styles.tempoPillText,
+                    dsp.tempoEnabled && styles.tempoPillTextActive,
+                  ]}
+                >
+                  {dsp.tempoEnabled ? 'TEMPO • ON' : 'TEMPO • OFF'}
+                </Text>
+              </View>
             </TouchableOpacity>
 
             <View style={styles.centerTempoKnobWrapper}>
@@ -1346,23 +1542,26 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                 step={0.05}
                 size={knobSizeTab2Center}
                 leftSubLabel="0.5x"
-                leftSubColor="#F59E0B"
+                leftSubColor="#94A3B8"
                 rightSubLabel="2x"
-                rightSubColor="#F59E0B"
+                rightSubColor="#94A3B8"
                 topIndicator
                 defaultValue={1.0}
                 centerValue={1.0}
-                arcColor="#F59E0B"
-                onChange={(val) => onUpdateDSP({ ...dsp, tempo: val })}
+                arcColor="#FFFFFF"
+                onChange={(val) =>
+                  onUpdateDSP({
+                    ...dsp,
+                    tempo: val,
+                    tempoEnabled: val !== 1.0 ? true : dsp.tempoEnabled,
+                  })
+                }
               />
               <Text
                 style={[
                   styles.tab2KnobValue,
                   {
-                    color:
-                      Math.abs((dsp.tempo ?? 1.0) - 1.0) < 0.025
-                        ? '#FBBF24'
-                        : '#F59E0B',
+                    color: '#FFFFFF',
                   },
                 ]}
               >
@@ -1383,11 +1582,19 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
               style={[styles.monoPillBtn, dsp.mono && styles.monoPillBtnActive]}
               activeOpacity={0.7}
             >
-              <Text
-                style={[styles.monoPillText, dsp.mono && styles.monoPillTextActive]}
-              >
-                MONO
-              </Text>
+              <View style={styles.btnWithDotRow}>
+                <View
+                  style={[
+                    styles.indicatorDot,
+                    { backgroundColor: dsp.mono ? '#22C55E' : '#475569' },
+                  ]}
+                />
+                <Text
+                  style={[styles.monoPillText, dsp.mono && styles.monoPillTextActive]}
+                >
+                  {dsp.mono ? 'MONO • ON' : 'MONO • OFF'}
+                </Text>
+              </View>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1401,21 +1608,48 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 
           {/* Row 4: Large Centered Volume Rotary Knob (Radiant Emerald) */}
           <View style={styles.tab2VolumeArea}>
+            {/* `systemVolume` non `null` = l'OS expose son volume (iOS natif) : le
+                knob en est le miroir, et il devient lecture seule car
+                `playerManager.setVolume` force alors le gain unitaire — écrire
+                `dsp.volume` n'aurait aucun effet audible.
+
+                `systemVolume === null` = web et Expo Go, où AUCUNE API ne lit le
+                volume de l'appareil. Le knob reste alors une attestation
+                app-locale, pleinement interactive : c'est le seul moyen de
+                régler le volume dans l'app, et le neutraliser le laisserait mort
+                sans raison. À 100 % il ne atténue rien, donc les boutons de
+                l'appareil restent masters — d'où l'indication ci-dessous. */}
             <RotaryKnob
-              value={dsp.volume ?? 75}
+              value={dsp.volume ?? systemVolume ?? 100}
               min={0}
               max={100}
               step={1}
               size={knobSizeVolume}
               topIndicator
-              defaultValue={75}
-              arcColor="#10B981"
+              defaultValue={100}
+              readOnly={false}
+              arcColor={getUnifiedPercentColor(dsp.volume ?? systemVolume ?? 100)}
               onChange={(val) => onUpdateDSP({ ...dsp, volume: val })}
             />
-            <Text style={styles.tab2KnobTitle}>Volume</Text>
-            <Text style={[styles.tab2KnobValue, { color: '#34D399', fontSize: 14 }]}>
-              {Math.round(dsp.volume ?? 75)}%
+            <Text style={styles.tab2KnobTitle}>
+              {systemVolume !== null ? 'Volume appareil' : 'Volume'}
             </Text>
+            <Text
+              style={[
+                styles.tab2KnobValue,
+                {
+                  color: getUnifiedPercentColor(dsp.volume ?? systemVolume ?? 100),
+                  fontSize: 14,
+                },
+              ]}
+            >
+              {Math.round(dsp.volume ?? systemVolume ?? 100)}%
+            </Text>
+            {systemVolume === null && (
+              <Text style={styles.tab2KnobHint}>
+                100 % = transparent. Les boutons de l'appareil restent masters.
+              </Text>
+            )}
           </View>
         </View>
       )}
@@ -1425,59 +1659,111 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
         <View style={styles.tab3Body}>
           <View style={styles.fxToggleRow}>
             <TouchableOpacity
-              onPress={() => {
-                triggerHaptic();
-                setReverbEnabled(!reverbEnabled);
-              }}
+              onPress={handleToggleReverb}
               style={[
                 styles.fxPillToggle,
-                reverbEnabled && styles.fxPillToggleActive,
+                dsp.reverbEnabled && styles.fxPillToggleActive,
               ]}
               activeOpacity={0.7}
             >
-              <Text
-                style={[
-                  styles.fxPillText,
-                  reverbEnabled && styles.fxPillTextActive,
-                ]}
-              >
-                REVERB & SPATIAL FX
-              </Text>
+              <View style={styles.fxPillInner}>
+                <Ionicons
+                  name={dsp.reverbEnabled ? 'sparkles' : 'sparkles-outline'}
+                  size={18}
+                  color={dsp.reverbEnabled ? '#06B6D4' : '#64748B'}
+                />
+                <Text
+                  style={[
+                    styles.fxPillText,
+                    dsp.reverbEnabled && styles.fxPillTextActive,
+                  ]}
+                >
+                  {dsp.reverbEnabled
+                    ? 'RÉVERBÉRATION SPATIALE • ACTIVE'
+                    : 'RÉVERBÉRATION SPATIALE • DÉSACTIVÉE'}
+                </Text>
+                <View
+                  style={[
+                    styles.fxPowerDot,
+                    dsp.reverbEnabled && styles.fxPowerDotActive,
+                  ]}
+                />
+              </View>
             </TouchableOpacity>
           </View>
 
           <View style={styles.tab2TopRow}>
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
-                value={reverbRoom}
+                value={dsp.roomSize}
                 min={0}
                 max={100}
                 step={5}
                 size={knobSizeTab2Top}
                 defaultValue={40}
                 arcColor="#06B6D4"
-                onChange={(val) => setReverbRoom(val)}
+                onChange={(val) => handleSetReverb('roomSize', val)}
               />
               <Text style={styles.tab2KnobTitle}>Room Size</Text>
               <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
-                {reverbRoom}%
+                {dsp.roomSize}%
               </Text>
             </View>
 
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
-                value={reverbDamp}
+                value={dsp.damping}
                 min={0}
                 max={100}
                 step={5}
                 size={knobSizeTab2Top}
                 defaultValue={50}
                 arcColor="#06B6D4"
-                onChange={(val) => setReverbDamp(val)}
+                onChange={(val) => handleSetReverb('damping', val)}
               />
               <Text style={styles.tab2KnobTitle}>Damping</Text>
               <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
-                {reverbDamp}%
+                {dsp.damping}%
+              </Text>
+            </View>
+          </View>
+
+          {/*
+            Le dosage manquait. Il est le SEUL des trois knobs qui change le
+            niveau — les deux autres ne modifient que la forme de la queue — et
+            son absence rendait l'étage inutilisable : on pouvait régler la pièce
+            et son amortissement sans jamais choisir à quel point ils s'entendent
+            avec le morceau.
+          */}
+          <View style={styles.tab2TopRow}>
+            <View style={styles.tab2KnobItem}>
+              <RotaryKnob
+                value={dsp.reverbMix}
+                min={0}
+                max={100}
+                step={5}
+                size={knobSizeTab2Top}
+                defaultValue={25}
+                arcColor="#06B6D4"
+                onChange={(val) => handleSetReverb('reverbMix', val)}
+              />
+              <Text style={styles.tab2KnobTitle}>Reverb Mix</Text>
+              <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
+                {dsp.reverbMix}%
+              </Text>
+            </View>
+
+            {/*
+              La décroissance affichée est calculée ici, et non affichée en dur.
+              C'est la seule information qui dit ce que fait réellement le knob
+              « Room Size » : la taille perçue d'une pièce, c'est la longueur de
+              sa queue, pas son retard brut. `-1/ln(0.52) ≈ 1.53` vient de la
+              normalisation des gains de boucle (voir `presets.ts`).
+            */}
+            <View style={styles.tab2KnobItem}>
+              <Text style={styles.tab2KnobTitle}>Decay</Text>
+              <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
+                {Math.round(reverbDecayMs(dsp.roomSize))} ms
               </Text>
             </View>
           </View>
@@ -1600,7 +1886,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
-    paddingTop: 2,
     justifyContent: 'space-between',
   },
   topTabBar: {
@@ -1808,8 +2093,12 @@ const styles = StyleSheet.create({
     borderColor: '#1C2026',
   },
   leftPillBtnActive: {
-    borderColor: '#4A5568',
-    backgroundColor: '#1C2128',
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    shadowColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.35,
+    shadowRadius: 5,
   },
   leftPillText: {
     color: '#68737D',
@@ -1986,6 +2275,26 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginTop: 2,
   },
+  // Précis important quand le volume système est illisible (web, Android) : sans
+  // lui, le knob laisse croire à une synchronisation avec l'appareil qui n'existe pas.
+  tab2KnobHint: {
+    fontSize: 10,
+    color: '#6B7280',
+    textAlign: 'center',
+    marginTop: 4,
+    paddingHorizontal: 12,
+  },
+  btnWithDotRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  indicatorDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 6,
+  },
   tab2TempoRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1995,14 +2304,18 @@ const styles = StyleSheet.create({
   tempoPillBtn: {
     backgroundColor: '#121418',
     paddingVertical: 8,
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     borderRadius: 16,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#1C2026',
   },
   tempoPillBtnActive: {
-    borderColor: '#F59E0B',
-    backgroundColor: '#261C0E',
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    shadowColor: '#FFFFFF',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
   },
   tempoPillText: {
     color: '#68737D',
@@ -2011,7 +2324,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   tempoPillTextActive: {
-    color: '#FBBF24',
+    color: '#FFFFFF',
   },
   centerTempoKnobWrapper: {
     alignItems: 'center',
@@ -2025,14 +2338,18 @@ const styles = StyleSheet.create({
   monoPillBtn: {
     backgroundColor: '#121418',
     paddingVertical: 7,
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     borderRadius: 15,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#1C2026',
   },
   monoPillBtnActive: {
-    borderColor: '#FFFFFF',
-    backgroundColor: '#1E232B',
+    borderColor: '#22C55E',
+    backgroundColor: '#0D2416',
+    shadowColor: '#22C55E',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
   },
   monoPillText: {
     color: '#8A9AA8',
@@ -2041,7 +2358,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
   },
   monoPillTextActive: {
-    color: '#FFFFFF',
+    color: '#4ADE80',
   },
   tab2VolumeArea: {
     alignItems: 'center',
@@ -2062,14 +2379,23 @@ const styles = StyleSheet.create({
   fxPillToggle: {
     backgroundColor: '#121418',
     paddingVertical: 10,
-    paddingHorizontal: 24,
+    paddingHorizontal: 22,
     borderRadius: 20,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: '#1C2026',
   },
   fxPillToggleActive: {
     borderColor: '#06B6D4',
-    backgroundColor: '#0E2229',
+    backgroundColor: '#0A202A',
+    shadowColor: '#06B6D4',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.45,
+    shadowRadius: 8,
+  },
+  fxPillInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   fxPillText: {
     color: '#68737D',
@@ -2079,6 +2405,20 @@ const styles = StyleSheet.create({
   },
   fxPillTextActive: {
     color: '#38BDF8',
+  },
+  fxPowerDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#334155',
+    marginLeft: 8,
+  },
+  fxPowerDotActive: {
+    backgroundColor: '#06B6D4',
+    shadowColor: '#06B6D4',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
   },
 
   // SAVE PRESET MODAL STYLES

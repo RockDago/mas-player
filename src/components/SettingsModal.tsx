@@ -10,16 +10,18 @@ import {
   Platform,
   TextInput,
   Switch,
-  Alert,
   Image,
+  ActivityIndicator,
 } from 'react-native';
-import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
+import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
+import { useScreenInsets, insetPadding } from '../theme/insets';
 import * as Haptics from 'expo-haptics';
 
 import { Track, DSPState } from '../types/audio';
 import { AppSettings, DEFAULT_APP_SETTINGS } from '../services/storageService';
 import { formatTime } from '../services/audioService';
-import { APP_VERSION } from '../constants/version';
+import { APP_VERSION, APP_NAME, APP_AUTHOR, APP_COPYRIGHT } from '../constants/version';
+import { getTranslation, LANGUAGES, LanguageCode } from '../i18n/translations';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -36,8 +38,8 @@ interface SettingsModalProps {
 
 interface SettingCategory {
   id: string;
-  title: string;
-  subtitle: string;
+  titleKey: string;
+  subtitleKey: string;
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
   iconColor: string;
 }
@@ -45,73 +47,66 @@ interface SettingCategory {
 const SETTING_ITEMS: SettingCategory[] = [
   {
     id: 'resume_playback',
-    title: 'Mémorisation & Reprise',
-    subtitle: 'Dernière musique, position de lecture, réglages persistants',
+    titleKey: 'cat_resume_title',
+    subtitleKey: 'cat_resume_sub',
     icon: 'history',
     iconColor: '#38BDF8',
   },
   {
     id: 'look_and_feel',
-    title: 'Look and Feel',
-    subtitle: 'Skin, player interface, language, notifications',
+    titleKey: 'cat_look_title',
+    subtitleKey: 'cat_look_sub',
     icon: 'layers-outline',
     iconColor: '#93A4BA',
   },
   {
     id: 'audio',
-    title: 'Audio',
-    subtitle: 'Crossfade, replay gain, volume, output',
+    titleKey: 'cat_audio_title',
+    subtitleKey: 'cat_audio_sub',
     icon: 'volume-high',
     iconColor: '#E27690',
   },
   {
     id: 'visualization',
-    title: 'Visualization',
-    subtitle: 'Faded controls opacity, preset duration',
+    titleKey: 'cat_visu_title',
+    subtitleKey: 'cat_visu_sub',
     icon: 'chart-bell-curve-cumulative',
     iconColor: '#C084FC',
   },
   {
     id: 'background',
-    title: 'Background',
-    subtitle: 'Blur, details, intensity, saturation',
+    titleKey: 'cat_bg_title',
+    subtitleKey: 'cat_bg_sub',
     icon: 'cellphone',
     iconColor: '#38B2AC',
   },
   {
     id: 'album_art',
-    title: 'Album Art',
-    subtitle: 'Download, quality, cache cleanup',
+    titleKey: 'cat_art_title',
+    subtitleKey: 'cat_art_sub',
     icon: 'image-outline',
     iconColor: '#4ADE80',
   },
   {
     id: 'library',
-    title: 'Library',
-    subtitle: 'Rescan, music folders, list, queue options',
+    titleKey: 'cat_lib_title',
+    subtitleKey: 'cat_lib_sub',
     icon: 'folder-music',
     iconColor: '#60A5FA',
   },
   {
     id: 'headset_bluetooth',
-    title: 'Headset/Bluetooth',
-    subtitle: 'Pause/resume on connection, headset buttons',
+    titleKey: 'cat_headset_title',
+    subtitleKey: 'cat_headset_sub',
     icon: 'headphones',
     iconColor: '#CBD5E1',
   },
   {
     id: 'lock_screen',
-    title: 'Lock Screen',
-    subtitle: 'MAS Player lock screen options',
+    titleKey: 'cat_lock_title',
+    subtitleKey: 'cat_lock_sub',
     icon: 'lock-outline',
     iconColor: '#FB923C',
-  },
-  {
-    id: 'misc',
-    title: 'Misc',
-    subtitle: 'Scrobbling, Android Auto, other tweaks',
-    icon: 'dots-horizontal',
-    iconColor: '#38BDF8',
   },
 ];
 
@@ -127,29 +122,906 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   dsp,
   onClearSession,
 }) => {
+  // Marge système mesurée, lue par contexte : la modale est montée hors de
+  // l'écran et n'en hérite pas. Voir src/theme/insets.ts.
+  const insets = useScreenInsets();
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSearchActive, setIsSearchActive] = useState<boolean>(false);
   const [selectedSetting, setSelectedSetting] = useState<SettingCategory | null>(null);
   const [resetSuccess, setResetSuccess] = useState<boolean>(false);
   const [rescanSuccess, setRescanSuccess] = useState<boolean>(false);
+  const [rescanLoading, setRescanLoading] = useState<boolean>(false);
+  const [cacheCleanSuccess, setCacheCleanSuccess] = useState<boolean>(false);
 
-  const filteredItems = SETTING_ITEMS.filter(
-    (item) =>
-      item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      item.subtitle.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const lang: LanguageCode = (settings.language as LanguageCode) || 'fr';
+  const t = (key: string, fallback?: string): string => getTranslation(lang, key, fallback);
+
+  const filteredItems = SETTING_ITEMS.filter((item) => {
+    const title = t(item.titleKey);
+    const subtitle = t(item.subtitleKey);
+    return (
+      title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      subtitle.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  });
 
   const handleItemPress = (item: SettingCategory) => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
+    setSelectedSetting(item);
+  };
 
-    if (item.id === 'library') {
-      if (onRescanLibrary) onRescanLibrary();
+  const handleTriggerRescan = () => {
+    try {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {}
+    setRescanLoading(true);
+    if (onRescanLibrary) onRescanLibrary();
+    setTimeout(() => {
+      setRescanLoading(false);
       setRescanSuccess(true);
-      setTimeout(() => setRescanSuccess(false), 2500);
-    } else {
-      setSelectedSetting(item);
+      setTimeout(() => setRescanSuccess(false), 3000);
+    }, 800);
+  };
+
+  const handleCleanArtCache = () => {
+    try {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch {}
+    setCacheCleanSuccess(true);
+    setTimeout(() => setCacheCleanSuccess(false), 3000);
+  };
+
+  const renderCategoryContent = () => {
+    if (!selectedSetting) return null;
+
+    switch (selectedSetting.id) {
+      case 'resume_playback':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('rememberLastTrack')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('rememberLastTrackSub')}</Text>
+              </View>
+              <Switch
+                value={settings.rememberLastTrack}
+                onValueChange={(val) => onUpdateSettings?.({ rememberLastTrack: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('rememberPlaybackPos')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('rememberPlaybackPosSub')}</Text>
+              </View>
+              <Switch
+                value={settings.rememberPlaybackPosition}
+                onValueChange={(val) => onUpdateSettings?.({ rememberPlaybackPosition: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('autoPlayLaunch')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('autoPlayLaunchSub')}</Text>
+              </View>
+              <Switch
+                value={settings.autoPlayOnLaunch}
+                onValueChange={(val) => onUpdateSettings?.({ autoPlayOnLaunch: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('resumeOnCall')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('resumeOnCallSub')}</Text>
+              </View>
+              <Switch
+                value={settings.resumeOnHeadset}
+                onValueChange={(val) => onUpdateSettings?.({ resumeOnHeadset: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            {/* Carte d'état actuel */}
+            <View style={styles.statusCard}>
+              <Text style={styles.statusCardTitle}>{t('memoryStateTitle')}</Text>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('memoryTrack')}</Text>
+                <Text numberOfLines={1} style={styles.statusCardValue}>
+                  {currentTrack ? `${currentTrack.title} (${currentTrack.artist})` : t('none')}
+                </Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('memoryPosition')}</Text>
+                <Text style={styles.statusCardValue}>
+                  {formatTime(positionMillis / 1000)} / {formatTime(durationMillis / 1000)}
+                </Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('memoryEqualizer')}</Text>
+                <Text style={styles.statusCardValue}>
+                  Preset "{dsp?.presetId || 'Défaut'}" • Vol {dsp?.volume ?? 75}%
+                </Text>
+              </View>
+            </View>
+
+            {resetSuccess ? (
+              <View style={styles.resetSuccessBox}>
+                <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
+                <Text style={styles.resetSuccessText}>{t('resetSessionSuccess')}</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.resetSessionBtn}
+                onPress={() => {
+                  try {
+                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  } catch {}
+                  onClearSession?.();
+                  setResetSuccess(true);
+                  setTimeout(() => setResetSuccess(false), 2500);
+                }}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                <Text style={styles.resetSessionBtnText}>{t('resetSessionBtn')}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+
+      case 'look_and_feel':
+        return (
+          <View style={styles.subModalOptions}>
+            {/* SÉLECTEUR DE LANGUE (Fonctionnel et réactif) */}
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('languageSection')}</Text>
+              <View style={styles.chipRow}>
+                {LANGUAGES.map((l) => (
+                  <TouchableOpacity
+                    key={l.code}
+                    style={[
+                      styles.choiceChip,
+                      settings.language === l.code && styles.choiceChipActive,
+                    ]}
+                    onPress={() => {
+                      try {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                      } catch {}
+                      onUpdateSettings?.({ language: l.code });
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        settings.language === l.code && styles.choiceChipTextActive,
+                      ]}
+                    >
+                      {l.flag} {l.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('themeSection')}</Text>
+              <View style={styles.chipRow}>
+                {[
+                  { id: 'oled', label: t('themeOled') },
+                  { id: 'cyber', label: t('themeCyber') },
+                  { id: 'violet', label: t('themeViolet') },
+                  { id: 'carbon', label: t('themeCarbon') },
+                ].map((th) => (
+                  <TouchableOpacity
+                    key={th.id}
+                    style={[
+                      styles.choiceChip,
+                      settings.theme === th.id && styles.choiceChipActive,
+                    ]}
+                    onPress={() => onUpdateSettings?.({ theme: th.id as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        settings.theme === th.id && styles.choiceChipTextActive,
+                      ]}
+                    >
+                      {th.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('visualizerSection')}</Text>
+              <View style={styles.chipRow}>
+                {[
+                  { id: 'vinyl', label: t('visuVinyl') },
+                  { id: 'bars', label: t('visuBars') },
+                  { id: 'wave', label: t('visuWave') },
+                ].map((v) => (
+                  <TouchableOpacity
+                    key={v.id}
+                    style={[
+                      styles.choiceChip,
+                      settings.visualizerStyle === v.id && styles.choiceChipActive,
+                    ]}
+                    onPress={() => onUpdateSettings?.({ visualizerStyle: v.id as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        settings.visualizerStyle === v.id && styles.choiceChipTextActive,
+                      ]}
+                    >
+                      {v.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('fullScreenArt')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('fullScreenArtSub')}</Text>
+              </View>
+              <Switch
+                value={settings.showAudioDetails}
+                onValueChange={(val) => onUpdateSettings?.({ showAudioDetails: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('techSpecsBadge')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('techSpecsBadgeSub')}</Text>
+              </View>
+              <Switch
+                value={settings.showTrackDetails}
+                onValueChange={(val) => onUpdateSettings?.({ showTrackDetails: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('richNotifs')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('richNotifsSub')}</Text>
+              </View>
+              <Switch
+                value={settings.richNotifications}
+                onValueChange={(val) => onUpdateSettings?.({ richNotifications: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+          </View>
+        );
+
+      case 'audio':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('crossfadeTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('crossfadeSub')}</Text>
+              </View>
+              <Switch
+                value={settings.crossfade}
+                onValueChange={(val) => onUpdateSettings?.({ crossfade: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            {settings.crossfade && (
+              <View style={styles.optionSection}>
+                <Text style={styles.sectionLabel}>{t('crossfadeDurationSection')}</Text>
+                <View style={styles.chipRow}>
+                  {[1, 2, 4, 6].map((sec) => (
+                    <TouchableOpacity
+                      key={sec}
+                      style={[
+                        styles.choiceChip,
+                        settings.crossfadeDuration === sec && styles.choiceChipActive,
+                      ]}
+                      onPress={() => onUpdateSettings?.({ crossfadeDuration: sec })}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          settings.crossfadeDuration === sec && styles.choiceChipTextActive,
+                        ]}
+                      >
+                        {sec}s
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('replayGainTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('replayGainSub')}</Text>
+              </View>
+              <Switch
+                value={settings.replayGain}
+                onValueChange={(val) => onUpdateSettings?.({ replayGain: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            {settings.replayGain && (
+              <View style={styles.optionSection}>
+                <Text style={styles.sectionLabel}>{t('replayGainModeSection')}</Text>
+                <View style={styles.chipRow}>
+                  {[
+                    { id: 'track', label: t('replayTrack') },
+                    { id: 'album', label: t('replayAlbum') },
+                  ].map((m) => (
+                    <TouchableOpacity
+                      key={m.id}
+                      style={[
+                        styles.choiceChip,
+                        settings.replayGainMode === m.id && styles.choiceChipActive,
+                      ]}
+                      onPress={() => onUpdateSettings?.({ replayGainMode: m.id as any })}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          settings.replayGainMode === m.id && styles.choiceChipTextActive,
+                        ]}
+                      >
+                        {m.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('dvcTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('dvcSub')}</Text>
+              </View>
+              <Switch
+                value={settings.dvc32Bit}
+                onValueChange={(val) => onUpdateSettings?.({ dvc32Bit: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('hiResTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('hiResSub')}</Text>
+              </View>
+              <Switch
+                value={settings.hiResOutput}
+                onValueChange={(val) => onUpdateSettings?.({ hiResOutput: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('lowLatencyTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('lowLatencySub')}</Text>
+              </View>
+              <Switch
+                value={settings.ultraLowLatency}
+                onValueChange={(val) => onUpdateSettings?.({ ultraLowLatency: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.statusCard}>
+              <Text style={styles.statusCardTitle}>{t('engineTitle')}</Text>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('engineArch')}</Text>
+                <Text style={styles.statusCardValue}>{t('engineArchVal')}</Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('engineSampleRate')}</Text>
+                <Text style={styles.statusCardValue}>96.0 kHz / 32-bit Float</Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('engineDspState')}</Text>
+                <Text style={styles.statusCardValue}>{t('engineActive')}</Text>
+              </View>
+            </View>
+          </View>
+        );
+
+      case 'visualization':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('spectrumSection')}</Text>
+              <View style={styles.chipRow}>
+                {[
+                  { id: 'low', label: t('specLow') },
+                  { id: 'normal', label: t('specNormal') },
+                  { id: 'ultra', label: t('specUltra') },
+                ].map((s) => (
+                  <TouchableOpacity
+                    key={s.id}
+                    style={[
+                      styles.choiceChip,
+                      settings.spectrumReactive === s.id && styles.choiceChipActive,
+                    ]}
+                    onPress={() => onUpdateSettings?.({ spectrumReactive: s.id as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        settings.spectrumReactive === s.id && styles.choiceChipTextActive,
+                      ]}
+                    >
+                      {s.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('beatPulseTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('beatPulseSub')}</Text>
+              </View>
+              <Switch
+                value={settings.beatPulse}
+                onValueChange={(val) => onUpdateSettings?.({ beatPulse: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('autoFadeTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('autoFadeSub')}</Text>
+              </View>
+              <Switch
+                value={settings.autoFadeControls}
+                onValueChange={(val) => onUpdateSettings?.({ autoFadeControls: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            {settings.autoFadeControls && (
+              <View style={styles.optionSection}>
+                <Text style={styles.sectionLabel}>{t('opacitySection')}</Text>
+                <View style={styles.chipRow}>
+                  {[
+                    { val: 0.2, label: t('op20') },
+                    { val: 0.4, label: t('op40') },
+                    { val: 0.7, label: t('op70') },
+                  ].map((o) => (
+                    <TouchableOpacity
+                      key={o.val}
+                      style={[
+                        styles.choiceChip,
+                        settings.fadedOpacity === o.val && styles.choiceChipActive,
+                      ]}
+                      onPress={() => onUpdateSettings?.({ fadedOpacity: o.val })}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          settings.fadedOpacity === o.val && styles.choiceChipTextActive,
+                        ]}
+                      >
+                        {o.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+          </View>
+        );
+
+      case 'background':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('bgStyleSection')}</Text>
+              <View style={styles.chipRow}>
+                {[
+                  { id: 'blur', label: t('bgBlur') },
+                  { id: 'oled', label: t('bgOled') },
+                  { id: 'gradient', label: t('bgGradient') },
+                ].map((b) => (
+                  <TouchableOpacity
+                    key={b.id}
+                    style={[
+                      styles.choiceChip,
+                      settings.backgroundStyle === b.id && styles.choiceChipActive,
+                    ]}
+                    onPress={() => onUpdateSettings?.({ backgroundStyle: b.id as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        settings.backgroundStyle === b.id && styles.choiceChipTextActive,
+                      ]}
+                    >
+                      {b.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            {settings.backgroundStyle === 'blur' && (
+              <View style={styles.optionSection}>
+                <Text style={styles.sectionLabel}>{t('blurSection')}</Text>
+                <View style={styles.chipRow}>
+                  {[
+                    { id: 'low', label: t('blurLow') },
+                    { id: 'medium', label: t('blurMed') },
+                    { id: 'deep', label: t('blurDeep') },
+                  ].map((bi) => (
+                    <TouchableOpacity
+                      key={bi.id}
+                      style={[
+                        styles.choiceChip,
+                        settings.blurIntensity === bi.id && styles.choiceChipActive,
+                      ]}
+                      onPress={() => onUpdateSettings?.({ blurIntensity: bi.id as any })}
+                    >
+                      <Text
+                        style={[
+                          styles.choiceChipText,
+                          settings.blurIntensity === bi.id && styles.choiceChipTextActive,
+                        ]}
+                      >
+                        {bi.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('satTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('satSub')}</Text>
+              </View>
+              <Switch
+                value={settings.colorSaturation}
+                onValueChange={(val) => onUpdateSettings?.({ colorSaturation: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('particlesTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('particlesSub')}</Text>
+              </View>
+              <Switch
+                value={settings.ambientParticles}
+                onValueChange={(val) => onUpdateSettings?.({ ambientParticles: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+          </View>
+        );
+
+      case 'album_art':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('artAutoDl')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('artAutoDlSub')}</Text>
+              </View>
+              <Switch
+                value={settings.autoDownloadArt}
+                onValueChange={(val) => onUpdateSettings?.({ autoDownloadArt: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('artId3')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('artId3Sub')}</Text>
+              </View>
+              <Switch
+                value={settings.preferEmbeddedArt}
+                onValueChange={(val) => onUpdateSettings?.({ preferEmbeddedArt: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('artLossless')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('artLosslessSub')}</Text>
+              </View>
+              <Switch
+                value={settings.highQualityArt}
+                onValueChange={(val) => onUpdateSettings?.({ highQualityArt: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.statusCard}>
+              <Text style={styles.statusCardTitle}>{t('artCacheTitle')}</Text>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('artCachedCount')}</Text>
+                <Text style={styles.statusCardValue}>{t('artCachedVal')}</Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('artTargetRes')}</Text>
+                <Text style={styles.statusCardValue}>{t('artTargetResVal')}</Text>
+              </View>
+            </View>
+
+            {cacheCleanSuccess ? (
+              <View style={styles.resetSuccessBox}>
+                <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
+                <Text style={styles.resetSuccessText}>{t('artCleanSuccess')}</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.actionBtn}
+                onPress={handleCleanArtCache}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="trash-bin-outline" size={16} color="#38BDF8" />
+                <Text style={styles.actionBtnText}>{t('artCleanBtn')}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        );
+
+      case 'library':
+        return (
+          <View style={styles.subModalOptions}>
+            <TouchableOpacity
+              style={styles.primaryActionBtn}
+              onPress={handleTriggerRescan}
+              disabled={rescanLoading}
+              activeOpacity={0.8}
+            >
+              {rescanLoading ? (
+                <ActivityIndicator size="small" color="#000000" />
+              ) : (
+                <Ionicons name="refresh" size={18} color="#000000" />
+              )}
+              <Text style={styles.primaryActionBtnText}>
+                {rescanLoading ? t('libRescanning') : t('libRescanBtn')}
+              </Text>
+            </TouchableOpacity>
+
+            {rescanSuccess && (
+              <View style={styles.resetSuccessBox}>
+                <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
+                <Text style={styles.resetSuccessText}>{t('rescanSuccess')}</Text>
+              </View>
+            )}
+
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('libSortSection')}</Text>
+              <View style={styles.chipRow}>
+                {[
+                  { id: 'title', label: t('sortTitle') },
+                  { id: 'artist', label: t('sortArtist') },
+                  { id: 'album', label: t('sortAlbum') },
+                  { id: 'date', label: t('sortDate') },
+                ].map((s) => (
+                  <TouchableOpacity
+                    key={s.id}
+                    style={[
+                      styles.choiceChip,
+                      settings.librarySort === s.id && styles.choiceChipActive,
+                    ]}
+                    onPress={() => onUpdateSettings?.({ librarySort: s.id as any })}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        settings.librarySort === s.id && styles.choiceChipTextActive,
+                      ]}
+                    >
+                      {s.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('libIgnoreShort')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('libIgnoreShortSub')}</Text>
+              </View>
+              <Switch
+                value={settings.ignoreShortAudio}
+                onValueChange={(val) => onUpdateSettings?.({ ignoreShortAudio: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('libClearQueue')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('libClearQueueSub')}</Text>
+              </View>
+              <Switch
+                value={settings.clearQueueOnNewPlay}
+                onValueChange={(val) => onUpdateSettings?.({ clearQueueOnNewPlay: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.statusCard}>
+              <Text style={styles.statusCardTitle}>{t('libFoldersTitle')}</Text>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>Dossier :</Text>
+                <Text style={styles.statusCardValue}>{t('libFolderStorage')}</Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('libFormats')}</Text>
+                <Text style={styles.statusCardValue}>MP3, FLAC, WAV, AAC, M4A, OGG</Text>
+              </View>
+            </View>
+          </View>
+        );
+
+      case 'headset_bluetooth':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('hsPauseDisconnect')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('hsPauseDisconnectSub')}</Text>
+              </View>
+              <Switch
+                value={settings.pauseOnDisconnect}
+                onValueChange={(val) => onUpdateSettings?.({ pauseOnDisconnect: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('hsResumeConnect')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('hsResumeConnectSub')}</Text>
+              </View>
+              <Switch
+                value={settings.resumeOnConnect}
+                onValueChange={(val) => onUpdateSettings?.({ resumeOnConnect: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('hsButtons')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('hsButtonsSub')}</Text>
+              </View>
+              <Switch
+                value={settings.headsetButtons}
+                onValueChange={(val) => onUpdateSettings?.({ headsetButtons: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.statusCard}>
+              <Text style={styles.statusCardTitle}>{t('hsDeviceTitle')}</Text>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('hsActiveOutput')}</Text>
+                <Text style={styles.statusCardValue}>{t('hsActiveOutputVal')}</Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('hsProfile')}</Text>
+                <Text style={styles.statusCardValue}>{t('hsProfileVal')}</Text>
+              </View>
+            </View>
+          </View>
+        );
+
+      case 'lock_screen':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('lsControls')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('lsControlsSub')}</Text>
+              </View>
+              <Switch
+                value={settings.lockScreenControls}
+                onValueChange={(val) => onUpdateSettings?.({ lockScreenControls: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('lsArt')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('lsArtSub')}</Text>
+              </View>
+              <Switch
+                value={settings.lockScreenAlbumArt}
+                onValueChange={(val) => onUpdateSettings?.({ lockScreenAlbumArt: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('lsSeek')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('lsSeekSub')}</Text>
+              </View>
+              <Switch
+                value={settings.lockScreenSeekButtons}
+                onValueChange={(val) => onUpdateSettings?.({ lockScreenSeekButtons: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('lsWakeLock')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('lsWakeLockSub')}</Text>
+              </View>
+              <Switch
+                value={settings.keepScreenAwake}
+                onValueChange={(val) => onUpdateSettings?.({ keepScreenAwake: val })}
+                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
+          </View>
+        );
+
+      default:
+        return null;
     }
   };
 
@@ -161,8 +1033,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       onRequestClose={onClose}
     >
       <SafeAreaView style={styles.safeContainer}>
-        {/* Header matching Screenshot 2 */}
-        <View style={styles.header}>
+        {/* Header */}
+        <View
+          style={[
+            styles.header,
+            {
+              // Marge système mesurée : l'en-tête se collait à l'horloge.
+              paddingTop:
+                Platform.OS === 'android'
+                  ? insetPadding(insets, 'top', 20)
+                  : Platform.OS === 'ios'
+                  ? 12
+                  : 20,
+            },
+          ]}
+        >
           <TouchableOpacity
             style={styles.headerIconBtn}
             onPress={onClose}
@@ -174,14 +1059,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {isSearchActive ? (
             <TextInput
               style={styles.headerSearchInput}
-              placeholder="Rechercher des paramètres..."
+              placeholder={t('searchSettings')}
               placeholderTextColor="#71717A"
               value={searchQuery}
               onChangeText={setSearchQuery}
               autoFocus
             />
           ) : (
-            <Text style={styles.headerTitle}>Settings</Text>
+            <Text style={styles.headerTitle}>{t('settingsTitle')}</Text>
           )}
 
           <View style={styles.headerRightActions}>
@@ -214,28 +1099,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {rescanSuccess && (
           <View style={styles.rescanBanner}>
             <Ionicons name="checkmark-circle" size={18} color="#4ADE80" />
-            <Text style={styles.rescanBannerText}>
-              Bibliothèque actualisée avec succès !
-            </Text>
+            <Text style={styles.rescanBannerText}>{t('rescanSuccess')}</Text>
           </View>
         )}
 
-        {/* Branded MAS Player Hero Card */}
-        <View style={styles.brandHeroCard}>
-          <Image
-            source={require('../../assets/mas_icon_square.png')}
-            style={styles.brandHeroLogo}
-            resizeMode="contain"
-          />
-          <View style={styles.brandHeroTextCol}>
-            <Text style={styles.brandHeroTitle}>MAS PLAYER</Text>
-            <Text style={styles.brandHeroSubtitle}>Moteur Audio HD 32-Bit DVC • v{APP_VERSION}</Text>
-          </View>
-        </View>
-
         {/* Section Sub-header */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionHeaderText}>Settings</Text>
+          <Text style={styles.sectionHeaderText}>{t('sectionSettings')}</Text>
         </View>
 
         {/* Settings List */}
@@ -262,24 +1132,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
               {/* Middle Title and Subtitle */}
               <View style={styles.textWrapper}>
-                <Text style={styles.itemTitleText}>{item.title}</Text>
-                <Text style={styles.itemSubtitleText}>{item.subtitle}</Text>
+                <Text style={styles.itemTitleText}>{t(item.titleKey)}</Text>
+                <Text style={styles.itemSubtitleText}>{t(item.subtitleKey)}</Text>
               </View>
+
+              <Feather name="chevron-right" size={18} color="#52525B" />
             </TouchableOpacity>
           ))}
-          {/* About & Version Card */}
+
+          {/* Information & Version simple et professionnelle */}
           <View style={styles.aboutVersionCard}>
             <View style={styles.aboutVersionHeader}>
-              <Text style={styles.aboutAppName}>MAS PLAYER</Text>
+              <Image
+                source={require('../../assets/mas_icon_square.png')}
+                style={styles.aboutAppIcon}
+                resizeMode="contain"
+              />
+              <Text style={styles.aboutAppName}>{APP_NAME}</Text>
               <View style={styles.aboutVersionBadge}>
                 <Text style={styles.aboutVersionBadgeText}>v{APP_VERSION}</Text>
               </View>
             </View>
-            <Text style={styles.aboutVersionInfo}>
-              Version {APP_VERSION} (Build 1.0.0 Release)
-            </Text>
-            <Text style={styles.aboutVersionTech}>
-              DSP Audiophile 32-bit Float • 10 Bandes EQ • iOS & Web
+
+            <Text style={styles.aboutCopyrightText}>
+              © 2026 {APP_AUTHOR} • {t('allRightsReserved')}
             </Text>
           </View>
 
@@ -303,149 +1179,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       size={24}
                       color={selectedSetting.iconColor}
                     />
-                    <Text style={styles.subModalTitle}>{selectedSetting.title}</Text>
+                    <Text style={styles.subModalTitle}>{t(selectedSetting.titleKey)}</Text>
                   </View>
-                  <TouchableOpacity onPress={() => setSelectedSetting(null)}>
+                  <TouchableOpacity
+                    onPress={() => setSelectedSetting(null)}
+                    style={{ padding: 4 }}
+                  >
                     <Ionicons name="close" size={24} color="#FFFFFF" />
                   </TouchableOpacity>
                 </View>
 
                 <Text style={styles.subModalSubtitle}>
-                  {selectedSetting.subtitle}
+                  {t(selectedSetting.subtitleKey)}
                 </Text>
 
                 <View style={styles.subModalDivider} />
 
-                {selectedSetting.id === 'resume_playback' ? (
-                  <View style={styles.subModalOptions}>
-                    <View style={styles.toggleRow}>
-                      <View style={{ flex: 1, paddingRight: 12 }}>
-                        <Text style={styles.toggleLabel}>Mémoriser le dernier morceau</Text>
-                        <Text style={styles.toggleSubLabel}>Recharge automatiquement le morceau écouté</Text>
-                      </View>
-                      <Switch
-                        value={settings.rememberLastTrack}
-                        onValueChange={(val) => onUpdateSettings?.({ rememberLastTrack: val })}
-                        trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                        thumbColor="#FFFFFF"
-                      />
-                    </View>
-
-                    <View style={styles.toggleRow}>
-                      <View style={{ flex: 1, paddingRight: 12 }}>
-                        <Text style={styles.toggleLabel}>Reprendre la position exacte</Text>
-                        <Text style={styles.toggleSubLabel}>Repart de la seconde précise où vous étiez</Text>
-                      </View>
-                      <Switch
-                        value={settings.rememberPlaybackPosition}
-                        onValueChange={(val) => onUpdateSettings?.({ rememberPlaybackPosition: val })}
-                        trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                        thumbColor="#FFFFFF"
-                      />
-                    </View>
-
-                    <View style={styles.toggleRow}>
-                      <View style={{ flex: 1, paddingRight: 12 }}>
-                        <Text style={styles.toggleLabel}>Lecture auto au démarrage</Text>
-                        <Text style={styles.toggleSubLabel}>Lance la lecture dès l'ouverture de l'application</Text>
-                      </View>
-                      <Switch
-                        value={settings.autoPlayOnLaunch}
-                        onValueChange={(val) => onUpdateSettings?.({ autoPlayOnLaunch: val })}
-                        trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                        thumbColor="#FFFFFF"
-                      />
-                    </View>
-
-                    {/* Carte d'état actuel */}
-                    <View style={styles.statusCard}>
-                      <Text style={styles.statusCardTitle}>ÉTAT EN MÉMOIRE</Text>
-                      <View style={styles.statusCardRow}>
-                        <Text style={styles.statusCardLabel}>Morceau :</Text>
-                        <Text numberOfLines={1} style={styles.statusCardValue}>
-                          {currentTrack ? `${currentTrack.title} (${currentTrack.artist})` : 'Aucun'}
-                        </Text>
-                      </View>
-                      <View style={styles.statusCardRow}>
-                        <Text style={styles.statusCardLabel}>Position :</Text>
-                        <Text style={styles.statusCardValue}>
-                          {formatTime(positionMillis / 1000)} / {formatTime(durationMillis / 1000)}
-                        </Text>
-                      </View>
-                      <View style={styles.statusCardRow}>
-                        <Text style={styles.statusCardLabel}>Égaliseur :</Text>
-                        <Text style={styles.statusCardValue}>
-                          Preset "{dsp?.presetId || 'Défaut'}" • Vol {dsp?.volume ?? 75}%
-                        </Text>
-                      </View>
-                    </View>
-
-                    {resetSuccess ? (
-                      <View style={styles.resetSuccessBox}>
-                        <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
-                        <Text style={styles.resetSuccessText}>Historique réinitialisé !</Text>
-                      </View>
-                    ) : (
-                      <TouchableOpacity
-                        style={styles.resetSessionBtn}
-                        onPress={() => {
-                          try {
-                            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                          } catch {}
-                          onClearSession?.();
-                          setResetSuccess(true);
-                          setTimeout(() => setResetSuccess(false), 2500);
-                        }}
-                        activeOpacity={0.7}
-                      >
-                        <Ionicons name="trash-outline" size={16} color="#EF4444" />
-                        <Text style={styles.resetSessionBtnText}>Réinitialiser la session</Text>
-                      </TouchableOpacity>
-                    )}
-                  </View>
-                ) : selectedSetting.id === 'audio' ? (
-                  <View style={styles.subModalOptions}>
-                    <View style={styles.toggleRow}>
-                      <Text style={styles.toggleLabel}>Crossfade (enchaînement)</Text>
-                      <Switch
-                        value={settings.crossfade}
-                        onValueChange={(val) => onUpdateSettings?.({ crossfade: val })}
-                        trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                        thumbColor="#FFFFFF"
-                      />
-                    </View>
-                    <View style={styles.toggleRow}>
-                      <Text style={styles.toggleLabel}>ReplayGain RG2</Text>
-                      <Switch
-                        value={settings.replayGain}
-                        onValueChange={(val) => onUpdateSettings?.({ replayGain: val })}
-                        trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                        thumbColor="#FFFFFF"
-                      />
-                    </View>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoRowLabel}>Moteur Audio</Text>
-                      <Text style={styles.infoRowValue}>MAS High-Res DVC 32-bit Float</Text>
-                    </View>
-                  </View>
-                ) : (
-                  <View style={styles.subModalOptions}>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoRowLabel}>Version</Text>
-                      <Text style={styles.infoRowValue}>MAS Player v{APP_VERSION} (iOS/Web)</Text>
-                    </View>
-                    <View style={styles.infoRow}>
-                      <Text style={styles.infoRowLabel}>Thème actif</Text>
-                      <Text style={styles.infoRowValue}>OLED Pure Black Dark</Text>
-                    </View>
-                  </View>
-                )}
+                <ScrollView
+                  style={styles.subModalScroll}
+                  contentContainerStyle={styles.subModalScrollContent}
+                  showsVerticalScrollIndicator={false}
+                >
+                  {renderCategoryContent()}
+                </ScrollView>
 
                 <TouchableOpacity
                   style={styles.closeSubModalBtn}
                   onPress={() => setSelectedSetting(null)}
+                  activeOpacity={0.8}
                 >
-                  <Text style={styles.closeSubModalBtnText}>Fermer</Text>
+                  <Text style={styles.closeSubModalBtnText}>{t('close')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -465,7 +1228,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 12 : 20,
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: '#201E24',
@@ -530,6 +1292,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 14,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#1C1B22',
   },
   iconWrapper: {
     width: 38,
@@ -539,6 +1303,7 @@ const styles = StyleSheet.create({
   textWrapper: {
     flex: 1,
     marginLeft: 12,
+    paddingRight: 10,
   },
   itemTitleText: {
     fontSize: 16.5,
@@ -554,17 +1319,18 @@ const styles = StyleSheet.create({
   },
   subModalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
     justifyContent: 'center',
     alignItems: 'center',
-    padding: 20,
+    padding: 16,
   },
   subModalBox: {
     width: '100%',
-    maxWidth: 420,
-    backgroundColor: '#1C1B1F',
-    borderRadius: 18,
-    padding: 22,
+    maxWidth: 440,
+    maxHeight: '88%',
+    backgroundColor: '#1A191E',
+    borderRadius: 20,
+    padding: 20,
     borderWidth: 1,
     borderColor: '#2F2E36',
   },
@@ -572,7 +1338,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    marginBottom: 6,
   },
   subModalTitle: {
     fontSize: 18,
@@ -580,33 +1346,78 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
   },
   subModalSubtitle: {
-    fontSize: 13,
+    fontSize: 12.5,
     color: '#9E98A6',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   subModalDivider: {
     height: 1,
     backgroundColor: '#2E2D33',
-    marginBottom: 16,
+    marginBottom: 14,
+  },
+  subModalScroll: {
+    maxHeight: 460,
+  },
+  subModalScrollContent: {
+    paddingBottom: 12,
   },
   subModalOptions: {
     gap: 16,
-    marginBottom: 20,
+  },
+  optionSection: {
+    gap: 8,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94A3B8',
+    letterSpacing: 0.8,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  choiceChip: {
+    backgroundColor: '#27262D',
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#383742',
+  },
+  choiceChipActive: {
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    borderColor: '#38BDF8',
+  },
+  choiceChipText: {
+    color: '#A1A1AA',
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  choiceChipTextActive: {
+    color: '#38BDF8',
   },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  toggleTextCol: {
+    flex: 1,
+    paddingRight: 14,
   },
   toggleLabel: {
     color: '#F4F4F5',
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 14.5,
+    fontWeight: '600',
   },
   toggleSubLabel: {
     color: '#71717A',
     fontSize: 12,
     marginTop: 2,
+    lineHeight: 16,
   },
   statusCard: {
     backgroundColor: '#121114',
@@ -641,6 +1452,37 @@ const styles = StyleSheet.create({
     flexShrink: 1,
     textAlign: 'right',
   },
+  primaryActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#38BDF8',
+    borderRadius: 12,
+    paddingVertical: 12,
+  },
+  primaryActionBtnText: {
+    color: '#000000',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderRadius: 10,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  actionBtnText: {
+    color: '#38BDF8',
+    fontSize: 13.5,
+    fontWeight: '600',
+  },
   resetSessionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -673,71 +1515,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
-  },
-  infoRowLabel: {
-    color: '#71717A',
-    fontSize: 14,
-  },
-  infoRowValue: {
-    color: '#E4E4E7',
-    fontSize: 14,
-    fontWeight: '500',
-  },
   closeSubModalBtn: {
     backgroundColor: '#27272A',
     borderRadius: 12,
     paddingVertical: 12,
     alignItems: 'center',
+    marginTop: 14,
   },
   closeSubModalBtnText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14.5,
     fontWeight: '600',
-  },
-  brandHeroCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0F1218',
-    marginHorizontal: 16,
-    marginTop: 12,
-    marginBottom: 4,
-    padding: 14,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1E2530',
-    gap: 14,
-  },
-  brandHeroLogo: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-  },
-  brandHeroTextCol: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  brandHeroTitle: {
-    color: '#FFFFFF',
-    fontSize: 17,
-    fontWeight: '800',
-    letterSpacing: 1.2,
-  },
-  brandHeroSubtitle: {
-    color: '#94A3B8',
-    fontSize: 12,
-    marginTop: 2,
-    fontWeight: '500',
   },
   aboutVersionCard: {
     backgroundColor: '#0F1218',
-    borderRadius: 14,
-    padding: 16,
-    marginTop: 20,
+    borderRadius: 16,
+    padding: 18,
+    marginTop: 22,
     borderWidth: 1,
     borderColor: '#1E2530',
     alignItems: 'center',
@@ -746,17 +1540,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 6,
+    marginBottom: 10,
+  },
+  aboutAppIcon: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
   },
   aboutAppName: {
     color: '#F3F4F6',
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: 1.2,
+    fontSize: 15,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
   aboutVersionBadge: {
     backgroundColor: 'rgba(56, 189, 248, 0.15)',
-    paddingHorizontal: 7,
+    paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 6,
     borderWidth: 1,
@@ -764,18 +1563,15 @@ const styles = StyleSheet.create({
   },
   aboutVersionBadgeText: {
     color: '#38BDF8',
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '700',
   },
-  aboutVersionInfo: {
-    color: '#CBD5E1',
+  aboutCopyrightText: {
+    color: '#94A3B8',
     fontSize: 12.5,
     fontWeight: '500',
-    marginBottom: 4,
-  },
-  aboutVersionTech: {
-    color: '#64748B',
-    fontSize: 11,
+    marginTop: 6,
     textAlign: 'center',
+    letterSpacing: 0.2,
   },
 });

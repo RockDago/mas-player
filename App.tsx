@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   StyleSheet,
   Text,
@@ -6,6 +6,8 @@ import {
   SafeAreaView,
   TouchableOpacity,
   Dimensions,
+  useWindowDimensions,
+  ScrollView,
   ActivityIndicator,
   Platform,
   TextInput,
@@ -13,8 +15,10 @@ import {
   FlatList,
   Image,
   AppState,
+  Alert,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import {
   Ionicons,
@@ -23,7 +27,6 @@ import {
 } from '@expo/vector-icons';
 
 import { Track, DSPState, EqualizerPreset, Playlist } from './src/types/audio';
-import { INITIAL_TRACKS } from './src/data/demoTracks';
 import { DEFAULT_PRESETS } from './src/constants/presets';
 import { formatTime } from './src/services/audioService';
 import { playerManager } from './src/services/playerManager';
@@ -33,14 +36,20 @@ import {
   DEFAULT_APP_SETTINGS,
 } from './src/services/storageService';
 import { EqualizerView } from './src/components/EqualizerView';
-import { BeatLogo } from './src/components/BeatLogo';
+import { NeonWaveVisualizer } from './src/components/NeonWaveVisualizer';
 import { ProgressBar } from './src/components/ProgressBar';
 import { TrackListModal } from './src/components/TrackListModal';
 import { LibraryView } from './src/components/LibraryView';
 import { SettingsModal } from './src/components/SettingsModal';
 import { SongActionModal } from './src/components/SongActionModal';
 import { QueueDrawerModal } from './src/components/QueueDrawerModal';
+import { AppLoadingScreen } from './src/components/AppLoadingScreen';
 import { APP_VERSION } from './src/constants/version';
+import { getTranslation } from './src/i18n/translations';
+import { resolveTrackUri, deletePersistedAudioFile } from './src/utils/audioStorage';
+import { restoreWebAudioBlobs } from './src/services/webAudioStorage';
+import { requestAndroidStoragePermission } from './src/services/filePickerService';
+import { useScreenInsets, insetPadding } from './src/theme/insets';
 
 /**
  * Morceau de repli affiché quand la bibliothèque est vide.
@@ -77,19 +86,31 @@ if (Platform.OS === 'web' && typeof document !== 'undefined') {
   document.head.appendChild(styleEl);
 }
 
-export default function App() {
-  const [tracks, setTracks] = useState<Track[]>(INITIAL_TRACKS);
+function MainApp() {
+  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isShortScreen = screenHeight < 740;
+  const isExtraShort = screenHeight < 660;
+  // Marge réellement mesurée (encoche, barre d'état, barre de navigation).
+  // Remplace `StatusBar.currentHeight`, qui est une constante d'appareil et non
+  // une mesure — voir src/theme/insets.ts.
+  const insets = useScreenInsets();
+
+  const [tracks, setTracks] = useState<Track[]>([]);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
-  const [positionMillis, setPositionMillis] = useState<number>(10000);
-  const [durationMillis, setDurationMillis] = useState<number>(209000); // 3:29
+  const [isStartingUp, setIsStartingUp] = useState<boolean>(true);
+  const [isAppLoadingVisible, setIsAppLoadingVisible] = useState<boolean>(true);
+  // Zéro et non une durée de démo : sur une bibliothèque vide, une barre de
+  // progression affichant 0:10 / 3:29 pour une piste inexistante était un
+  // mensonge visible. Ces valeurs ne sont plus écrites qu'à la lecture réelle.
+  const [positionMillis, setPositionMillis] = useState<number>(0);
+  const [durationMillis, setDurationMillis] = useState<number>(0);
   const [isShuffle, setIsShuffle] = useState<boolean>(false);
   const [repeatMode, setRepeatMode] = useState<'off' | 'all' | 'one'>('all');
 
   // Persistence & Application settings
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
-  const [restoredNotice, setRestoredNotice] = useState<string | null>(null);
 
   // Synchronisation des références pour callbacks et écouteurs d'événements
   // Verrou de ré-entrance du passage automatique à la piste suivante : le
@@ -107,6 +128,8 @@ export default function App() {
   appSettingsRef.current = appSettings;
   const isPlayingRef = useRef<boolean>(isPlaying);
   isPlayingRef.current = isPlaying;
+  const isShuffleRef = useRef<boolean>(isShuffle);
+  isShuffleRef.current = isShuffle;
 
   // Main navigation tab: 'player', 'library' or 'equalizer'
   const [currentTab, setCurrentTab] = useState<'player' | 'library' | 'equalizer'>('player');
@@ -119,23 +142,16 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [customPresets, setCustomPresets] = useState<EqualizerPreset[]>([]);
 
-  // Playlists state avec listes par défaut
-  const [playlists, setPlaylists] = useState<Playlist[]>([
-    {
-      id: 'pl-favorites',
-      name: 'Coups de Cœur',
-      description: 'Mes morceaux préférés',
-      trackIds: ['demo-cyberpunk'],
-      createdAt: Date.now(),
-    },
-    {
-      id: 'pl-chill',
-      name: 'Acoustic & Chill',
-      description: 'Détente et mélodies',
-      trackIds: ['demo-sweet-live'],
-      createdAt: Date.now() - 100000,
-    },
-  ]);
+  // Playlists state (commence vide, sans fausses listes par défaut)
+  const [playlists, setPlaylists] = useState<Playlist[]>([]);
+  const [activePlaylistId, setActivePlaylistId] = useState<string | null>(null);
+  const activePlaylistIdRef = useRef<string | null>(null);
+  activePlaylistIdRef.current = activePlaylistId;
+
+  // `null` = racine de la bibliothèque (la liste des catégories). Démarrer sur
+  // 'playlists' ouvrait l'application directement dans une sous-liste.
+  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [activeGroupKey, setActiveGroupKey] = useState<string | null>(null);
 
   // Queue state (Morceaux programmés pour "Lire plus tard")
   const [queue, setQueue] = useState<Track[]>([]);
@@ -144,6 +160,7 @@ export default function App() {
 
   // Context Action Menu, Queue Drawer & Sleep Timer states
   const [activeActionTrack, setActiveActionTrack] = useState<Track | null>(null);
+  const [activeActionPlaylistId, setActiveActionPlaylistId] = useState<string | null>(null);
   const [isActionModalVisible, setIsActionModalVisible] = useState<boolean>(false);
   const [isQueueDrawerVisible, setIsQueueDrawerVisible] = useState<boolean>(false);
   const [isSleepTimerVisible, setIsSleepTimerVisible] = useState<boolean>(false);
@@ -154,21 +171,41 @@ export default function App() {
     Platform.OS === 'web'
   );
 
-  // Equalizer & Tone DSP state
+  // Equalizer & Tone DSP state (neutre par défaut : 0 dB, sans coloration initiale)
   const [dsp, setDsp] = useState<DSPState>({
     enabled: true,
-    presetId: 'bass-heavy',
-    bass: 8,
-    treble: 5,
+    presetId: 'flat',
+    bass: 0,
+    treble: 0,
     preamp: 0,
     stereoExpansion: 0,
+    crossfeed: 0,
     tempo: 1.0,
-    bands: [8, 7, 5, 2, 0, 0, 1, 2, 3, 2],
+    bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     balance: 0.0,
-    volume: 75,
+    volume: 100,
     mono: false,
     tempoEnabled: false,
+    // Réverbération éteinte : elle ne s'active que si l'utilisateur la demande.
+    roomSize: 40,
+    damping: 50,
+    reverbMix: 25,
+    reverbEnabled: false,
+    // TONE et LIMIT actifs. Le limiteur reste actif par défaut : il porte la
+    // garantie anti-écrêtage, qu'un utilisateur n'a pas à réclamer.
+    toneEnabled: true,
+    limitEnabled: true,
   });
+
+  // Verrou d'hydratation : empêche d'écraser les réglages sauvegardés par des valeurs
+  // par défaut à 0 lors du premier rendu React au démarrage
+  const isHydratedRef = useRef<boolean>(false);
+  const dspRef = useRef<DSPState>(dsp);
+  dspRef.current = dsp;
+  const repeatModeRef = useRef<'off' | 'all' | 'one'>(repeatMode);
+  repeatModeRef.current = repeatMode;
+  const playlistsRef = useRef<Playlist[]>(playlists);
+  playlistsRef.current = playlists;
 
   // Bibliothèque vide possible : supprimer le dernier morceau laisse `tracks`
 // à `[]`, et les deux accès ci-dessous renverraient alors `undefined` — que le
@@ -176,9 +213,27 @@ export default function App() {
 // un objet de repli plutôt que de laisser fuire `undefined`.
 const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
 
+  // Résolution de la playlist active et de la liste de lecture courante
+  const activePlaylist = useMemo(() => {
+    if (!activePlaylistId) return null;
+    return playlists.find((p) => p.id === activePlaylistId) || null;
+  }, [activePlaylistId, playlists]);
+
+  const currentPlaybackList = useMemo(() => {
+    if (activePlaylist && activePlaylist.trackIds.length > 0) {
+      const set = new Set(activePlaylist.trackIds);
+      const filtered = tracks.filter((t) => set.has(t.id));
+      if (filtered.length > 0) return filtered;
+    }
+    return tracks;
+  }, [activePlaylist, tracks]);
+
+  const currentPlaybackListRef = useRef<Track[]>(currentPlaybackList);
+  currentPlaybackListRef.current = currentPlaybackList;
+
   // Sync volume and playback tempo with audio player
   useEffect(() => {
-    playerManager.setVolume(dsp.volume ?? 75);
+    playerManager.setVolume(dsp.volume ?? 100);
     playerManager.setPlaybackRate(dsp.tempoEnabled ? (dsp.tempo ?? 1.0) : 1.0);
   }, [dsp.volume, dsp.tempo, dsp.tempoEnabled]);
 
@@ -197,14 +252,30 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
     dsp.bands.join(','),
     dsp.balance,
     dsp.stereoExpansion,
+    dsp.crossfeed,
     dsp.volume,
     dsp.mono,
+    // Réverbération : sans ces quatre lignes, tourner un knob de l'onglet FX
+    // ne déclencherait pas cet effet, et l'état resterait correct sans jamais
+    // atteindre les moteurs — le symptôme exact du bug qu'on corrige ici.
+    dsp.reverbEnabled,
+    dsp.roomSize,
+    dsp.damping,
+    dsp.reverbMix,
+    // TONE et LIMIT : même raison. Ces deux pastilles écrivent `DSPState` comme
+    // les quatre lignes ci-dessus ; sans ces dépendances, les poser modifierait
+    // l'état sans rien passer aux moteurs.
+    dsp.toneEnabled,
+    dsp.limitEnabled,
   ]);
 
   // Auto-play audio & Restore previous session on startup
   useEffect(() => {
     let isMounted = true;
     (async () => {
+      if (Platform.OS === 'android') {
+        void requestAndroidStoragePermission();
+      }
       await playerManager.init();
 
       // Charger l'ensemble des données et paramètres sauvegardés
@@ -234,31 +305,59 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
         setAppSettings(savedSettings);
         appSettingsRef.current = savedSettings;
       }
-      if (savedDsp) setDsp(savedDsp);
+      if (savedDsp) {
+        setDsp(savedDsp);
+        dspRef.current = savedDsp;
+      }
       if (savedCustomPresets && savedCustomPresets.length > 0) {
         setCustomPresets(savedCustomPresets);
       }
       if (savedModes) {
         setIsShuffle(savedModes.isShuffle);
+        isShuffleRef.current = savedModes.isShuffle;
         setRepeatMode(savedModes.repeatMode);
+        repeatModeRef.current = savedModes.repeatMode;
       }
-      if (savedPlaylists && savedPlaylists.length > 0) {
-        setPlaylists(savedPlaylists);
+      // Restauration de la bibliothèque musicale.
+      // Elle passe en PREMIER : playlists et file d'attente ne sont restaurées
+      // qu'après, pour pouvoir filtrer les identifiants qui ne résolvent plus.
+      let currentTrackList: Track[] = savedCustomTracks ?? [];
+      if (Platform.OS === 'web' && currentTrackList.length > 0) {
+        currentTrackList = await restoreWebAudioBlobs(currentTrackList);
       }
-      if (savedQueue && savedQueue.length > 0) {
-        setQueue(savedQueue);
-      }
-
-      // Restauration de la bibliothèque musicale
-      let currentTrackList = INITIAL_TRACKS;
-      if (savedCustomTracks && savedCustomTracks.length > 0) {
-        const uniqueCustom = savedCustomTracks.filter(
-          (ct) => !INITIAL_TRACKS.some((it) => it.id === ct.id)
-        );
-        currentTrackList = [...INITIAL_TRACKS, ...uniqueCustom];
+      if (currentTrackList.length > 0) {
         setTracks(currentTrackList);
         tracksRef.current = currentTrackList;
       }
+
+      // Les pistes de démonstration ont été retirées de l'application, mais les
+      // playlists et la file d'attente persistées en référencent encore les
+      // identifiants. Sans ce filtre, une install mise à jour afficherait
+      // « 1 morceau » pour une piste qui n'existe plus, et jouer un élément de la
+      // file le ferait disparaître sans rien jouer (`idx === -1`, sans `else`).
+      // On ne garde donc que ce qui résout encore dans la bibliothèque.
+      const validIds = new Set(currentTrackList.map((t) => t.id));
+      if (savedPlaylists && savedPlaylists.length > 0) {
+        const filteredPlaylists = savedPlaylists.map((pl) => ({
+          ...pl,
+          trackIds: pl.trackIds.filter((id) => validIds.has(id)),
+        }));
+        setPlaylists(filteredPlaylists);
+        playlistsRef.current = filteredPlaylists;
+      }
+      if (savedQueue && savedQueue.length > 0) {
+        const filteredQueue = savedQueue.filter((t) => validIds.has(t.id));
+        setQueue(filteredQueue);
+        queueRef.current = filteredQueue;
+      }
+
+      // Marquer l'hydratation comme terminée une fois les données restaurées
+      // afin que les effets de sauvegarde ne soient autorisés que sur de vrais changements
+      setTimeout(() => {
+        if (isMounted) {
+          isHydratedRef.current = true;
+        }
+      }, 150);
 
       // Restauration de la dernière musique et de la position d'écoute
       let targetIndex = 0;
@@ -267,6 +366,10 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       const shouldAutoPlay = savedSettings?.autoPlayOnLaunch ?? false;
 
       if (shouldRemember && savedLast) {
+        if (savedLast.activePlaylistId) {
+          setActivePlaylistId(savedLast.activePlaylistId);
+          activePlaylistIdRef.current = savedLast.activePlaylistId;
+        }
         const foundIdx = currentTrackList.findIndex((t) => t.id === savedLast.trackId);
         if (foundIdx !== -1) {
           targetIndex = foundIdx;
@@ -281,13 +384,12 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
 
       await loadTrack(targetIndex, shouldAutoPlay, resumePosMs, currentTrackList);
 
-      // Notification visuelle de reprise
-      if (shouldRemember && savedLast && currentTrackList[targetIndex]) {
-        const restoredTrack = currentTrackList[targetIndex];
-        const timeStr = resumePosMs > 1000 ? ` • ${formatTime(resumePosMs / 1000)}` : '';
-        setRestoredNotice(`Reprise : ${restoredTrack.title}${timeStr}`);
-        setTimeout(() => setRestoredNotice(null), 3500);
-      }
+      // Fin du chargement initial : transition fluide vers le lecteur
+      setTimeout(() => {
+        if (isMounted) {
+          setIsStartingUp(false);
+        }
+      }, 400);
     })();
 
     return () => {
@@ -308,6 +410,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       positionMillis: positionMillisRef.current,
       durationMillis: durationMillisRef.current,
       updatedAt: Date.now(),
+      activePlaylistId: activePlaylistIdRef.current,
     });
   };
 
@@ -324,43 +427,71 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   // Sauvegarde sur mise en arrière-plan (Native) ou fermeture de page (Web)
   useEffect(() => {
     if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      const handleUnload = () => persistSession();
+      const handleUnload = () => {
+        persistSession();
+        if (isHydratedRef.current) {
+          void storageService.saveDSP(dspRef.current);
+          void storageService.savePlaybackModes({
+            isShuffle: isShuffleRef.current,
+            repeatMode: repeatModeRef.current,
+          });
+          void storageService.savePlaylists(playlistsRef.current);
+          void storageService.saveQueue(queueRef.current);
+          void storageService.saveCustomTracks(tracksRef.current);
+        }
+      };
       window.addEventListener('beforeunload', handleUnload);
       return () => window.removeEventListener('beforeunload', handleUnload);
     } else {
       const sub = AppState.addEventListener('change', (state) => {
         if (state === 'background' || state === 'inactive') {
           persistSession();
+          if (isHydratedRef.current) {
+            void storageService.saveDSP(dspRef.current);
+            void storageService.savePlaybackModes({
+              isShuffle: isShuffleRef.current,
+              repeatMode: repeatModeRef.current,
+            });
+            void storageService.savePlaylists(playlistsRef.current);
+            void storageService.saveQueue(queueRef.current);
+            void storageService.saveCustomTracks(tracksRef.current);
+          }
+        } else if (state === 'active') {
+          playerManager.syncPlaybackState();
         }
       });
       return () => sub.remove();
     }
   }, []);
 
-  // Sauvegarde automatique des réglages DSP dès modification
+  // Sauvegarde automatique des réglages DSP dès modification (protégée contre l'écrasement initial)
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     storageService.saveDSP(dsp);
   }, [dsp]);
 
   // Sauvegarde des modes de lecture (shuffle / repeat)
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     storageService.savePlaybackModes({ isShuffle, repeatMode });
   }, [isShuffle, repeatMode]);
 
   // Sauvegarde des playlists personnalisées
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     storageService.savePlaylists(playlists);
   }, [playlists]);
 
   // Sauvegarde de la file d'attente
   useEffect(() => {
+    if (!isHydratedRef.current) return;
     storageService.saveQueue(queue);
   }, [queue]);
 
-  // Sauvegarde des morceaux importés
+  // Sauvegarde des morceaux importés.
   useEffect(() => {
-    const customOnly = tracks.filter((t) => !INITIAL_TRACKS.some((it) => it.id === t.id));
-    storageService.saveCustomTracks(customOnly);
+    if (!isHydratedRef.current) return;
+    storageService.saveCustomTracks(tracks);
   }, [tracks]);
 
   const handleUpdateSettings = async (newSettings: Partial<AppSettings>) => {
@@ -373,17 +504,27 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
     await storageService.clearAllSessionData();
     setDsp({
       enabled: true,
-      presetId: 'bass-heavy',
-      bass: 8,
-      treble: 5,
+      presetId: 'flat',
+      bass: 0,
+      treble: 0,
       preamp: 0,
       stereoExpansion: 0,
+      crossfeed: 0,
       tempo: 1.0,
-      bands: [8, 7, 5, 2, 0, 0, 1, 2, 3, 2],
+      bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
       balance: 0.0,
-      volume: 75,
+      volume: 100,
       mono: false,
       tempoEnabled: false,
+      // « Effacer la session » doit aussi silence la réverbération : la laisser
+      // active donnerait un morceau conservé dans une pièce qui n'existe plus.
+      roomSize: 40,
+      damping: 50,
+      reverbMix: 25,
+      reverbEnabled: false,
+      // Ces deux-là reviennent à l'état par défaut, c'est-à-dire actifs.
+      toneEnabled: true,
+      limitEnabled: true,
     });
     setRepeatMode('all');
     setIsShuffle(false);
@@ -423,6 +564,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   ) => {
     try {
       setIsLoading(true);
+      isAdvancingRef.current = false;
       const list = trackList || tracksRef.current;
       const targetTrack = list[index];
       if (!targetTrack) return;
@@ -431,13 +573,14 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       currentTrackIndexRef.current = index;
       setIsPlaying(shouldPlay);
 
-      if (initialPositionMs && initialPositionMs > 0) {
-        setPositionMillis(initialPositionMs);
-        positionMillisRef.current = initialPositionMs;
-      }
+      const initialPos = initialPositionMs ?? 0;
+      setPositionMillis(initialPos);
+      positionMillisRef.current = initialPos;
+
+      const targetUri = resolveTrackUri(targetTrack.uri);
 
       await playerManager.loadTrack(
-        targetTrack.uri,
+        targetUri,
         shouldPlay,
         (status) => {
           if (!status) return;
@@ -445,9 +588,20 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
           setPositionMillis(curMs);
           positionMillisRef.current = curMs;
 
-          const durMs = (status.duration && status.duration > 1 ? status.duration : targetTrack.duration || 209) * 1000;
+          // Durée dynamique et synchronisée
+          const durSeconds = status.duration && status.duration > 0 ? status.duration : 0;
+          const durMs = (durSeconds > 0 ? durSeconds : targetTrack.duration || 0) * 1000;
           setDurationMillis(durMs);
           durationMillisRef.current = durMs;
+
+          // Si le morceau n'avait pas encore sa durée calculée, la sauvegarder immédiatement
+          if (durSeconds > 0 && (!targetTrack.duration || targetTrack.duration <= 0)) {
+            const intDur = Math.round(durSeconds);
+            targetTrack.duration = intDur;
+            setTracks((prev) =>
+              prev.map((t) => (t.id === targetTrack.id ? { ...t, duration: intDur } : t))
+            );
+          }
 
           setIsPlaying(status.isPlaying);
           isPlayingRef.current = status.isPlaying;
@@ -458,7 +612,6 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
           // donc un nouvel écouteur de statut auprès du moteur natif.
           if (status.didFinish && !isAdvancingRef.current) {
             isAdvancingRef.current = true;
-            // Libère le verrou une fois la piste suivante montée, sans quoi un
             // Libère le verrou une fois la piste suivante montée, sans quoi
             // un simple redémarrage de la lecture ne déclencherait plus la fin.
             if (queueRef.current.length > 0) {
@@ -476,7 +629,13 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
           }
         },
         initialPositionMs ? initialPositionMs / 1000 : undefined,
-        { title: targetTrack.title, artist: targetTrack.artist }
+        {
+          title: targetTrack.title,
+          artist: targetTrack.artist,
+          album: targetTrack.album,
+          artwork: targetTrack.artwork,
+        },
+        targetTrack.id
       );
 
       // Mémoriser dès le chargement du morceau
@@ -493,7 +652,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } catch {}
 
-    if (isPlaying) {
+    if (isPlayingRef.current) {
       playerManager.pause();
       setIsPlaying(false);
       isPlayingRef.current = false;
@@ -510,14 +669,26 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
 
+    const curList = currentPlaybackListRef.current;
+    if (curList.length === 0) return;
+
+    const curTrackId = tracksRef.current[currentTrackIndexRef.current]?.id;
+    const curIdx = curList.findIndex((t) => t.id === curTrackId);
+
     let nextIndex = 0;
-    if (isShuffle) {
-      nextIndex = Math.floor(Math.random() * tracks.length);
+    if (isShuffleRef.current) {
+      nextIndex = Math.floor(Math.random() * curList.length);
     } else {
-      nextIndex = (currentTrackIndex + 1) % tracks.length;
+      nextIndex = curIdx !== -1 ? (curIdx + 1) % curList.length : 0;
     }
 
-    await loadTrack(nextIndex, true, 0);
+    const nextTrack = curList[nextIndex];
+    if (nextTrack) {
+      const globalIdx = tracksRef.current.findIndex((t) => t.id === nextTrack.id);
+      if (globalIdx !== -1) {
+        await loadTrack(globalIdx, true, 0);
+      }
+    }
   };
 
   const handlePrevTrack = async () => {
@@ -525,7 +696,10 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
 
-    if (positionMillis > 3000) {
+    const curList = currentPlaybackListRef.current;
+    if (curList.length === 0) return;
+
+    if (positionMillisRef.current > 3000) {
       await playerManager.seekToSeconds(0);
       setPositionMillis(0);
       positionMillisRef.current = 0;
@@ -533,9 +707,67 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       return;
     }
 
-    const prevIndex = (currentTrackIndex - 1 + tracks.length) % tracks.length;
-    await loadTrack(prevIndex, true, 0);
+    const curTrackId = tracksRef.current[currentTrackIndexRef.current]?.id;
+    const curIdx = curList.findIndex((t) => t.id === curTrackId);
+
+    const prevIndex = curIdx !== -1 ? (curIdx - 1 + curList.length) % curList.length : 0;
+    const prevTrack = curList[prevIndex];
+    if (prevTrack) {
+      const globalIdx = tracksRef.current.findIndex((t) => t.id === prevTrack.id);
+      if (globalIdx !== -1) {
+        await loadTrack(globalIdx, true, 0);
+      }
+    }
   };
+
+  /**
+   * Volume système iOS (boutons de l'appareil).
+   *
+   * Reste `null` partout où il est illisible — c'est-à-dire partout sauf iOS
+   * natif : aucun navigateur n'expose le volume du système. Dans ce cas le knob
+   * redevient une attestation app-locale et l'interface le dit, plutôt que de
+   * laisser croire à une synchronisation qui n'existe pas.
+   */
+  const [systemVolume, setSystemVolume] = useState<number | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = playerManager.subscribeSystemVolume((vol) => {
+      setSystemVolume(vol);
+      if (vol !== null) {
+        setDsp((prev) => ({ ...prev, volume: vol }));
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleNextTrackRef = useRef(handleNextTrack);
+  handleNextTrackRef.current = handleNextTrack;
+  const handlePrevTrackRef = useRef(handlePrevTrack);
+  handlePrevTrackRef.current = handlePrevTrack;
+
+  // Écoute des commandes de l'écran verrouillé / notification iOS (Morceau suivant, précédent, play/pause)
+  useEffect(() => {
+    const unsub = playerManager.addRemoteCommandListener((action) => {
+      if (action === 'next') {
+        handleNextTrackRef.current();
+      } else if (action === 'previous') {
+        handlePrevTrackRef.current();
+      } else if (action === 'play') {
+        playerManager.play();
+        setIsPlaying(true);
+        isPlayingRef.current = true;
+      } else if (action === 'pause') {
+        playerManager.pause();
+        setIsPlaying(false);
+        isPlayingRef.current = false;
+        persistSession();
+      }
+    });
+
+    return () => {
+      unsub();
+    };
+  }, []);
 
   const handleFastForward = async () => {
     try {
@@ -579,14 +811,14 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
-    setDsp({
-      ...dsp,
+    setDsp((prev) => ({
+      ...prev,
       presetId: preset.id,
-      bass: 0, // Séparé : commence à 0 dB neutre
-      treble: 0, // Séparé : commence à 0 dB neutre
+      bass: prev.bass, // Conserve le réglage bass configuré par l'utilisateur
+      treble: prev.treble, // Conserve le réglage treble configuré par l'utilisateur
       preamp: preset.preamp ?? 0,
       bands: [...preset.bands],
-    });
+    }));
     setIsPresetsVisible(false);
   };
 
@@ -621,7 +853,102 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   };
 
   const handleAddTracks = (newTracks: Track[]) => {
-    setTracks((prev) => [...prev, ...newTracks]);
+    setTracks((prev) => {
+      // Générer une empreinte unique pour chaque morceau afin d'éviter tout doublon
+      const getFingerprint = (t: Track) => {
+        const normTitle = (t.title || '').trim().toLowerCase();
+        const normArtist = (t.artist || '').trim().toLowerCase();
+        const normAlbum = (t.album || '').trim().toLowerCase();
+        const normFolder = (t.folder || '').trim().toLowerCase();
+        const uriFilename = (t.uri || '').split('/').pop()?.toLowerCase() || '';
+        const pathFilename = (t.folderPath || '').split('/').pop()?.toLowerCase() || '';
+        const filename = pathFilename || uriFilename;
+
+        return {
+          metaKey: normTitle && normArtist ? `${normTitle}:::${normArtist}` : '',
+          fullKey: `${normTitle}:::${normArtist}:::${normAlbum}`,
+          filenameKey: filename ? `${normFolder}:::${filename}` : '',
+          uri: t.uri || '',
+        };
+      };
+
+      const existingMetaKeys = new Set<string>();
+      const existingFilenames = new Set<string>();
+      const existingUris = new Set<string>();
+
+      prev.forEach((t) => {
+        const fp = getFingerprint(t);
+        if (fp.metaKey) existingMetaKeys.add(fp.metaKey);
+        if (fp.filenameKey) existingFilenames.add(fp.filenameKey);
+        if (fp.uri) existingUris.add(fp.uri);
+      });
+
+      const updatedPrev = [...prev];
+      const uniqueNewTracks: Track[] = [];
+      const skippedTracks: Track[] = [];
+      let repairedCount = 0;
+
+      newTracks.forEach((t) => {
+        const fp = getFingerprint(t);
+        // Chercher si un morceau identique existe déjà
+        const existingIdx = updatedPrev.findIndex((existing) => {
+          const efp = getFingerprint(existing);
+          return (
+            (fp.uri && efp.uri === fp.uri) ||
+            (fp.filenameKey && efp.filenameKey === fp.filenameKey) ||
+            (fp.metaKey && efp.metaKey === fp.metaKey)
+          );
+        });
+
+        if (existingIdx !== -1) {
+          const existing = updatedPrev[existingIdx];
+          // Si le morceau existant est corrompu ou a une durée de 0 ou un blob URL non persisté, le réparer avec la nouvelle version saine !
+          const isBroken = (!existing.duration || existing.duration <= 0) || (Platform.OS === 'web' && existing.uri.startsWith('blob:') && existing.uri !== t.uri);
+          if (isBroken) {
+            updatedPrev[existingIdx] = {
+              ...existing,
+              id: t.id,
+              uri: t.uri,
+              duration: t.duration > 0 ? t.duration : existing.duration,
+              format: t.format || existing.format,
+            };
+            repairedCount++;
+          } else {
+            skippedTracks.push(t);
+          }
+        } else {
+          uniqueNewTracks.push(t);
+        }
+      });
+
+      // Supprimer les copies locales temporaires créées pour des pistes qui sont des doublons réels
+      if (skippedTracks.length > 0) {
+        skippedTracks.forEach((t) => {
+          if (t.uri && t.uri.includes('/tracks/') && !prev.some((p) => p.uri === t.uri)) {
+            void deletePersistedAudioFile(t.uri);
+          }
+        });
+      }
+
+      if (uniqueNewTracks.length === 0 && repairedCount === 0) {
+        Alert.alert(
+          'Morceaux déjà présents',
+          newTracks.length === 1
+            ? 'Ce morceau est déjà présent et fonctionnel dans votre bibliothèque musicale.'
+            : `Tous les ${newTracks.length} morceaux sont déjà dans votre bibliothèque. Aucun doublon n'a été ajouté.`
+        );
+        return prev;
+      }
+
+      if (repairedCount > 0 || skippedTracks.length > 0) {
+        Alert.alert(
+          'Importation terminée',
+          `${uniqueNewTracks.length} nouveau(x) morceau(x) ajouté(s)${repairedCount > 0 ? `, ${repairedCount} morceau(x) réparé(s)` : ''}.${skippedTracks.length > 0 ? ` ${skippedTracks.length} doublon(s) ignoré(s).` : ''}`
+        );
+      }
+
+      return [...updatedPrev, ...uniqueNewTracks];
+    });
   };
 
   // Sleep Timer effect
@@ -635,11 +962,12 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
     return () => clearTimeout(timer);
   }, [sleepTimerMinutes]);
 
-  const openTrackAction = (track: Track) => {
+  const openTrackAction = (track: Track, playlistId?: string | null) => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
     setActiveActionTrack(track);
+    setActiveActionPlaylistId(playlistId || activePlaylistId || null);
     setIsActionModalVisible(true);
   };
 
@@ -656,6 +984,12 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
     const idx = tracks.findIndex((t) => t.id === track.id);
     if (idx !== -1) {
       loadTrack(idx, true);
+    }
+    // La restauration filtre déjà la file contre la bibliothèque, donc ce cas
+    // ne devrait pas survenir. S'il le fait malgré tout, on prévient plutôt que
+    // de laisser l'élément disparaître de la file sans qu'aucun son ne parte.
+    else {
+      Alert.alert('Piste introuvable', `"${track.title}" ne fait plus partie de la bibliothèque.`);
     }
   };
 
@@ -708,6 +1042,9 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   };
 
   const handleDeletePlaylist = (playlistId: string) => {
+    if (activePlaylistId === playlistId) {
+      setActivePlaylistId(null);
+    }
     setPlaylists((prev) => prev.filter((pl) => pl.id !== playlistId));
   };
 
@@ -718,6 +1055,8 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   };
 
   const handleDeleteTrack = (trackToDelete: Track) => {
+    // Supprimer le fichier audio physique du stockage de l'application (et IndexedDB sur Web)
+    void deletePersistedAudioFile(trackToDelete.uri, trackToDelete.id);
     setTracks((prev) => prev.filter((t) => t.id !== trackToDelete.id));
     setQueue((prev) => prev.filter((t) => t.id !== trackToDelete.id));
     setPlaylists((prev) =>
@@ -731,6 +1070,84 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
     }
   };
 
+  const handleDeleteFolder = (folderName: string) => {
+    const folderTracks = tracks.filter((t) => {
+      if (t.folder && t.folder === folderName) return true;
+      if (!t.folder && (folderName === 'Musique importée' || t.album === folderName)) return true;
+      return false;
+    });
+    const folderTrackIds = new Set(folderTracks.map((t) => t.id));
+
+    // Supprimer les fichiers physiques du stockage de l'application (et IndexedDB sur Web)
+    folderTracks.forEach((t) => {
+      void deletePersistedAudioFile(t.uri, t.id);
+    });
+
+    setTracks((prev) => prev.filter((t) => !folderTrackIds.has(t.id)));
+    setQueue((prev) => prev.filter((t) => !folderTrackIds.has(t.id)));
+    setPlaylists((prev) =>
+      prev.map((pl) => ({
+        ...pl,
+        trackIds: pl.trackIds.filter((id) => !folderTrackIds.has(id)),
+      }))
+    );
+
+    if (folderTrackIds.has(currentTrack.id)) {
+      handleNextTrack();
+    }
+  };
+
+  const handleRenameFolder = (oldFolderName: string, newFolderName: string) => {
+    const trimmed = newFolderName.trim();
+    if (!trimmed || trimmed === oldFolderName) return;
+
+    setTracks((prev) =>
+      prev.map((t) => {
+        const match =
+          (t.folder && t.folder === oldFolderName) ||
+          (!t.folder && (oldFolderName === 'Musique importée' || t.album === oldFolderName));
+        if (match) {
+          return {
+            ...t,
+            folder: trimmed,
+            album: t.album === oldFolderName ? trimmed : t.album,
+          };
+        }
+        return t;
+      })
+    );
+
+    setQueue((prev) =>
+      prev.map((t) => {
+        const match =
+          (t.folder && t.folder === oldFolderName) ||
+          (!t.folder && (oldFolderName === 'Musique importée' || t.album === oldFolderName));
+        if (match) {
+          return {
+            ...t,
+            folder: trimmed,
+            album: t.album === oldFolderName ? trimmed : t.album,
+          };
+        }
+        return t;
+      })
+    );
+  };
+
+  const handleRemoveFromPlaylist = (track: Track, playlistId: string) => {
+    setPlaylists((prev) =>
+      prev.map((pl) => {
+        if (pl.id === playlistId) {
+          return {
+            ...pl,
+            trackIds: pl.trackIds.filter((id) => id !== track.id),
+          };
+        }
+        return pl;
+      })
+    );
+  };
+
   const handleToggleFavorite = (track: Track) => {
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -740,7 +1157,30 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       prev.map((t) => (t.id === track.id ? { ...t, isFavorite: nextFav } : t))
     );
     if (nextFav) {
-      handleAddToPlaylist(track, 'pl-favorites');
+      setPlaylists((prev) => {
+        const existing = prev.find((pl) => pl.id === 'pl-favorites');
+        if (existing) {
+          if (!existing.trackIds.includes(track.id)) {
+            return prev.map((pl) =>
+              pl.id === 'pl-favorites'
+                ? { ...pl, trackIds: [...pl.trackIds, track.id] }
+                : pl
+            );
+          }
+          return prev;
+        } else {
+          return [
+            {
+              id: 'pl-favorites',
+              name: 'Coups de Cœur',
+              description: 'Mes morceaux préférés',
+              trackIds: [track.id],
+              createdAt: Date.now(),
+            },
+            ...prev,
+          ];
+        }
+      });
     } else {
       setPlaylists((prev) =>
         prev.map((pl) =>
@@ -782,10 +1222,31 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
 
         <View style={styles.appContainer}>
           {/* TAB 1: PLAYER SCREEN */}
-          {currentTab === 'player' ? (
-            <>
+          <View style={{ flex: 1, display: currentTab === 'player' ? 'flex' : 'none' }}>
+            <ScrollView
+              contentContainerStyle={{
+                flexGrow: 1,
+                justifyContent: 'space-between',
+                paddingBottom: isShortScreen ? 2 : 6,
+              }}
+              showsVerticalScrollIndicator={false}
+              bounces={false}
+              scrollEnabled={screenHeight < 620}
+            >
               {/* Top Bar on Player Screen: Left Queue Drawer, Center MAS Logo & Right Cast */}
-              <View style={styles.topPlayerBar}>
+              <View
+                style={[
+                  styles.topPlayerBar,
+                  {
+                    paddingTop:
+                      Platform.OS === 'android'
+                        ? insetPadding(insets, 'top', 4)
+                        : Platform.OS === 'ios'
+                        ? 4
+                        : 8,
+                  },
+                ]}
+              >
                 <TouchableOpacity
                   onPress={() => setIsQueueDrawerVisible(true)}
                   style={styles.topPlayerIconBtn}
@@ -798,19 +1259,6 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                     </View>
                   )}
                 </TouchableOpacity>
-
-                {/* Center MAS Player Logo & Brand */}
-                <View style={styles.topBrandPill}>
-                  <Image
-                    source={require('./assets/mas_icon_square.png')}
-                    style={styles.topBrandLogo}
-                    resizeMode="contain"
-                  />
-                  <Text style={styles.topBrandTitle}>MAS PLAYER</Text>
-                  <View style={styles.topBrandVersionBadge}>
-                    <Text style={styles.topBrandVersionText}>v{APP_VERSION}</Text>
-                  </View>
-                </View>
 
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <TouchableOpacity
@@ -826,6 +1274,24 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                     <MaterialCommunityIcons name="cast" size={22} color="#FFFFFF" />
                   </TouchableOpacity>
 
+                  {/* Accès direct à la playlist active / liste de lecture */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      try {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      } catch {}
+                      setCurrentTab('library');
+                    }}
+                    style={styles.topPlayerIconBtn}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialCommunityIcons
+                      name="playlist-music"
+                      size={24}
+                      color={activePlaylist ? '#38BDF8' : '#FFFFFF'}
+                    />
+                  </TouchableOpacity>
+
                   <TouchableOpacity
                     onPress={() => setIsTrackListVisible(true)}
                     style={styles.topPlayerIconBtn}
@@ -836,13 +1302,25 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                 </View>
               </View>
 
-              {/* Main Visualizer Area: logo animé sur le rythme réel du morceau */}
-              <View style={styles.centerStage}>
-                <BeatLogo />
+              {/* Main Visualizer Area: visualiseur d'ondes néon réactif au rythme du son */}
+              <View
+                style={[
+                  styles.centerStage,
+                  {
+                    minHeight: isExtraShort ? 130 : isShortScreen ? 160 : 210,
+                  },
+                ]}
+              >
+                <NeonWaveVisualizer />
               </View>
 
               {/* Like / Dislike + 3-Dots Row matching latest user screenshot */}
-              <View style={styles.ratingActionsRow}>
+              <View
+                style={[
+                  styles.ratingActionsRow,
+                  { marginBottom: isShortScreen ? 4 : 10 },
+                ]}
+              >
                 <View style={styles.thumbsPill}>
                   <TouchableOpacity
                     style={styles.thumbBtn}
@@ -878,7 +1356,12 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
               </View>
 
               {/* Metadata Badges: Title in dark rounded pill, Artist in subtitle */}
-              <View style={styles.metaSection}>
+              <View
+                style={[
+                  styles.metaSection,
+                  { marginBottom: isShortScreen ? 6 : 12 },
+                ]}
+              >
                 <View style={styles.titlePill}>
                   <Text numberOfLines={1} style={styles.trackTitleText}>
                     {currentTrack.title}
@@ -887,20 +1370,50 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                 <Text numberOfLines={1} style={styles.trackSubtitleText}>
                   {currentTrack.artist} - {currentTrack.album}
                 </Text>
+
+                {/* Badge d'accès direct à la Playlist active / Source */}
+                <TouchableOpacity
+                  onPress={() => {
+                    try {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    } catch {}
+                    setCurrentTab('library');
+                  }}
+                  style={styles.activePlaylistPill}
+                  activeOpacity={0.75}
+                >
+                  <MaterialCommunityIcons
+                    name={activePlaylist ? 'playlist-music' : 'music-box-multiple'}
+                    size={13}
+                    color="#38BDF8"
+                  />
+                  <Text numberOfLines={1} style={styles.activePlaylistPillText}>
+                    {activePlaylist ? `Playlist : ${activePlaylist.name}` : activeGroupKey ? `Dossier : ${activeGroupKey}` : 'Toutes les pistes'}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={12} color="#38BDF8" />
+                </TouchableOpacity>
               </View>
 
               {/* Quick Utility Pill Buttons Row: EQ, Timer, Repeat, Shuffle */}
-              <View style={styles.utilityPillsRow}>
+              <View
+                style={[
+                  styles.utilityPillsRow,
+                  { marginBottom: isShortScreen ? 6 : 14 },
+                ]}
+              >
                 {/* Left Utility Pills */}
                 <View style={styles.pillsSubgroup}>
                   <TouchableOpacity
                     onPress={() => setCurrentTab('equalizer')}
-                    style={styles.utilityPill}
+                    style={[
+                      styles.utilityPill,
+                      isShortScreen && { paddingVertical: 6, paddingHorizontal: 12 },
+                    ]}
                     activeOpacity={0.7}
                   >
                     <MaterialCommunityIcons
                       name="equalizer"
-                      size={20}
+                      size={isShortScreen ? 18 : 20}
                       color={dsp.enabled ? '#FFFFFF' : '#666666'}
                     />
                   </TouchableOpacity>
@@ -912,12 +1425,15 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                       } catch {}
                       setIsSleepTimerVisible(true);
                     }}
-                    style={styles.utilityPill}
+                    style={[
+                      styles.utilityPill,
+                      isShortScreen && { paddingVertical: 6, paddingHorizontal: 12 },
+                    ]}
                     activeOpacity={0.7}
                   >
                     <Ionicons
                       name={sleepTimerMinutes !== null ? 'time' : 'time-outline'}
-                      size={20}
+                      size={isShortScreen ? 18 : 20}
                       color={sleepTimerMinutes !== null ? '#38BDF8' : '#8A9AA8'}
                     />
                   </TouchableOpacity>
@@ -927,12 +1443,15 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                 <View style={styles.pillsSubgroup}>
                   <TouchableOpacity
                     onPress={toggleRepeatMode}
-                    style={styles.utilityPill}
+                    style={[
+                      styles.utilityPill,
+                      isShortScreen && { paddingVertical: 6, paddingHorizontal: 12 },
+                    ]}
                     activeOpacity={0.7}
                   >
                     <MaterialCommunityIcons
                       name={repeatMode === 'one' ? 'repeat-once' : 'repeat'}
-                      size={22}
+                      size={isShortScreen ? 19 : 22}
                       color={repeatMode !== 'off' ? '#FFFFFF' : '#8A9AA8'}
                     />
                   </TouchableOpacity>
@@ -944,41 +1463,57 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                       } catch {}
                       setIsShuffle(!isShuffle);
                     }}
-                    style={styles.utilityPill}
+                    style={[
+                      styles.utilityPill,
+                      isShortScreen && { paddingVertical: 6, paddingHorizontal: 12 },
+                    ]}
                     activeOpacity={0.7}
                   >
                     <MaterialCommunityIcons
                       name="shuffle-variant"
-                      size={22}
+                      size={isShortScreen ? 19 : 22}
                       color={isShuffle ? '#FFFFFF' : '#8A9AA8'}
                     />
                   </TouchableOpacity>
                 </View>
               </View>
 
-              {/* Transport controls — plus en superposition : la barre de progression
-                  passe EN dessous, ce qui l'empêchait d'être attrapable */}
-              <View style={styles.transportRow}>
+              {/* Transport controls — tailles adaptatives selon la hauteur de l'écran */}
+              <View
+                style={[
+                  styles.transportRow,
+                  { marginVertical: isShortScreen ? 4 : 8 },
+                ]}
+              >
                 <TouchableOpacity
                   onPress={handleFastRewind}
-                  style={styles.smallTransportBtn}
+                  style={[
+                    styles.smallTransportBtn,
+                    isShortScreen && { width: 32, height: 32, borderRadius: 16 },
+                  ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-back" size={15} color="#FFFFFF" />
+                  <Ionicons name="play-back" size={isShortScreen ? 13 : 15} color="#FFFFFF" />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   onPress={handlePrevTrack}
-                  style={styles.mediumTransportBtn}
+                  style={[
+                    styles.mediumTransportBtn,
+                    isShortScreen && { width: 44, height: 44, borderRadius: 22 },
+                  ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-back" size={24} color="#FFFFFF" />
+                  <Ionicons name="play-back" size={isShortScreen ? 20 : 24} color="#FFFFFF" />
                 </TouchableOpacity>
 
-                {/* Big Central Black Play/Pause Button */}
+                {/* Central Play/Pause Button - Responsive size */}
                 <TouchableOpacity
                   onPress={handlePlayPause}
-                  style={styles.bigCentralPlayBtn}
+                  style={[
+                    styles.bigCentralPlayBtn,
+                    isShortScreen && { width: 68, height: 68, borderRadius: 34 },
+                  ]}
                   activeOpacity={0.8}
                 >
                   {isLoading ? (
@@ -986,34 +1521,37 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                   ) : (
                     <Ionicons
                       name={isPlaying ? 'pause' : 'play'}
-                      size={42}
+                      size={isShortScreen ? 34 : 42}
                       color="#FFFFFF"
-                      style={{ marginLeft: isPlaying ? 0 : 4 }}
+                      style={{ marginLeft: isPlaying ? 0 : 3 }}
                     />
                   )}
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   onPress={handleNextTrack}
-                  style={styles.mediumTransportBtn}
+                  style={[
+                    styles.mediumTransportBtn,
+                    isShortScreen && { width: 44, height: 44, borderRadius: 22 },
+                  ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-forward" size={24} color="#FFFFFF" />
+                  <Ionicons name="play-forward" size={isShortScreen ? 20 : 24} color="#FFFFFF" />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   onPress={handleFastForward}
-                  style={styles.smallTransportBtn}
+                  style={[
+                    styles.smallTransportBtn,
+                    isShortScreen && { width: 32, height: 32, borderRadius: 16 },
+                  ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-forward" size={15} color="#FFFFFF" />
+                  <Ionicons name="play-forward" size={isShortScreen ? 13 : 15} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
 
-              {/* Barre de progression scrubbable : glisser pour sauter.
-                  Aucune prévisualisation remontée vers `App` — le curseur se
-                  dessine seul dans `ProgressBar`, ce qui évite de re-rendre toute
-                  l'app à chaque mouvement de doigt. */}
+              {/* Barre de progression scrubbable */}
               <ProgressBar
                 positionMillis={positionMillis}
                 durationMillis={durationMillis}
@@ -1021,92 +1559,140 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
               />
 
               {/* Time & Tech Specs Row */}
-              <View style={styles.timeSpecsRow}>
-                <View style={styles.specsPill}>
-                  <Text style={styles.specsPillText}>
-                    {currentTrack.sampleRate ? `${currentTrack.sampleRate}` : '44.1 KHZ'}{' '}
-                    {currentTrack.bitrate ? `${currentTrack.bitrate}` : '1116 KBPS'}{' '}
-                    {currentTrack.format ? currentTrack.format : 'FLAC'}
-                  </Text>
-                </View>
-              </View>
-            </>
-          ) : currentTab === 'library' ? (
-            /* TAB 2: LIBRARY SCREEN MATCHING USER SCREENSHOT 1 */
-            <View style={{ flex: 1 }}>
-              <LibraryView
-                tracks={tracks}
-                currentTrack={currentTrack}
-                isPlaying={isPlaying}
-                playlists={playlists}
-                onPlayPause={() => handlePlayPause()}
-                onSelectTrack={(track) => {
-                  const idx = tracks.findIndex((t) => t.id === track.id);
-                  if (idx !== -1) loadTrack(idx, true);
-                }}
-                onAddTracks={handleAddTracks}
-                onBackToPlayer={() => setCurrentTab('player')}
-                onTrackAction={openTrackAction}
-                onCreatePlaylist={handleCreatePlaylist}
-                onDeletePlaylist={handleDeletePlaylist}
-                onOpenQueueDrawer={() => setIsQueueDrawerVisible(true)}
-              />
-            </View>
-          ) : (
-            /* TAB 3: EQUALIZER SCREEN MATCHING USER SCREENSHOT */
-            <View style={{ flex: 1 }}>
-              <EqualizerView
-                dsp={dsp}
-                onUpdateDSP={setDsp}
-                onOpenPresets={() => setIsPresetsVisible(true)}
-                customPresets={customPresets}
-                onSaveCustomPreset={handleSaveCustomPreset}
-                onDeleteCustomPreset={handleDeleteCustomPreset}
-              />
-
-              {/* Mini Player Bar above Dock on Equalizer screen */}
-              <TouchableOpacity
-                onPress={() => setCurrentTab('player')}
-                style={styles.miniPlayerBar}
-                activeOpacity={0.85}
-              >
-                {/* Mini Album Cover / Icon */}
-                {currentTrack.artwork ? (
-                  <Image source={{ uri: currentTrack.artwork }} style={styles.miniCoverImg} />
-                ) : (
-                  <View style={styles.miniCoverBox}>
-                    <Ionicons name="musical-notes" size={20} color="#E2E8F0" />
-                  </View>
-                )}
-
-                {/* Track Title and Artist */}
-                <View style={styles.miniMetaBox}>
-                  <Text numberOfLines={1} style={styles.miniTitleText}>
-                    {currentTrack.title}
-                  </Text>
-                  <Text numberOfLines={1} style={styles.miniArtistText}>
-                    {currentTrack.artist} - {currentTrack.album}
-                  </Text>
-                </View>
-
-                {/* Mini Play/Pause button */}
-                <TouchableOpacity
-                  onPress={handlePlayPause}
-                  style={styles.miniPlayBtn}
-                  activeOpacity={0.7}
+              {appSettings.showTrackDetails !== false && currentTrack.uri !== '' && (
+                <View
+                  style={[
+                    styles.timeSpecsRow,
+                    {
+                      marginTop: isShortScreen ? 4 : 8,
+                      marginBottom: isShortScreen ? 4 : 10,
+                    },
+                  ]}
                 >
-                  <Ionicons
-                    name={isPlaying ? 'pause' : 'play'}
-                    size={24}
-                    color="#FFFFFF"
-                  />
-                </TouchableOpacity>
+                  <View style={styles.specsPill}>
+                    <Text style={styles.specsPillText}>
+                      {currentTrack.sampleRate ? `${currentTrack.sampleRate}` : '44.1 KHZ'}{' '}
+                      {currentTrack.bitrate ? `${currentTrack.bitrate}` : '1116 KBPS'}{' '}
+                      {currentTrack.format ? currentTrack.format : 'FLAC'}
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+
+          {/* TAB 2: LIBRARY SCREEN MATCHING USER SCREENSHOT 1 */}
+          <View style={{ flex: 1, display: currentTab === 'library' ? 'flex' : 'none' }}>
+            <LibraryView
+              tracks={tracks}
+              currentTrack={currentTrack}
+              isPlaying={isPlaying}
+              playlists={playlists}
+              activePlaylistId={activePlaylistId}
+              activeCategory={activeCategory}
+              selectedGroupKey={activeGroupKey}
+              isVisible={currentTab === 'library'}
+              onPlayPause={() => handlePlayPause()}
+              onSelectTrack={(track, playlist, category, groupKey) => {
+                if (playlist) {
+                  setActivePlaylistId(playlist.id);
+                  setActiveCategory('playlists');
+                  setActiveGroupKey(null);
+                } else if (category) {
+                  setActivePlaylistId(null);
+                  setActiveCategory(category);
+                  setActiveGroupKey(groupKey || null);
+                }
+                const idx = tracks.findIndex((t) => t.id === track.id);
+                if (idx !== -1) loadTrack(idx, true);
+              }}
+              onNavigateCategory={(category, groupKey, playlist) => {
+                setActiveCategory(category);
+                setActiveGroupKey(groupKey || null);
+                if (playlist) {
+                  setActivePlaylistId(playlist.id);
+                }
+              }}
+              onAddTracks={handleAddTracks}
+              onBackToPlayer={() => setCurrentTab('player')}
+              onTrackAction={openTrackAction}
+              onCreatePlaylist={handleCreatePlaylist}
+              onDeletePlaylist={handleDeletePlaylist}
+              onDeleteFolder={handleDeleteFolder}
+              onRenameFolder={handleRenameFolder}
+              onOpenQueueDrawer={() => setIsQueueDrawerVisible(true)}
+            />
+          </View>
+
+          {/* TAB 3: EQUALIZER SCREEN MATCHING USER SCREENSHOT */}
+          <View style={{ flex: 1, display: currentTab === 'equalizer' ? 'flex' : 'none' }}>
+            <EqualizerView
+              dsp={dsp}
+              systemVolume={systemVolume}
+              onUpdateDSP={setDsp}
+              onOpenPresets={() => setIsPresetsVisible(true)}
+              customPresets={customPresets}
+              onSaveCustomPreset={handleSaveCustomPreset}
+              onDeleteCustomPreset={handleDeleteCustomPreset}
+            />
+
+            {/* Mini Player Bar above Dock on Equalizer screen */}
+            <TouchableOpacity
+              onPress={() => setCurrentTab('player')}
+              style={styles.miniPlayerBar}
+              activeOpacity={0.85}
+            >
+              {/* Mini Album Cover / Icon */}
+              {currentTrack.artwork ? (
+                <Image source={{ uri: currentTrack.artwork }} style={styles.miniCoverImg} />
+              ) : (
+                <View style={styles.miniCoverBox}>
+                  <Ionicons name="musical-notes" size={20} color="#E2E8F0" />
+                </View>
+              )}
+
+              {/* Track Title and Artist */}
+              <View style={styles.miniMetaBox}>
+                <Text numberOfLines={1} style={styles.miniTitleText}>
+                  {currentTrack.title}
+                </Text>
+                <Text numberOfLines={1} style={styles.miniArtistText}>
+                  {currentTrack.artist} - {currentTrack.album}
+                </Text>
+              </View>
+
+              {/* Mini Play/Pause button */}
+              <TouchableOpacity
+                onPress={handlePlayPause}
+                style={styles.miniPlayBtn}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={isPlaying ? 'pause' : 'play'}
+                  size={24}
+                  color="#FFFFFF"
+                />
               </TouchableOpacity>
-            </View>
-          )}
+            </TouchableOpacity>
+          </View>
 
           {/* Bottom Elevated Navigation Dock: Grid, Equalizer, Search, Menu */}
-          <View style={styles.bottomDock}>
+          <View
+            style={[
+              styles.bottomDock,
+              {
+                paddingVertical: isShortScreen ? 8 : 11,
+                // La barre de navigation du système occupe le bas de l'écran et
+                // le dock se dessinait dessous. La marge système s'ajoute à
+                // l'espacement esthétique du dock.
+                marginBottom: insetPadding(
+                  insets,
+                  'bottom',
+                  isShortScreen ? 4 : 8
+                ),
+              },
+            ]}
+          >
             {/* 1. Grid (Categories / Library / Back to Player) */}
             <TouchableOpacity
               onPress={() => {
@@ -1120,7 +1706,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
             >
               <MaterialCommunityIcons
                 name="view-grid"
-                size={28}
+                size={isShortScreen ? 24 : 28}
                 color={currentTab === 'library' ? '#FFFFFF' : '#7D8A99'}
               />
             </TouchableOpacity>
@@ -1138,7 +1724,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
             >
               <MaterialCommunityIcons
                 name="chart-bar"
-                size={28}
+                size={isShortScreen ? 24 : 28}
                 color={currentTab === 'equalizer' ? '#FFFFFF' : '#7D8A99'}
               />
             </TouchableOpacity>
@@ -1149,7 +1735,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
               style={styles.dockIconBtn}
               activeOpacity={0.7}
             >
-              <Ionicons name="search" size={26} color="#7D8A99" />
+              <Ionicons name="search" size={isShortScreen ? 22 : 26} color="#7D8A99" />
             </TouchableOpacity>
 
             {/* 4. Menu / Settings Icon (Matching image 2) */}
@@ -1165,7 +1751,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
             >
               <MaterialCommunityIcons
                 name="menu"
-                size={30}
+                size={isShortScreen ? 26 : 30}
                 color="#7D8A99"
               />
             </TouchableOpacity>
@@ -1395,26 +1981,21 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
           onClearSession={handleClearSession}
         />
 
-        {/* Toast visuel de reprise de lecture */}
-        {restoredNotice && (
-          <View style={styles.restoredToast}>
-            <Ionicons name="bookmark" size={16} color="#38BDF8" />
-            <Text style={styles.restoredToastText}>{restoredNotice}</Text>
-          </View>
-        )}
-
         {/* Song Context Menu (Éditer tags, Supprimer, Lire ensuite, Lire plus tard, Playlists) */}
         <SongActionModal
           visible={isActionModalVisible}
           track={activeActionTrack}
           playlists={playlists}
+          currentPlaylistId={activeActionPlaylistId}
           onClose={() => {
             setIsActionModalVisible(false);
             setActiveActionTrack(null);
+            setActiveActionPlaylistId(null);
           }}
           onPlayNext={handlePlayNext}
           onAddToQueue={handleAddToQueue}
           onAddToPlaylist={handleAddToPlaylist}
+          onRemoveFromPlaylist={handleRemoveFromPlaylist}
           onCreatePlaylistWithTrack={handleCreatePlaylistWithTrack}
           onUpdateTrackTags={handleUpdateTrackTags}
           onDeleteTrack={handleDeleteTrack}
@@ -1442,7 +2023,9 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
           <View style={styles.searchModalOverlay}>
             <View style={styles.searchModalBox}>
               <View style={styles.presetsModalHeader}>
-                <Text style={styles.presetsModalTitle}>MINUTERIE DE VEILLE</Text>
+                <Text style={styles.presetsModalTitle}>
+                  {getTranslation(appSettings.language, 'sleepTimerTitle')}
+                </Text>
                 <TouchableOpacity onPress={() => setIsSleepTimerVisible(false)}>
                   <Ionicons name="close" size={24} color="#FFFFFF" />
                 </TouchableOpacity>
@@ -1499,14 +2082,31 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
           temps de rendu de React).
         */}
         {needsUserGesture && (
-          <View style={styles.autoplayGate} pointerEvents="none">
+          <View style={styles.autoplayGate}>
             <Text style={styles.autoplayGateText}>
-              Touchez pour lancer la lecture
+              {getTranslation(appSettings.language, 'touchToPlay')}
             </Text>
           </View>
         )}
+
+        {/* Écran officiel de démarrage et chargement avec le logo MAS Player et mot Chargement */}
+        {isAppLoadingVisible && (
+          <AppLoadingScreen
+            visible={isStartingUp}
+            statusText={getTranslation(appSettings.language, 'loading')}
+            onFinish={() => setIsAppLoadingVisible(false)}
+          />
+        )}
       </SafeAreaView>
     </View>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <MainApp />
+    </SafeAreaProvider>
   );
 }
 
@@ -1523,7 +2123,7 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
     width: '100%',
-    maxWidth: 480, // Responsive clamp on large desktop screens
+    maxWidth: 520, // Responsive clamp on large desktop / tablet screens
     height: '100%',
   },
   appContainer: {
@@ -1531,7 +2131,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#000000',
     justifyContent: 'space-between',
     width: '100%',
-    paddingBottom: Platform.OS === 'ios' ? 8 : 4,
+    paddingBottom: Platform.OS === 'android' ? 12 : (Platform.OS === 'ios' ? 8 : 4),
   },
   topPlayerBar: {
     flexDirection: 'row',
@@ -1639,11 +2239,13 @@ const styles = StyleSheet.create({
   },
   centerStage: {
     flex: 1,
+    width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: '#000000',
-    minHeight: 200,
+    minHeight: 180,
     position: 'relative',
+    overflow: 'hidden',
   },
   moreMenuFloatingBtn: {
     position: 'absolute',
@@ -1680,6 +2282,25 @@ const styles = StyleSheet.create({
     color: '#9EABB8',
     fontSize: 13,
     fontWeight: '400',
+  },
+  activePlaylistPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+    marginTop: 6,
+  },
+  activePlaylistPillText: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '700',
+    maxWidth: 240,
   },
   utilityPillsRow: {
     flexDirection: 'row',
@@ -1908,6 +2529,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
     paddingBottom: 120,
+    pointerEvents: 'none',
   },
   autoplayGateText: {
     color: '#8A9AA8',

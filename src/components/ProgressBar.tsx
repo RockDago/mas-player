@@ -108,20 +108,26 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
 
       onPanResponderRelease: () => {
         const target = previewRef.current;
-        previewRef.current = null;
-        // Remis à null AVANT le commit : sinon le curseur revient brièvement à
-        // l'ancienne position le temps que le seek prenne effet.
-        setPreviewMs(null);
-        if (target !== null) onSeekCommitRef.current(target);
+        if (target !== null) {
+          onSeekCommitRef.current(target);
+        }
+        setTimeout(() => {
+          previewRef.current = null;
+          setPreviewMs(null);
+        }, 60);
       },
 
       // Geste interrompu (notification, changement d'onglet) : on valide ce qui
       // était prévisualisé plutôt que d'ignorer le geste.
       onPanResponderTerminate: () => {
         const target = previewRef.current;
-        previewRef.current = null;
-        setPreviewMs(null);
-        if (target !== null) onSeekCommitRef.current(target);
+        if (target !== null) {
+          onSeekCommitRef.current(target);
+        }
+        setTimeout(() => {
+          previewRef.current = null;
+          setPreviewMs(null);
+        }, 60);
       },
     })
   ).current;
@@ -150,9 +156,9 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
         }}
         {...panResponder.panHandlers}
       >
-        {/* Rail et remplissage : `pointerEvents="none"` pour que le pointeur
+        {/* Rail et remplissage : `pointerEvents: 'none'` pour que le pointeur
             atteigne toujours la zone tactile et non l'une de ces vues. */}
-        <View pointerEvents="none" style={styles.rail}>
+        <View style={styles.rail}>
           <View
             style={[
               styles.fill,
@@ -162,7 +168,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
         </View>
       </View>
 
-      <View pointerEvents="none" style={styles.timeRow}>
+      <View style={styles.timeRow}>
         <Text style={styles.timeText}>{fmt(Math.floor(Math.max(0, effectiveMs) / 1000))}</Text>
         <Text style={styles.timeText}>{fmt(Math.floor(duration / 1000))}</Text>
       </View>
@@ -189,6 +195,7 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     overflow: 'hidden',
+    pointerEvents: 'none',
   },
   fill: {
     height: '100%',
@@ -198,6 +205,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     marginTop: 2,
+    pointerEvents: 'none',
   },
   timeText: {
     color: '#8A9AA8',

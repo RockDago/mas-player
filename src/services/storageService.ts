@@ -1,13 +1,64 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { Track, Playlist, DSPState, EqualizerPreset } from '../types/audio';
+import { normalizeTracks } from '../utils/audioStorage';
 
 export interface AppSettings {
+  // Mémorisation & Reprise
   rememberLastTrack: boolean;
   rememberPlaybackPosition: boolean;
   autoPlayOnLaunch: boolean;
+  resumeOnHeadset: boolean;
+
+  // Look & Feel
+  theme: 'oled' | 'cyber' | 'violet' | 'carbon';
+  visualizerStyle: 'vinyl' | 'bars' | 'wave';
+  showAudioDetails: boolean;
+  richNotifications: boolean;
+  language: 'fr' | 'en' | 'es' | 'de' | 'it';
+
+  // Audio
   crossfade: boolean;
+  crossfadeDuration: number;
   replayGain: boolean;
+  replayGainMode: 'track' | 'album';
+  dvc32Bit: boolean;
+  hiResOutput: boolean;
+  ultraLowLatency: boolean;
+
+  // Visualization
+  spectrumReactive: 'low' | 'normal' | 'ultra';
+  beatPulse: boolean;
+  autoFadeControls: boolean;
+  fadedOpacity: number;
+
+  // Background
+  backgroundStyle: 'blur' | 'oled' | 'gradient';
+  blurIntensity: 'low' | 'medium' | 'deep';
+  colorSaturation: boolean;
+  ambientParticles: boolean;
+
+  // Album Art
+  autoDownloadArt: boolean;
+  highQualityArt: boolean;
+  preferEmbeddedArt: boolean;
+
+  // Library
+  ignoreShortAudio: boolean;
+  librarySort: 'title' | 'artist' | 'album' | 'date';
+  showTrackDetails: boolean;
+  clearQueueOnNewPlay: boolean;
+
+  // Headset / Bluetooth
+  pauseOnDisconnect: boolean;
+  resumeOnConnect: boolean;
+  headsetButtons: boolean;
+
+  // Lock Screen
+  lockScreenControls: boolean;
+  lockScreenAlbumArt: boolean;
+  lockScreenSeekButtons: boolean;
+  keepScreenAwake: boolean;
 }
 
 export interface LastPlaybackSession {
@@ -16,14 +67,56 @@ export interface LastPlaybackSession {
   positionMillis: number;
   durationMillis: number;
   updatedAt: number;
+  activePlaylistId?: string | null;
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   rememberLastTrack: true,
   rememberPlaybackPosition: true,
   autoPlayOnLaunch: false,
+  resumeOnHeadset: true,
+
+  theme: 'oled',
+  visualizerStyle: 'vinyl',
+  showAudioDetails: true,
+  richNotifications: true,
+  language: 'fr',
+
   crossfade: true,
+  crossfadeDuration: 2,
   replayGain: true,
+  replayGainMode: 'track',
+  dvc32Bit: true,
+  hiResOutput: true,
+  ultraLowLatency: true,
+
+  spectrumReactive: 'normal',
+  beatPulse: true,
+  autoFadeControls: false,
+  fadedOpacity: 0.4,
+
+  backgroundStyle: 'blur',
+  blurIntensity: 'medium',
+  colorSaturation: true,
+  ambientParticles: true,
+
+  autoDownloadArt: true,
+  highQualityArt: true,
+  preferEmbeddedArt: true,
+
+  ignoreShortAudio: true,
+  librarySort: 'title',
+  showTrackDetails: true,
+  clearQueueOnNewPlay: false,
+
+  pauseOnDisconnect: true,
+  resumeOnConnect: false,
+  headsetButtons: true,
+
+  lockScreenControls: true,
+  lockScreenAlbumArt: true,
+  lockScreenSeekButtons: true,
+  keepScreenAwake: false,
 };
 
 const DEFAULT_DSP: DSPState = {
@@ -33,12 +126,31 @@ const DEFAULT_DSP: DSPState = {
   treble: 0,
   preamp: 0,
   stereoExpansion: 0,
+  crossfeed: 0,
   tempo: 1.0,
   bands: new Array(10).fill(0),
   balance: 0,
-  volume: 75,
+  volume: 100,
   mono: false,
   tempoEnabled: false,
+
+  // Réverbération éteinte par défaut : ajouter une queue à un morceau qui n'en
+  // demande pas est une altération auditive, pas une amélioration. Les deux
+  // valeurs de knob reprennent celles que l'onglet FX affichait déjà avant que
+  // la réverbération n'existe — l'interface ne « bouge » donc pas au premier
+  // démarrage.
+  reverbEnabled: false,
+  roomSize: 40,
+  damping: 50,
+  reverbMix: 25,
+
+  // TONE actif, LIMIT actif. `limitEnabled` vaut `true` et non `false` : le
+  // limiteur est la garantie que la chaîne ne dépasse jamais le zéro numérique.
+  // Le laisser éteint par défaut reviendrait à retirer cette garantie à un
+  // utilisateur qui ne l'a pas demandée — et le laisser éteint par erreur
+  // ferait écrêter un préréglage consensuel sur les deux plateformes.
+  toneEnabled: true,
+  limitEnabled: true,
 };
 
 /** Nombre de bandes attendu par l'UI et par les moteurs DSP. */
@@ -72,6 +184,7 @@ function normalizeDSP(raw: unknown): DSPState {
     treble: num(input.treble, DEFAULT_DSP.treble),
     preamp: num(input.preamp, DEFAULT_DSP.preamp),
     stereoExpansion: num(input.stereoExpansion, DEFAULT_DSP.stereoExpansion),
+    crossfeed: num(input.crossfeed, DEFAULT_DSP.crossfeed),
     tempo: num(input.tempo, DEFAULT_DSP.tempo),
     bands,
     balance: num(input.balance, DEFAULT_DSP.balance),
@@ -79,6 +192,21 @@ function normalizeDSP(raw: unknown): DSPState {
     mono: typeof input.mono === 'boolean' ? input.mono : DEFAULT_DSP.mono,
     tempoEnabled:
       typeof input.tempoEnabled === 'boolean' ? input.tempoEnabled : DEFAULT_DSP.tempoEnabled,
+    // Un état DSP écrit avant l'existence de la réverbération n'a aucun de ces
+    // quatre champs : sans ce repli explicite, `roomSize` vaudrait `undefined`
+    // et le moteur natif recevrait un `NaN` en delay.
+    reverbEnabled:
+      typeof input.reverbEnabled === 'boolean' ? input.reverbEnabled : DEFAULT_DSP.reverbEnabled,
+    roomSize: num(input.roomSize, DEFAULT_DSP.roomSize),
+    damping: num(input.damping, DEFAULT_DSP.damping),
+    reverbMix: num(input.reverbMix, DEFAULT_DSP.reverbMix),
+    // Même cas qu'au-dessus : un état écrit avant l'existence de ces deux
+    // pastilles. Le repli doit valoir « actives » — l'état par défaut — et non
+    // le neutre, sinon ouvrir une session ancienne éteindrait le limiteur.
+    toneEnabled:
+      typeof input.toneEnabled === 'boolean' ? input.toneEnabled : DEFAULT_DSP.toneEnabled,
+    limitEnabled:
+      typeof input.limitEnabled === 'boolean' ? input.limitEnabled : DEFAULT_DSP.limitEnabled,
   };
 }
 
@@ -279,7 +407,8 @@ class StorageService {
     try {
       const data = await getItem(STORAGE_KEYS.CUSTOM_TRACKS);
       if (data) {
-        return JSON.parse(data) as Track[];
+        const tracks = JSON.parse(data) as Track[];
+        return normalizeTracks(tracks);
       }
     } catch (e) {
       console.warn('Erreur lecture custom tracks:', e);
@@ -322,7 +451,8 @@ class StorageService {
     try {
       const data = await getItem(STORAGE_KEYS.QUEUE);
       if (data) {
-        return JSON.parse(data) as Track[];
+        const queue = JSON.parse(data) as Track[];
+        return normalizeTracks(queue);
       }
     } catch (e) {
       console.warn('Erreur lecture queue:', e);

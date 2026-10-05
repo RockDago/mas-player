@@ -10,6 +10,7 @@ import {
   Image,
   Alert,
 } from 'react-native';
+import { useScreenInsets, insetPadding } from '../theme/insets';
 import { MaterialCommunityIcons, Ionicons, Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Track, Playlist } from '../types/audio';
@@ -19,10 +20,12 @@ interface SongActionModalProps {
   visible: boolean;
   track: Track | null;
   playlists: Playlist[];
+  currentPlaylistId?: string | null;
   onClose: () => void;
   onPlayNext: (track: Track) => void;
   onAddToQueue: (track: Track) => void;
   onAddToPlaylist: (track: Track, playlistId: string) => void;
+  onRemoveFromPlaylist?: (track: Track, playlistId: string) => void;
   onCreatePlaylistWithTrack: (track: Track, playlistName: string) => void;
   onUpdateTrackTags: (updatedTrack: Track) => void;
   onDeleteTrack: (track: Track) => void;
@@ -33,15 +36,20 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
   visible,
   track,
   playlists,
+  currentPlaylistId,
   onClose,
   onPlayNext,
   onAddToQueue,
   onAddToPlaylist,
+  onRemoveFromPlaylist,
   onCreatePlaylistWithTrack,
   onUpdateTrackTags,
   onDeleteTrack,
   onToggleFavorite,
 }) => {
+  // Marge système mesurée. La modale est montée hors du `SafeAreaProvider`
+  // de l'écran, elle la lit donc par contexte — voir src/theme/insets.ts.
+  const insets = useScreenInsets();
   const [subModal, setSubModal] = useState<'none' | 'editTags' | 'addToPlaylist' | 'trackInfo'>('none');
   const [editTitle, setEditTitle] = useState<string>('');
   const [editArtist, setEditArtist] = useState<string>('');
@@ -115,7 +123,14 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
           onPress={onClose}
         />
 
-        <View style={styles.actionSheet}>
+        <View
+          style={[
+            styles.actionSheet,
+            // La feuille se collerait au bord bas de l'écran, sous la barre de
+            // navigation du système. La marge mesurée s'ajoute à l'espacement.
+            { paddingBottom: insetPadding(insets, 'bottom', 24) },
+          ]}
+        >
           {/* Header with track preview */}
           <View style={styles.trackHeader}>
             <View style={styles.trackThumbBox}>
@@ -134,7 +149,7 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
                 {track.artist} • {track.album}
               </Text>
               <Text style={styles.trackBadge}>
-                {track.format || 'FLAC'} • {formatTime(track.duration || 180)} •{' '}
+                {track.format || 'FLAC'} • {formatTime(track.duration || 0)} •{' '}
                 {track.sampleRate || '44.1 kHz'}
               </Text>
             </View>
@@ -207,6 +222,25 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
                 <Text style={styles.actionSub}>Sélectionner ou créer une liste de lecture</Text>
               </View>
             </TouchableOpacity>
+
+            {/* 3b. Remove from Current Playlist (si applicable) */}
+            {currentPlaylistId && onRemoveFromPlaylist && track && playlists.find(p => p.id === currentPlaylistId)?.trackIds.includes(track.id) && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => {
+                  onRemoveFromPlaylist(track, currentPlaylistId);
+                  onClose();
+                }}
+              >
+                <MaterialCommunityIcons name="playlist-remove" size={24} color="#FB7185" />
+                <View style={styles.actionTextWrapper}>
+                  <Text style={[styles.actionTitle, { color: '#FB7185' }]}>
+                    Retirer de cette playlist
+                  </Text>
+                  <Text style={styles.actionSub}>Enlever ce morceau de la playlist actuelle</Text>
+                </View>
+              </TouchableOpacity>
+            )}
 
             {/* 4. Edit Tags */}
             <TouchableOpacity
@@ -472,7 +506,7 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
                 </View>
                 <View style={styles.infoRow}>
                   <Text style={styles.infoLabel}>Durée :</Text>
-                  <Text style={styles.infoVal}>{formatTime(track.duration || 180)}</Text>
+                  <Text style={styles.infoVal}>{formatTime(track.duration || 0)}</Text>
                 </View>
                 <View style={styles.infoRow}>
                   <Text style={styles.infoLabel}>Moteur :</Text>

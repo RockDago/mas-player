@@ -4,8 +4,17 @@ import {
   EQ_PEAKING_Q,
   EQ_GAIN_MIN,
   EQ_GAIN_MAX,
+  BASS_WEIGHTS,
+  TREBLE_WEIGHTS,
   computeHeadroom,
+  computeReverbGains,
+  computeReverbDampingHz,
+  computeReverbDelayScale,
+  computeReverbLoopGains,
   dbToLinear,
+  REVERB_DELAY_L,
+  REVERB_DELAY_R,
+  REVERB_DAMPING_MAX_HZ,
 } from '../constants/presets';
 
 /**
@@ -13,11 +22,17 @@ import {
  *
  * Chaîne du graphe :
  *   MediaElementSource → lowShelf(250Hz) → 8×peaking(125Hz..8kHz)
- *   → highShelf(8kHz) → preamp → balance → limiter → master → destination
+ *   → highShelf(8kHz) → preamp → Mid/Side → crossfeed → reverbération
+ *   → balance → limiter → master → destination
  *
  * L'ordre des filtres n'a pas d'importance pour un EQ (tous linéaires, sans
  * réinjection), mais le préampli DOIT être après l'EQ et avant le limiteur :
  * c'est lui qui réserve la marge anti-écrêtage.
+ *
+ * La réverbération se place après le crossfeed et avant la balance, et le
+ * limiteur reste le tout dernier étage de traitement : c'est lui qui porte la
+ * garantie du plafond numérique. Cette chaîne est l'exact équivalent de celle
+ * de `AudioDSPEngine.connectGraph` — voir `scripts/sync-check.cjs`.
  *
  * Un seul `HTMLAudioElement` est réutilisé pour toute la session : un
  * `MediaElementAudioSourceNode` ne peut être créé qu'une seule fois par élément,
@@ -26,6 +41,32 @@ import {
 
 /** Constante de lissage : plus petite = transition plus rapide entre deux gains. */
 const RAMP_TIME = 0.02;
+
+/**
+ * Gain maximal du crossfeed. Doit rester égal à `AudioDSPSpatial.maxCrossfeed` :
+ * `verify:sync` compare les deux constantes, sinon web et iOS divergent.
+ */
+const MAX_CROSSFEED = 0.15;
+
+/**
+ * Amplitude max de la largeur stéréo (width = 1 + pct/100 · ce facteur).
+ * Doit rester égal à `AudioDSPSpatial.maxWidthExponent`, comme `MAX_CROSSFEED`.
+ */
+const MAX_WIDTH_EXPONENT = 1.2;
+
+/**
+ * Plafond du limiteur, en dBFS. Doit rester égal à
+ * `LimiterState.thresholdDb` : `verify:sync` compare les deux, sinon web et iOS
+ * divergent. C'est aussi la valeur vers laquelle `applyDSP` revient quand la
+ * pastille LIMIT est éteinte — voir la note à cet endroit.
+ */
+const LIMIT_THRESHOLD_DB = -3;
+
+/** Attaque du limiteur, en secondes. Alignée sur le commentaire de `build()`. */
+const LIMIT_ATTACK_S = 0.002;
+
+/** Relâchement du limiteur, en secondes. Aligné sur `LimiterState.releaseSeconds`. */
+const LIMIT_RELEASE_S = 0.12;
 
 /**
  * Taille de la FFT de l'analyser de détection de rythme.
@@ -57,6 +98,32 @@ export class WebAudioEngine {
   private sideR: GainNode | null = null;
   private sideGain: GainNode | null = null;
   private sideInvert: GainNode | null = null;
+
+  // Crossfeed : mélange croisé L→R / R→L, après reconstruction M/S
+  private crossfeedSplit: ChannelSplitterNode | null = null;
+  private crossfeedMerge: ChannelMergerNode | null = null;
+  private crossfeedDirectL: GainNode | null = null;
+  private crossfeedDirectR: GainNode | null = null;
+  private crossfeedMixL: GainNode | null = null;
+  private crossfeedMixR: GainNode | null = null;
+
+  // Réverbération : deux lignes de retard désaccordées en boucle, avec un
+  // passe-bas d'amortissement sur le chemin de retour. Voir `applyReverb`.
+  private reverbInput: ChannelSplitterNode | null = null;
+  private reverbMerge: ChannelMergerNode | null = null;
+  private reverbDelayL: DelayNode | null = null;
+  private reverbDelayR: DelayNode | null = null;
+  private reverbDampL: BiquadFilterNode | null = null;
+  private reverbDampR: BiquadFilterNode | null = null;
+  private reverbFeedL: GainNode | null = null;
+  private reverbFeedR: GainNode | null = null;
+  /** Couplage croisé : la ligne G reçoit une part du retour de D, et réciproquement. */
+  private reverbCrossL: GainNode | null = null;
+  private reverbCrossR: GainNode | null = null;
+  private reverbWetL: GainNode | null = null;
+  private reverbWetR: GainNode | null = null;
+  private reverbDryL: GainNode | null = null;
+  private reverbDryR: GainNode | null = null;
 
   /** Vrai si le moteur tourne sur un navigateur sans Web Audio (repli silencieux). */
   static isSupported(): boolean {
@@ -147,6 +214,114 @@ export class WebAudioEngine {
     this.midSum.connect(this.merger, 0, 1);
     this.sideInvert.connect(this.merger, 0, 1);
 
+    // --- Crossfeed ---
+    // Placé APRÈS la reconstruction M/S, comme dans AudioDSPSpatial.swift :
+    // mélanger les canaux avant de reconstruire l'image ne donnerait pas le
+    // même résultat, parce que le Side serait lui-même déjà mélangé.
+    // Chaque sortie = 1·(canal direct) + c·(canal opposé), c <= 0.15.
+    this.crossfeedSplit = ctx.createChannelSplitter(2);
+    this.crossfeedMerge = ctx.createChannelMerger(2);
+    this.crossfeedDirectL = ctx.createGain();
+    this.crossfeedDirectL.gain.value = 1;
+    this.crossfeedDirectR = ctx.createGain();
+    this.crossfeedDirectR.gain.value = 1;
+    this.crossfeedMixL = ctx.createGain();
+    this.crossfeedMixL.gain.value = 0;
+    this.crossfeedMixR = ctx.createGain();
+    this.crossfeedMixR.gain.value = 0;
+
+    this.merger.connect(this.crossfeedSplit);
+    this.crossfeedSplit.connect(this.crossfeedDirectL, 0);
+    this.crossfeedSplit.connect(this.crossfeedDirectR, 1);
+    this.crossfeedSplit.connect(this.crossfeedMixL, 1);
+    this.crossfeedSplit.connect(this.crossfeedMixR, 0);
+    this.crossfeedDirectL.connect(this.crossfeedMerge, 0, 0);
+    this.crossfeedMixL.connect(this.crossfeedMerge, 0, 0);
+    this.crossfeedDirectR.connect(this.crossfeedMerge, 0, 1);
+    this.crossfeedMixR.connect(this.crossfeedMerge, 0, 1);
+
+    // --- Réverbération -----------------------------------------------------
+    // Schéma, avec le couplage croisé entre les deux lignes :
+    //
+    //   entrée ─┬──────────────────────────────► dry ─────────┐
+    //           └─► delay L ─► passe-bas L ─┬─► ×f ─► ×x ─┐    │
+    //                                      │              ├─► wet L ─► sortie G
+    //           ┌─► delay D ─► passe-bas D ─┴─► ×f ─► ×x ─┤    │
+    //   entrée ─┴──────────────────────────────► dry ─────────┤
+    //                                                     └─► wet D ─► sortie D
+    //
+    // Les deux lignes se réinjectent **mutuellement** (les gains ×f et ×x) :
+    // c'est ce qui désaccorde les canaux au fil du temps — le mode croisé
+    // décroît ~3 fois plus vite que le mode symétrique, donc l'image s'ouvre au
+    // lieu de répéter. Les gains sont normalisés par `1 + couplage` : sans
+    // cette normalisation, `f + x` vaudrait 1.17 et la boucle divergerait. Voir
+    // `computeReverbLoopGains` dans `presets.ts`.
+    //
+    // La boucle de retour passe par le passe-bas : c'est ce qui transforme un
+    // écho métallique en queue de pièce. Sans lui, chaque passage de la boucle
+    // réinjecte les aigus intacts et l'accumulation finit par siffler.
+    //
+    // Placée APRÈS le crossfeed, jamais avant : appliquée avant, la
+    // réverbération se retrouverait elle-même réinjectée dans l'oreille opposée
+    // par le crossfeed, et l'effet se doublerait d'une couche.
+    this.reverbInput = ctx.createChannelSplitter(2);
+    this.reverbMerge = ctx.createChannelMerger(2);
+    this.reverbDelayL = ctx.createDelay(1);
+    this.reverbDelayR = ctx.createDelay(1);
+    this.reverbDampL = ctx.createBiquadFilter();
+    this.reverbDampR = ctx.createBiquadFilter();
+    this.reverbFeedL = ctx.createGain();
+    this.reverbFeedR = ctx.createGain();
+    this.reverbCrossL = ctx.createGain();
+    this.reverbCrossR = ctx.createGain();
+    this.reverbWetL = ctx.createGain();
+    this.reverbWetR = ctx.createGain();
+    this.reverbDryL = ctx.createGain();
+    this.reverbDryR = ctx.createGain();
+
+    for (const damp of [this.reverbDampL, this.reverbDampR]) {
+      if (!damp) continue;
+      damp.type = 'lowpass';
+      damp.frequency.value = REVERB_DAMPING_MAX_HZ;
+      damp.Q.value = 0.0001; // passe-bas à un pôle : le plus plat possible
+    }
+    const loop = computeReverbLoopGains();
+    this.reverbFeedL.gain.value = loop.self;
+    this.reverbFeedR.gain.value = loop.self;
+    this.reverbCrossL.gain.value = loop.cross;
+    this.reverbCrossR.gain.value = loop.cross;
+
+    // Gauche : entrée 0 → retard L → amortissement → retour
+    this.reverbInput.connect(this.reverbDelayL, 0);
+    this.reverbDelayL.connect(this.reverbDampL);
+    this.reverbDampL.connect(this.reverbFeedL);
+    this.reverbFeedL.connect(this.reverbDelayL); // fermeture de la boucle
+    this.reverbDampL.connect(this.reverbCrossL); // part du retour G vers la ligne D
+    this.reverbFeedL.connect(this.reverbWetL); // sortie humide
+
+    // Droite : entrée 1 → retard R → amortissement → retour
+    this.reverbInput.connect(this.reverbDelayR, 1);
+    this.reverbDelayR.connect(this.reverbDampR);
+    this.reverbDampR.connect(this.reverbFeedR);
+    this.reverbFeedR.connect(this.reverbDelayR);
+    this.reverbDampR.connect(this.reverbCrossR); // part du retour D vers la ligne G
+    this.reverbFeedR.connect(this.reverbWetR);
+
+    // Le croisement se referme par les retards eux-mêmes : chaque ligne reçoit
+    // donc son propre retour (×f) plus la part de l'autre (×x), exactement
+    // comme la matrice `[[s, x], [x, s]]` du natif.
+    this.reverbCrossL.connect(this.reverbDelayR);
+    this.reverbCrossR.connect(this.reverbDelayL);
+
+    // Signal sec, en parallèle et sans passer par la boucle
+    this.reverbInput.connect(this.reverbDryL, 0);
+    this.reverbInput.connect(this.reverbDryR, 1);
+
+    this.reverbDryL.connect(this.reverbMerge, 0, 0);
+    this.reverbWetL.connect(this.reverbMerge, 0, 0);
+    this.reverbDryR.connect(this.reverbMerge, 0, 1);
+    this.reverbWetR.connect(this.reverbMerge, 0, 1);
+
     // StereoPanner n'existe pas partout (Safari ancien) : on garde un GainNode
     // de repli pour ne pas casser la construction du graphe.
     const panCtor = (ctx as any).createStereoPanner
@@ -155,11 +330,31 @@ export class WebAudioEngine {
     this.balancePan = panCtor() as StereoPannerNode;
 
     this.limiter = ctx.createDynamicsCompressor();
-    this.limiter.threshold.value = -3;
+    this.limiter.threshold.value = LIMIT_THRESHOLD_DB;
     this.limiter.knee.value = 0;
-    this.limiter.ratio.value = 20;
-    this.limiter.attack.value = 0.002;
-    this.limiter.release.value = 0.12;
+    /**
+     Ratio 1 : le compresseur devient un limiteur au sens strict — la sortie
+     atteint le seuil et ne le franchit jamais.
+
+     Ce n'était pas le réglage d'origine (20). La raison du changement est
+     mesurée, pas esthétique : avec un ratio 20, la courbe vaut
+     `0.05·db − 2.85`, donc une crête à +60 dBFS ressort encore à +0.15 dBFS,
+     au-dessus du zéro numérique. Un étage qui laisse passer le zéro numérique
+     n'empêche pas l'écrêtage qu'il est censé empêcher — or les préréglages
+     d'origine sortent de la chaîne jusqu'à +12.1 dBFS (cf. `verify-dsp.cjs`,
+     section 7).
+
+     Ce qui reste de compression vient de l'enveloppe temporelle, pas de la
+     courbe statique : attaque de 2 ms, relâchement de 120 ms. C'est la
+     définition d'un limiteur.
+
+     Le limiteur natif (`modules/expo-audio-dsp/ios/AudioDSPLimiter.swift`)
+     implémente exactement cette fonction, et `scripts/verify-limiter.cjs`
+     compare les deux. Un ratio 20 ici ferait diverger les plateformes.
+     */
+    this.limiter.ratio.value = 1;
+    this.limiter.attack.value = LIMIT_ATTACK_S;
+    this.limiter.release.value = LIMIT_RELEASE_S;
 
     this.masterGain = ctx.createGain();
     this.masterGain.gain.value = 1;
@@ -172,7 +367,10 @@ export class WebAudioEngine {
     }
     node.connect(this.preampGain);
     this.preampGain.connect(this.splitter);
-    this.merger.connect(this.balancePan as any);
+    // La réverbération se place après la reconstruction M/S et le crossfeed,
+    // et avant la balance : voir la note de câblage dans `build()`.
+    this.crossfeedMerge.connect(this.reverbInput);
+    this.reverbMerge.connect(this.balancePan as any);
     (this.balancePan as any).connect(this.limiter);
     this.limiter.connect(this.masterGain);
     this.masterGain.connect(ctx.destination);
@@ -217,15 +415,25 @@ export class WebAudioEngine {
     const bass = dsp.bass ?? 0;
     const treble = dsp.treble ?? 0;
 
-    const bassWeights = [1.0, 0.8, 0.5, 0.25];
-    const trebleWeights: { [idx: number]: number } = { 6: 0.25, 7: 0.5, 8: 0.8, 9: 1.0 };
+    const bassWeights = BASS_WEIGHTS;
+    const trebleWeights = TREBLE_WEIGHTS;
+
+    /**
+     * Contribution bass/treble, indépendante de la pastille TONE.
+     *
+     * `toneEnabled` à `false` ne retire pas les bandes — celles-ci relèvent de la
+     * pastille EQU — il retire seulement la **pente** que bass et treble
+     * ajoutent par-dessus. C'est la seule lecture possible du mot « TONE » à
+     * côté d'un « EQU » qui régit, lui, le corps de la courbe.
+     */
+    const tone = dsp.toneEnabled === false ? 0 : 1;
 
     const effectiveBands = bands.map((b, index) => {
       let g = b ?? 0;
       if (index < 4) {
-        g += bass * bassWeights[index];
+        g += tone * bass * (bassWeights[index] ?? 0);
       } else if (index >= 6) {
-        g += treble * (trebleWeights[index] ?? 0);
+        g += tone * treble * (trebleWeights[index] ?? 0);
       }
       return Math.max(EQ_GAIN_MIN, Math.min(EQ_GAIN_MAX, g));
     });
@@ -266,8 +474,25 @@ export class WebAudioEngine {
     // playerManager n'appelle plus setMono() en plus de applyDSP(), sinon le
     // second appel écraserait la largeur par 1.0.
     this.applyStereo(!!dsp.mono, dsp.stereoExpansion ?? 0);
+    this.applyCrossfeed(dsp.stereoExpansion ?? 0, dsp.crossfeed ?? 0);
+    this.applyReverb(
+      !!dsp.reverbEnabled,
+      dsp.roomSize ?? 0,
+      dsp.damping ?? 0,
+      dsp.reverbMix ?? 0
+    );
 
-    this.setVolume(dsp.volume ?? 75);
+    // Limiteur : la pastille LIMIT le commute réellement.
+    const limiterOn = dsp.limitEnabled !== false;
+    const limiter = this.limiter as DynamicsCompressorNode;
+    limiter.threshold.setTargetAtTime(limiterOn ? LIMIT_THRESHOLD_DB : 0, now, RAMP_TIME);
+    limiter.attack.setTargetAtTime(limiterOn ? LIMIT_ATTACK_S : 0, now, RAMP_TIME);
+    limiter.ratio.setTargetAtTime(limiterOn ? 20 : 1, now, RAMP_TIME);
+
+    // Volume : pas d'appel ici, contrairement au mono juste au-dessus. C'est
+    // `playerManager.setVolume` qui fait foi, et `dsp.volume` figure déjà dans
+    // le tableau de dépendances de l'effet `setDSP` — cet appel était donc un
+    // second passage sans effet, purement redondant.
   }
 
   /**
@@ -277,33 +502,156 @@ export class WebAudioEngine {
    * (données DSP complètes) et par `setMono` (bascule seule) : les deux chemins
    * convergent ici, donc aucun appel ne peut écraser la largeur de l'autre.
    *
-   * Gain unitaire vérifié : à width = 1, (L+R)/2 ± (L-R)/2 redonne L et R
-   * exacts — l'insertion de la matrice ne change donc pas le niveau.
+   * ## Le niveau, mesuré
+   *
+   * Le reconstructeur est `L' = M + S·w`, `R' = M - S·w`, ce qui donne la
+   * matrice symétrique `[[a,b],[b,a]]` dont les **valeurs singulières sont
+   * `{a+b, a-b}`**. Son pic n'est donc pas `(1+w)/2` mais exactement `w`,
+   * atteint sur un signal anti-phase (L = 1, R = -1).
+   *
+   * Avec l'ancien réglage `midSum = 1/((1+w)/2)`, qui ne normalisait que le Mid,
+   * le pic vaut `w` :
+   *
+   * | width | pic | dBFS |
+   * |---|---|---|
+   * | 50 % | 1.600 | **+4.08** |
+   * | 100 % | 2.200 | **+6.85** |
+   *
+   * Autrement dit, élargir l'image **montait le volume** de près de 7 dB à fond
+   * de course. Le commentaire qui affirmait « pic constant à 1.0000 » était faux.
+   *
+   * ## La correction
+   *
+   * On normalise les DEUX chemins par `n = max(1, w)`, ce qui donne une matrice
+   * de valeurs singulières `{1, 1}` : le pic est **exactement 1, à toute
+   * largeur**. L'image s'élargit, le volume ne bouge pas. C'est aussi ce que
+   * `scripts/verify-dsp.cjs` (section 10) vérifie.
+   *
+   * Note : après normalisation `sideGain` vaut exactement 1, mais on garde le
+   * nœud paramétrable plutôt que câblé en dur — la matrice reste ainsi ajustable
+   * sans retoucher le graphe.
    */
   private applyStereo(mono: boolean, expansion: number) {
     if (!this.ctx || !this.sideGain || !this.midSum) return;
     const now = this.ctx.currentTime;
-    if (mono) {
-      // Side = 0 → les deux sorties valent (L+R)/2.
-      this.sideGain.gain.setTargetAtTime(0, now, RAMP_TIME);
-    } else {
-      const pct = Math.max(0, Math.min(100, expansion));
-      const width = 1.0 + (pct / 100) * 1.2;
-      // Élargir le Side sans corriger le niveau ferait monter le volume :
-      // le reconstructeur (M + S·w, M − S·w) a pour pic exact (1+w)/2, soit
-      // +4.1 dB à w = 2.2. On renormalise donc sur le Mid par 1/pic, ce qui
-      // rend la largeur sans effet sur le niveau (pic constant à 1.0000) —
-      // l'image s'élargit, le volume ne bouge pas.
-      const peak = (1 + width) / 2;
-      this.sideGain.gain.setTargetAtTime(width, now, RAMP_TIME);
-      this.midSum.gain.setTargetAtTime(1 / peak, now, RAMP_TIME);
-      return;
-    }
-    this.midSum.gain.setTargetAtTime(1.0, now, RAMP_TIME);
+    const pct = Math.max(0, Math.min(100, expansion));
+    const width = 1.0 + (pct / 100) * MAX_WIDTH_EXPONENT;
+    // n >= 1 garantit que le pic ne dépasse jamais 1, et que width = 1 (n = 1)
+    // laisse passer le signal intact.
+    const normaliser = Math.max(1, width);
+
+    // Mono : Side = 0, donc les deux sorties valent (L+R)/2. Le Mid reste à 1,
+    // ce qui fait qu'une bascule en mono depuis une largeur > 0 n'amplifie rien.
+    this.sideGain.gain.setTargetAtTime(mono ? 0 : width / normaliser, now, RAMP_TIME);
+    this.midSum.gain.setTargetAtTime(mono ? 1 : 1 / normaliser, now, RAMP_TIME);
   }
 
-  /** Volume utilisateur en pourcentage (0-100). */
-  setVolume(volumePercent: number) {
+  /**
+   * Crossfeed : rapproche les canaux pour l'écoute casque.
+   *
+   * Chaque sortie = canal direct + c·canal opposé. Le plafond de 0.15 est celui
+   * de `AudioDSPSpatial.swift` : au-delà, le mono fantôme que la scène sur un
+   * casque était censée éviter devient net — le problème disparaît, on l'échange
+   * contre un autre.
+   *
+   * `c` décroît avec la largeur, exactement comme côté natif : sans ce couplage,
+   * un utilisateur qui monte les deux knobs en même temps n'entend aucun
+   * changement, alors que les deux réglages se neutralisent.
+   */
+  private applyCrossfeed(expansion: number, crossfeed: number) {
+    if (
+      !this.ctx ||
+      !this.crossfeedMixL ||
+      !this.crossfeedMixR ||
+      !this.crossfeedDirectL ||
+      !this.crossfeedDirectR
+    ) {
+      return;
+    }
+    const now = this.ctx.currentTime;
+    const widthPct = Math.max(0, Math.min(100, expansion));
+    const xPct = Math.max(0, Math.min(100, crossfeed));
+    const mix = MAX_CROSSFEED * (xPct / 100) * (1 - widthPct / 100);
+    this.crossfeedDirectL.gain.setTargetAtTime(1, now, RAMP_TIME);
+    this.crossfeedDirectR.gain.setTargetAtTime(1, now, RAMP_TIME);
+    this.crossfeedMixL.gain.setTargetAtTime(mix, now, RAMP_TIME);
+    this.crossfeedMixR.gain.setTargetAtTime(mix, now, RAMP_TIME);
+  }
+
+  /**
+   * Réverbération : deux lignes de retard en boucle, amortissement sur le retour.
+   *
+   * Les trois knobs n'ont pas le même effet, et c'est délibéré :
+   *
+   * - `roomSize` allonge le retard, donc la **taille de la pièce**. Il ne touche
+   *   à aucun gain : monter la taille ne fait jamais monter le volume.
+   * - `damping` monte la coupure du passe-bas de boucle, de `REVERB_MIN_DAMPING`
+   *   à `REVERB_DAMPING_HZ`. Comme ce filtre est dans la boucle, il n'affecte que
+   *   ce qui revient — le signal direct reste intact, sinon « pièce sourde »
+   *   signifierait « audio étouffé ».
+   * - `reverbMix` est le seul knob de **niveau**, via `computeReverbGains`.
+   *
+   * Le Plafond de dosage (`REVERB_WET_CAP`) est calculé dans `presets.ts` et
+   * partagé avec le natif : à 100 % de mélange, `wet + dry = 1`, donc l'étage
+   * reste à unité au lieu de pousser le signal dans le limiteur.
+   *
+   * Les retards sont fixes par canal (`REVERB_DELAY_L` / `REVERB_DELAY_R`) et
+   * `roomSize` ne fait que les **mettre à l'échelle** autour de leur valeur
+   * nominale : le rapport 7:11 entre les deux lignes reste donc irrationnel à
+   * toutes les tailles de pièce, et le motif périodique — le défaut le plus
+   * audible d'une réverbération bon marché — ne peut pas apparaître.
+   *
+   * À l'extinction, la réverbération n'est pas court-circuitée mais amenée à zéro
+   * par `setTargetAtTime` : une coupure franche d'un signalWet produirait un clic
+   * sur les fins de morceau.
+   */
+  private applyReverb(enabled: boolean, roomSize: number, damping: number, mix: number) {
+    const ctx = this.ctx;
+    if (
+      !ctx ||
+      !this.reverbDelayL ||
+      !this.reverbDelayR ||
+      !this.reverbDampL ||
+      !this.reverbDampR ||
+      !this.reverbWetL ||
+      !this.reverbWetR ||
+      !this.reverbDryL ||
+      !this.reverbDryR
+    ) {
+      return;
+    }
+    const now = ctx.currentTime;
+
+    // --- Taille de la pièce ---------------------------------------------
+    // Facteur de 1 (chambre) à 8 (plateau) ; la loi est dans `presets.ts`,
+    // partagée avec le natif. Voir le tableau RT60 de cette constante.
+    const scale = computeReverbDelayScale(roomSize);
+    this.reverbDelayL.delayTime.setTargetAtTime(
+      REVERB_DELAY_L * scale,
+      now,
+      RAMP_TIME
+    );
+    this.reverbDelayR.delayTime.setTargetAtTime(
+      REVERB_DELAY_R * scale,
+      now,
+      RAMP_TIME
+    );
+
+    // --- Amortissement ----------------------------------------------------
+    // Interpolation exponentielle, 80 Hz → 3.6 kHz : voir `computeReverbDampingHz`.
+    const cutoff = computeReverbDampingHz(damping);
+    this.reverbDampL.frequency.setTargetAtTime(cutoff, now, RAMP_TIME);
+    this.reverbDampR.frequency.setTargetAtTime(cutoff, now, RAMP_TIME);
+
+    // --- Dosage -----------------------------------------------------------
+    const gains = enabled ? computeReverbGains(mix) : { wet: 0, dry: 1 };
+    this.reverbWetL.gain.setTargetAtTime(gains.wet, now, RAMP_TIME);
+    this.reverbWetR.gain.setTargetAtTime(gains.wet, now, RAMP_TIME);
+    this.reverbDryL.gain.setTargetAtTime(gains.dry, now, RAMP_TIME);
+    this.reverbDryR.gain.setTargetAtTime(gains.dry, now, RAMP_TIME);
+  }
+
+  /** Volume utilisateur en pourcentage (0-100). */  setVolume(volumePercent: number) {
     const linear = Math.max(0, Math.min(1, volumePercent / 100));
     if (this.ctx && this.masterGain) {
       this.masterGain.gain.setTargetAtTime(
@@ -311,9 +659,16 @@ export class WebAudioEngine {
         this.ctx.currentTime,
         RAMP_TIME
       );
+      // L'élément ne doit PAS porter le même gain que `masterGain` : il alimente
+      // le graphe (`element → source → … → masterGain → destination`), donc les
+      // deux se multipliaient. Résultat, 75 % affichés ne donnaient que 0.5625,
+      // soit un quart sous l'étiquette. Tant que le graphe existe il est le seul
+      // maître ; l'élément ne sert plus que de filet si la construction a échoué.
+      if (this.element) this.element.volume = 1;
+    } else if (this.element) {
+      // Filet de sécurité : sans Web Audio, l'élément est le seul étage extant.
+      this.element.volume = linear;
     }
-    // Filet de sécurité : si le graphe n'existe pas, l'élément porte le volume.
-    if (this.element) this.element.volume = linear;
   }
 
   /**
@@ -376,5 +731,25 @@ export class WebAudioEngine {
     this.sideR = null;
     this.sideGain = null;
     this.sideInvert = null;
+    this.crossfeedSplit = null;
+    this.crossfeedMerge = null;
+    this.crossfeedDirectL = null;
+    this.crossfeedDirectR = null;
+    this.crossfeedMixL = null;
+    this.crossfeedMixR = null;
+    this.reverbInput = null;
+    this.reverbMerge = null;
+    this.reverbDelayL = null;
+    this.reverbDelayR = null;
+    this.reverbDampL = null;
+    this.reverbDampR = null;
+    this.reverbFeedL = null;
+    this.reverbFeedR = null;
+    this.reverbCrossL = null;
+    this.reverbCrossR = null;
+    this.reverbWetL = null;
+    this.reverbWetR = null;
+    this.reverbDryL = null;
+    this.reverbDryR = null;
   }
 }

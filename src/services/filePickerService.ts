@@ -1,8 +1,92 @@
-import { Platform } from 'react-native';
+import { Platform, PermissionsAndroid } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import { Directory } from 'expo-file-system';
 import JSZip from 'jszip';
 import { Track } from '../types/audio';
+import { persistAudioFile } from '../utils/audioStorage';
+import { saveWebAudioBlob } from './webAudioStorage';
+
+/**
+ * Demande les permissions de stockage et d'accès aux fichiers audio sur Android.
+ * - Sur Android 13+ (API 33+) : android.permission.READ_MEDIA_AUDIO
+ * - Sur Android 12 et versions antérieures : android.permission.READ_EXTERNAL_STORAGE
+ */
+export async function requestAndroidStoragePermission(): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
+
+  try {
+    const apiLevel =
+      typeof Platform.Version === 'number'
+        ? Platform.Version
+        : parseInt(String(Platform.Version), 10);
+
+    if (apiLevel >= 33) {
+      const permission = 'android.permission.READ_MEDIA_AUDIO' as any;
+      const hasPermission = await PermissionsAndroid.check(permission);
+      if (hasPermission) return true;
+
+      const status = await PermissionsAndroid.request(permission, {
+        title: 'Accès aux fichiers audio',
+        message:
+          'MAS Player a besoin d’accéder à vos fichiers audio pour lire vos morceaux directement depuis votre stockage sans les dupliquer.',
+        buttonPositive: 'Autoriser',
+        buttonNegative: 'Refuser',
+      });
+      return status === PermissionsAndroid.RESULTS.GRANTED;
+    } else {
+      const permission = PermissionsAndroid.PERMISSIONS.READ_EXTERNAL_STORAGE;
+      const hasPermission = await PermissionsAndroid.check(permission);
+      if (hasPermission) return true;
+
+      const status = await PermissionsAndroid.request(permission, {
+        title: 'Accès au stockage',
+        message:
+          'MAS Player a besoin d’accéder à votre stockage pour lire vos morceaux directement depuis votre appareil sans les dupliquer.',
+        buttonPositive: 'Autoriser',
+        buttonNegative: 'Refuser',
+      });
+      return status === PermissionsAndroid.RESULTS.GRANTED;
+    }
+  } catch (err) {
+    console.warn('[Permissions] Erreur demande permission stockage Android:', err);
+    return false;
+  }
+}
+
+/**
+ * Vérifie si un morceau existe déjà dans la bibliothèque pour éviter les doublons
+ */
+export function isTrackDuplicate(
+  title: string,
+  artist: string,
+  fileName: string,
+  folderName: string,
+  existingTracks?: Track[]
+): boolean {
+  if (!existingTracks || existingTracks.length === 0) return false;
+  const normTitle = (title || '').trim().toLowerCase();
+  const normArtist = (artist || '').trim().toLowerCase();
+  const normFile = (fileName || '').trim().toLowerCase();
+  const normFolder = (folderName || '').trim().toLowerCase();
+
+  return existingTracks.some((t) => {
+    const tTitle = (t.title || '').trim().toLowerCase();
+    const tArtist = (t.artist || '').trim().toLowerCase();
+    const tFile = (t.folderPath || t.uri || '').split('/').pop()?.toLowerCase() || '';
+    const tFolder = (t.folder || t.album || '').trim().toLowerCase();
+
+    // Même titre et même artiste
+    if (normTitle && tTitle === normTitle && normArtist && tArtist === normArtist) {
+      return true;
+    }
+    // Même nom de fichier dans le même dossier
+    if (normFile && tFile === normFile && normFolder && tFolder === normFolder) {
+      return true;
+    }
+    return false;
+  });
+}
 
 const AUDIO_EXTENSIONS = new Set([
   'mp3',
@@ -35,18 +119,22 @@ export interface ImportFilesResult {
 /**
  * Tente de déterminer la durée exacte d'un fichier audio via l'API Web Audio / HTML5 Audio
  */
-function getWebAudioDuration(url: string, timeoutMs: number = 800): Promise<number> {
+export function getWebAudioDuration(url: string, timeoutMs: number = 2000): Promise<number> {
   return new Promise((resolve) => {
     if (typeof Audio === 'undefined') {
       resolve(0);
       return;
     }
     const tempAudio = new Audio();
+    tempAudio.preload = 'metadata';
     let settled = false;
 
     const cleanup = () => {
       tempAudio.onloadedmetadata = null;
       tempAudio.onerror = null;
+      try {
+        tempAudio.src = '';
+      } catch (_) {}
     };
 
     const timer = setTimeout(() => {
@@ -195,8 +283,11 @@ async function extractZipArchive(
         album = parts[parts.length - 2];
       }
 
+      const trackId = `zip-${Date.now()}-${idx++}-${Math.random().toString(36).substring(2, 6)}`;
+      void saveWebAudioBlob(trackId, blob, fileName);
+
       tracks.push({
-        id: `zip-${Date.now()}-${idx++}-${Math.random().toString(36).substring(2, 6)}`,
+        id: trackId,
         title,
         artist,
         album,
@@ -211,6 +302,14 @@ async function extractZipArchive(
     }
   }
 
+  // Récupérer les durées réelles
+  await Promise.all(
+    tracks.map(async (t) => {
+      const dur = await getWebAudioDuration(t.uri, 2000);
+      if (dur > 0) t.duration = dur;
+    })
+  );
+
   return { tracks, folderName: detectedFolder };
 }
 
@@ -220,9 +319,77 @@ async function extractZipArchive(
  * - Sur Web Desktop : Ouvre le sélecteur de dossier natif (webkitdirectory)
  * - Sur Safari iOS (Mobile) : Permet de choisir un dossier de musique complet, un .zip d'album, ou plusieurs pistes
  */
-export async function pickAudioFolder(): Promise<ImportFolderResult | null> {
-  // 1. CAS NATIF (iOS & Android via expo-file-system Directory.pickDirectoryAsync)
-  if (Platform.OS === 'ios' || Platform.OS === 'android') {
+export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportFolderResult | null> {
+  // 1. CAS ANDROID : Utilisation de StorageAccessFramework (sélecteur officiel et persistant de dossier Android)
+  if (Platform.OS === 'android') {
+    try {
+      await requestAndroidStoragePermission();
+      const permissions = await FileSystem.StorageAccessFramework.requestDirectoryPermissionsAsync();
+      if (permissions && permissions.granted) {
+        const directoryUri = permissions.directoryUri;
+        const decodedDirUri = decodeURIComponent(directoryUri);
+        const folderParts = decodedDirUri.split(/[:/]/);
+        const folderName = folderParts[folderParts.length - 1] || 'Dossier Musique';
+
+        const fileUris = await FileSystem.StorageAccessFramework.readDirectoryAsync(directoryUri);
+
+        const audioFiles: { name: string; uri: string }[] = [];
+        for (const fUri of fileUris) {
+          const decoded = decodeURIComponent(fUri);
+          const fileName = decoded.split('/').pop()?.split(':').pop() || '';
+          const ext = fileName.split('.').pop()?.toLowerCase() || '';
+          if (AUDIO_EXTENSIONS.has(ext)) {
+            audioFiles.push({ name: fileName, uri: fUri });
+          }
+        }
+
+        if (audioFiles.length > 0) {
+          const tracks: Track[] = [];
+          for (let idx = 0; idx < audioFiles.length; idx++) {
+            const file = audioFiles[idx];
+            const ext = file.name.split('.').pop()?.toLowerCase() || '';
+            const format = getAudioFormat(ext);
+            const { title, artist } = parseTrackMetadata(file.name, folderName);
+
+            if (existingTracks && isTrackDuplicate(title, artist, file.name, folderName, existingTracks)) {
+              continue;
+            }
+
+            const permanentUri = await persistAudioFile(file.uri, file.name);
+
+            tracks.push({
+              id: `android-folder-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
+              title,
+              artist,
+              album: folderName,
+              duration: 0,
+              uri: permanentUri,
+              format,
+              sampleRate: '44.1 kHz',
+              bitrate: '320 kbps',
+              folder: folderName,
+              folderPath: file.name,
+            });
+          }
+
+          return {
+            tracks,
+            folderName,
+            count: tracks.length,
+          };
+        } else {
+          return { tracks: [], folderName, count: 0 };
+        }
+      } else {
+        return null;
+      }
+    } catch (safErr) {
+      console.warn('Tentative StorageAccessFramework Android:', safErr);
+    }
+  }
+
+  // 2. CAS IOS NATIF (Directory.pickDirectoryAsync)
+  if (Platform.OS === 'ios') {
     try {
       if (typeof Directory !== 'undefined' && typeof Directory.pickDirectoryAsync === 'function') {
         const dir = await Directory.pickDirectoryAsync();
@@ -231,25 +398,33 @@ export async function pickAudioFolder(): Promise<ImportFolderResult | null> {
           const audioFiles = await scanNativeDirectory(dir);
 
           if (audioFiles.length > 0) {
-            const tracks: Track[] = audioFiles.map((file, idx) => {
+            const tracks: Track[] = [];
+            for (let idx = 0; idx < audioFiles.length; idx++) {
+              const file = audioFiles[idx];
               const ext = file.name.split('.').pop()?.toLowerCase() || '';
               const format = getAudioFormat(ext);
               const { title, artist } = parseTrackMetadata(file.name, folderName);
 
-              return {
+              if (existingTracks && isTrackDuplicate(title, artist, file.name, folderName, existingTracks)) {
+                continue;
+              }
+
+              const permanentUri = await persistAudioFile(file.uri, file.name);
+
+              tracks.push({
                 id: `ios-folder-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
                 title,
                 artist,
                 album: folderName,
                 duration: 0,
-                uri: file.uri,
+                uri: permanentUri,
                 format,
                 sampleRate: '44.1 kHz',
                 bitrate: '320 kbps',
                 folder: folderName,
                 folderPath: file.relativePath || file.name,
-              };
-            });
+              });
+            }
 
             return {
               tracks,
@@ -262,7 +437,6 @@ export async function pickAudioFolder(): Promise<ImportFolderResult | null> {
         }
       }
     } catch (nativeErr: any) {
-      // Si l'utilisateur a annulé
       if (
         nativeErr?.message?.includes?.('cancel') ||
         nativeErr?.name === 'FilePickingCancelledException'
@@ -282,25 +456,33 @@ export async function pickAudioFolder(): Promise<ImportFolderResult | null> {
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const folderName = 'Dossier Importé';
-        const tracks: Track[] = result.assets.map((file, idx) => {
+        const tracks: Track[] = [];
+        for (let idx = 0; idx < result.assets.length; idx++) {
+          const file = result.assets[idx];
           const ext = file.name.split('.').pop()?.toLowerCase() || '';
           const format = getAudioFormat(ext);
           const { title, artist } = parseTrackMetadata(file.name, folderName);
 
-          return {
-            id: `ios-asset-${Date.now()}-${idx}`,
+          if (existingTracks && isTrackDuplicate(title, artist, file.name, folderName, existingTracks)) {
+            continue;
+          }
+
+          const permanentUri = await persistAudioFile(file.uri, file.name);
+
+          tracks.push({
+            id: `ios-asset-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
             title,
             artist,
             album: folderName,
             duration: 0,
-            uri: file.uri,
+            uri: permanentUri,
             format,
             sampleRate: '44.1 kHz',
             bitrate: '320 kbps',
             folder: folderName,
             folderPath: file.name,
-          };
-        });
+          });
+        }
 
         return {
           tracks,
@@ -423,10 +605,20 @@ export async function pickAudioFolder(): Promise<ImportFolderResult | null> {
           }
 
           const { title, artist } = parseTrackMetadata(file.name, detectedFolder);
+
+          // Éviter les doublons
+          if (existingTracks && isTrackDuplicate(title, artist, file.name, trackFolder, existingTracks)) {
+            continue;
+          }
+
+          const trackId = `folder-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
           const uri = URL.createObjectURL(file);
 
+          // Sauvegarde persistante dans IndexedDB pour que les musiques ne soient jamais corrompues après rafraîchissement
+          void saveWebAudioBlob(trackId, file, file.name, file.type);
+
           tracks.push({
-            id: `folder-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
+            id: trackId,
             title,
             artist,
             album: albumName,
@@ -440,13 +632,13 @@ export async function pickAudioFolder(): Promise<ImportFolderResult | null> {
           });
         }
 
-        // Récupérer les durées en arrière-plan
-        Promise.all(
-          tracks.slice(0, 15).map(async (t) => {
-            const dur = await getWebAudioDuration(t.uri, 500);
+        // Récupérer les durées réelles avant de renvoyer les morceaux
+        await Promise.all(
+          tracks.map(async (t) => {
+            const dur = await getWebAudioDuration(t.uri, 2000);
             if (dur > 0) t.duration = dur;
           })
-        ).catch(() => {});
+        );
 
         cleanup();
         resolve({
@@ -475,7 +667,7 @@ export async function pickAudioFolder(): Promise<ImportFolderResult | null> {
 /**
  * IMPORTATION DE FICHIERS INDIVIDUELS
  */
-export async function pickAudioFiles(): Promise<ImportFilesResult | null> {
+export async function pickAudioFiles(existingTracks?: Track[]): Promise<ImportFilesResult | null> {
   if (Platform.OS === 'web' && typeof document !== 'undefined') {
     return new Promise((resolve) => {
       const input = document.createElement('input');
@@ -516,7 +708,11 @@ export async function pickAudioFiles(): Promise<ImportFilesResult | null> {
           if (ext === 'zip') {
             try {
               const zipRes = await extractZipArchive(file);
-              tracks.push(...zipRes.tracks);
+              for (const zTrack of zipRes.tracks) {
+                if (!existingTracks || !isTrackDuplicate(zTrack.title, zTrack.artist, zTrack.title, zTrack.album, existingTracks)) {
+                  tracks.push(zTrack);
+                }
+              }
               continue;
             } catch (err) {
               console.warn('Erreur zip:', err);
@@ -525,10 +721,19 @@ export async function pickAudioFiles(): Promise<ImportFilesResult | null> {
 
           const format = getAudioFormat(ext);
           const { title, artist } = parseTrackMetadata(file.name, 'Fichiers Importés');
+
+          if (existingTracks && isTrackDuplicate(title, artist, file.name, 'Fichiers Locaux', existingTracks)) {
+            continue;
+          }
+
+          const trackId = `file-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`;
           const uri = URL.createObjectURL(file);
 
+          // Sauvegarde persistante dans IndexedDB
+          void saveWebAudioBlob(trackId, file, file.name, file.type);
+
           tracks.push({
-            id: `file-${Date.now()}-${i}-${Math.random().toString(36).substring(2, 6)}`,
+            id: trackId,
             title,
             artist,
             album: 'Fichiers Locaux',
@@ -542,12 +747,13 @@ export async function pickAudioFiles(): Promise<ImportFilesResult | null> {
           });
         }
 
-        Promise.all(
-          tracks.slice(0, 15).map(async (t) => {
-            const dur = await getWebAudioDuration(t.uri, 500);
+        // Récupérer les durées réelles
+        await Promise.all(
+          tracks.map(async (t) => {
+            const dur = await getWebAudioDuration(t.uri, 2000);
             if (dur > 0) t.duration = dur;
           })
-        ).catch(() => {});
+        );
 
         cleanup();
         resolve({
@@ -571,32 +777,44 @@ export async function pickAudioFiles(): Promise<ImportFilesResult | null> {
 
   // Fallback Native
   try {
+    if (Platform.OS === 'android') {
+      await requestAndroidStoragePermission();
+    }
+
     const result = await DocumentPicker.getDocumentAsync({
       type: ['audio/*'],
       multiple: true,
-      copyToCacheDirectory: true,
+      copyToCacheDirectory: Platform.OS === 'ios',
     });
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      const tracks: Track[] = result.assets.map((file, idx) => {
+      const tracks: Track[] = [];
+      for (let idx = 0; idx < result.assets.length; idx++) {
+        const file = result.assets[idx];
         const ext = file.name.split('.').pop()?.toLowerCase() || '';
         const format = getAudioFormat(ext);
         const { title, artist } = parseTrackMetadata(file.name, 'Fichier Local');
 
-        return {
-          id: `file-${Date.now()}-${idx}`,
+        if (existingTracks && isTrackDuplicate(title, artist, file.name, 'Fichiers Locaux', existingTracks)) {
+          continue;
+        }
+
+        const permanentUri = await persistAudioFile(file.uri, file.name);
+
+        tracks.push({
+          id: `file-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 6)}`,
           title,
           artist,
           album: 'Importation',
           duration: 0,
-          uri: file.uri,
+          uri: permanentUri,
           format,
           sampleRate: '44.1 kHz',
           bitrate: '320 kbps',
           folder: 'Fichiers Locaux',
           folderPath: file.name,
-        };
-      });
+        });
+      }
 
       return {
         tracks,

@@ -47,8 +47,8 @@ export const EqualizerModal: React.FC<EqualizerModalProps> = ({
     onUpdateDSP({
       ...dsp,
       presetId: preset.id,
-      bass: preset.bass,
-      treble: preset.treble,
+      bass: dsp.bass,
+      treble: dsp.treble,
       preamp: preset.preamp,
       bands: [...preset.bands],
     });

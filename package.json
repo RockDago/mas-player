@@ -19,6 +19,7 @@
     "react": "19.2.3",
     "react-dom": "^19.2.3",
     "react-native": "0.86.3",
+    "react-native-safe-area-context": "~5.7.0",
     "react-native-svg": "15.15.4",
     "react-native-web": "^0.21.3"
   },
@@ -28,16 +29,20 @@
   },
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "verify:dsp": "node scripts/verify-dsp.cjs && node scripts/q-bandwidth.cjs",
+    "verify:limiter": "node scripts/verify-limiter.cjs",
     "verify:sync": "node scripts/sync-check.cjs",
+    "verify:reverb": "node scripts/verify-reverb.cjs",
     "verify:restore": "node scripts/test-dsp-restore.cjs",
-    "postinstall": "node scripts/patch-expo-jsi.cjs",
-    "build:ios:ipa": "eas build -p ios --profile preview",
-    "build:ios:prod": "eas build -p ios --profile production"
+    "postinstall": "node scripts/patch-expo-jsi.cjs && node scripts/patch-expo-audio-android.cjs",
+    "build:ios:ipa": "npx eas-cli build -p ios --profile preview",
+    "build:ios:prod": "npx eas-cli build -p ios --profile production",
+    "build:android:apk": "npx eas-cli build -p android --profile preview",
+    "build:android:apk:local": "npx eas-cli build -p android --profile preview --local"
   },
   "private": true
 }

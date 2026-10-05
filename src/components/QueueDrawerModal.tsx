@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
+import { useScreenInsets, insetPadding } from '../theme/insets';
 import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
 
@@ -34,6 +35,9 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
   onClearQueue,
   onMoveQueueItem,
 }) => {
+  // Marge système mesurée, lue par contexte : le tiroir est monté hors de
+  // l'écran et n'en hérite pas. Voir src/theme/insets.ts.
+  const insets = useScreenInsets();
   return (
     <Modal
       visible={visible}
@@ -51,7 +55,20 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
 
         {/* Drawer sliding in from left */}
         <SafeAreaView style={styles.drawerContainer}>
-          <View style={styles.header}>
+          <View
+            style={[
+              styles.header,
+              {
+                // Marge système mesurée : le tiroir se collait à l'horloge.
+                paddingTop:
+                  Platform.OS === 'android'
+                    ? insetPadding(insets, 'top', 20)
+                    : Platform.OS === 'ios'
+                    ? 12
+                    : 20,
+              },
+            ]}
+          >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <MaterialCommunityIcons name="clock-outline" size={26} color="#38BDF8" />
               <View>
@@ -210,7 +227,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingTop: Platform.OS === 'ios' ? 12 : 20,
     paddingBottom: 12,
   },
   headerTitle: {

@@ -1,9 +1,30 @@
 import { Platform } from 'react-native';
-import { createAudioPlayer, AudioPlayer, setAudioModeAsync } from 'expo-audio';
+import {
+  createAudioPlayer,
+  AudioPlayer,
+  setAudioModeAsync,
+  requestNotificationPermissionsAsync,
+} from 'expo-audio';
 import { DSPState } from '../types/audio';
 import { WebAudioEngine } from './webAudioEngine';
-import { applyNativeDSP, setNativeVolume, loadNativeTrack, isNativeEQAvailable, addNativeProgressListener, playNative, pauseNative, stopNative, seekNative } from './nativeAudioDSP';
+import {
+  applyNativeDSP,
+  setNativeVolume,
+  loadNativeTrack,
+  isNativeEQAvailable,
+  addNativeProgressListener,
+  addNativeRemoteCommandListener,
+  addNativeSystemVolumeListener,
+  getNativeSystemVolume,
+  clearNativeNowPlaying,
+  playNative,
+  pauseNative,
+  stopNative,
+  seekNative,
+  getNativeStatus,
+} from './nativeAudioDSP';
 import { beatStore } from './beatStore';
+import { getLiveWebTrackUri } from './webAudioStorage';
 
 export type PlaybackCallback = (status: {
   currentTime: number;
@@ -11,6 +32,8 @@ export type PlaybackCallback = (status: {
   isPlaying: boolean;
   didFinish?: boolean;
 }) => void;
+
+export type RemoteCommandAction = 'next' | 'previous' | 'play' | 'pause';
 
 /**
  * Taille du tampon lu dans l'analyser web. Doit correspondre au `fftSize` de
@@ -36,6 +59,19 @@ class UniversalPlayerManager {
   private intervalTimer: any = null;
   private onStatus: PlaybackCallback | null = null;
   private currentUri: string = '';
+  /** Identifiant séquentiel de chargement pour éliminer toute condition de course entre clics rapides */
+  private currentLoadId = 0;
+
+  // --- Commandes distantes (écran verrouillé / notification / écouteurs) ---
+  private remoteSub: { remove: () => void } | null = null;
+  /**
+   * Abonnement aux commandes de notification Android, lié au lecteur courant.
+   *
+   * Distinct de `remoteSub`, qui écoute le module natif iOS : Android reçoit
+   * ses commandes par le lecteur, et le lecteur est recréé à chaque piste.
+   */
+  private androidRemoteSub: { remove: () => void } | null = null;
+  private remoteCommandListeners = new Set<(action: RemoteCommandAction) => void>();
 
   // --- Détection de rythme -----------------------------------------
   /** Abonnement PCM natif, à retirer à chaque changement de piste. */
@@ -50,6 +86,7 @@ class UniversalPlayerManager {
    * ils sont rejoués dès que le moteur est construit.
    */
   private pendingDsp: DSPState | null = null;
+  private currentPlaybackRate = 1.0;
 
   // --- Moteur DSP natif iOS (AVAudioEngine) -------------------------
   /**
@@ -64,6 +101,21 @@ class UniversalPlayerManager {
   private nativeEngineActive = false;
   /** Abonnement au `onProgress` du module natif, à retirer au relâchement. */
   private nativeProgressSub: { remove: () => void } | null = null;
+
+  // --- Volume système ------------------------------------------------
+  /**
+   * Volume de l'appareil en pourcentage, ou `null` quand il est illisible.
+   *
+   * Seul iOS sait le lire (`AVAudioSession.outputVolume`, observé par KVO côté
+   * natif). Le web n'a aucune API pour cela : `AudioContext.destination` n'expose
+   * pas de volume, `HTMLMediaElement.volume` est un gain propre à l'élément,
+   * `setSinkId` choisit une sortie et non un niveau, et `navigator.volume`
+   * n'existe pas. Vrai `null`, l'app ne prétend donc pas suivre l'OS : le knob
+   * redevient une attestation app-locale.
+   */
+  private systemVolume: number | null = null;
+  private systemVolumeListeners = new Set<(volume: number) => void>();
+  private systemVolumeSub: { remove: () => void } | null = null;
   /**
    * File d'attente sérialisée des appels au module natif.
    *
@@ -83,16 +135,197 @@ class UniversalPlayerManager {
     return next;
   }
 
+  /**
+   * S'abonne au volume système iOS et expose le dernier relevé.
+   *
+   * Renvoie une fonction de désabonnement. Renvoie `null` immédiatement sur les
+   * plateformes où le volume système est illisible (web, Android) : l'appelant
+   * garde alors son knob en attestation app-locale, sans crash ni faux positif.
+   */
+  subscribeSystemVolume(listener: (volume: number | null) => void): () => void {
+    if (Platform.OS !== 'ios') {
+      listener(null);
+      return () => {};
+    }
+    this.systemVolumeListeners.add(listener);
+
+    // Si on a déjà une valeur connue, la transmettre immédiatement
+    if (this.systemVolume !== null) {
+      listener(this.systemVolume);
+    } else {
+      // Sinon interroger la valeur système native de manière asynchrone
+      getNativeSystemVolume().then((vol) => {
+        if (vol !== null) {
+          this.systemVolume = vol;
+          listener(vol);
+        }
+      }).catch(() => {});
+    }
+
+    if (!this.systemVolumeSub) {
+      this.systemVolumeSub = addNativeSystemVolumeListener(({ volume }) => {
+        const percent = Math.max(0, Math.min(100, Math.round(volume * 100)));
+        this.systemVolume = percent;
+        this.systemVolumeListeners.forEach((fn) => {
+          try {
+            fn(percent);
+          } catch (e) {
+            console.warn('Erreur listener volume système:', e);
+          }
+        });
+      });
+      if (!this.systemVolumeSub) {
+        this.systemVolume = null;
+      }
+    }
+    return () => {
+      this.systemVolumeListeners.delete(listener);
+    };
+  }
+
+  /** Dernier volume système connu, en pourcentage, ou `null` s'il est illisible. */
+  getSystemVolume(): number | null {
+    return this.systemVolume;
+  }
+
+  addRemoteCommandListener(listener: (action: RemoteCommandAction) => void) {
+    this.remoteCommandListeners.add(listener);
+    return () => {
+      this.remoteCommandListeners.delete(listener);
+    };
+  }
+
+  private dispatchRemoteCommand(action: RemoteCommandAction) {
+    this.remoteCommandListeners.forEach((fn) => {
+      try {
+        fn(action);
+      } catch (e) {
+        console.warn('Erreur listener commande distante:', e);
+      }
+    });
+  }
+
   async init() {
     try {
       await setAudioModeAsync({
         playsInSilentMode: true,
         shouldPlayInBackground: true,
-        interruptionMode: 'mixWithOthers',
+        interruptionMode: 'doNotMix',
       });
     } catch (err) {
       console.warn('init audio mode warning:', err);
     }
+
+    if (Platform.OS === 'android') {
+      try {
+        await requestNotificationPermissionsAsync();
+      } catch (err) {
+        console.warn('Android notification permission warning:', err);
+      }
+    }
+
+    if (Platform.OS === 'ios' && !this.remoteSub) {
+      const sub = addNativeRemoteCommandListener((payload) => {
+        this.dispatchRemoteCommand(payload.action);
+      });
+      if (sub) {
+        this.remoteSub = sub;
+      }
+    }
+  }
+
+  /**
+   * Branche les commandes de notification Android au lecteur courant.
+   *
+   * Sur Android, c'est le service `AudioControlsService` d'expo-audio qui
+   * possède la session média : précédent et suivant y sont de purs relais
+   * vers JS, qui détient la file et le mélange aléatoire. Sans cet
+   * abonnement, les boutons de la notification existent mais ne commande
+   * rien.
+   *
+   * L'abonnement est lié au lecteur, pas au module : un nouveau lecteur est
+   * créé à chaque piste, donc chaque appel retire l'abonnement précédent.
+   */
+  private subscribeAndroidRemoteCommands(player: AudioPlayer) {
+    this.unsubscribeAndroidRemoteCommands();
+    try {
+      this.androidRemoteSub = (player as any).addListener('onRemoteCommand', (payload: any) => {
+        const action = payload?.action;
+        if (action === 'next' || action === 'previous') {
+          this.dispatchRemoteCommand(action);
+        } else if (action === 'play') {
+          this.play();
+        } else if (action === 'pause') {
+          this.pause();
+        }
+      });
+    } catch (err) {
+      // Non bloquant : la notification reste affichée, seule la commande
+      // précédent/suivant devient inerte.
+      console.warn('Android remote command subscription warning:', err);
+    }
+  }
+
+  private unsubscribeAndroidRemoteCommands() {
+    if (this.androidRemoteSub) {
+      try {
+        this.androidRemoteSub.remove();
+      } catch (_) {}
+      this.androidRemoteSub = null;
+    }
+  }
+
+  /**
+   * Arrête immédiatement toute lecture en cours sur l'ensemble des moteurs
+   * (expo-audio, AVAudioEngine natif iOS, HTMLAudio web) et libère les ressources.
+   * Garantit de façon étanche qu'aucun morceau précédent ne continue à jouer
+   * en arrière-plan lorsqu'un nouveau morceau est chargé.
+   */
+  async stopCurrentPlayback() {
+    // 1. Arrêter le timer JS de progression
+    if (this.intervalTimer) {
+      clearInterval(this.intervalTimer);
+      this.intervalTimer = null;
+    }
+
+    // 2. Chien de garde et détection de rythme
+    this.stopBeatWatchdog();
+    this.stopNativeBeatSampling();
+
+    // 3. Moteur expo-audio (Expo Go / Android / repli iOS)
+    if (this.player) {
+      // Avant de détacher le lecteur : son abonnement aux commandes de
+      // notification lui appartient et ne survit pas à `remove()`.
+      this.unsubscribeAndroidRemoteCommands();
+      try {
+        this.player.pause();
+      } catch (_) {}
+      try {
+        this.player.clearLockScreenControls();
+      } catch (_) {}
+      try {
+        this.player.remove();
+      } catch (_) {}
+      this.player = null;
+    }
+
+    // 4. Moteur natif Swift DSP iOS
+    if (this.nativeEngineActive) {
+      try {
+        await this.enqueueNative(() => stopNative());
+        await clearNativeNowPlaying();
+      } catch (_) {}
+      this.nativeEngineActive = false;
+    }
+
+    // 5. Moteur Web
+    if (this.webAudio) {
+      try {
+        this.webAudio.pause();
+      } catch (_) {}
+    }
+
+    beatStore.setPlaying(false);
   }
 
   async loadTrack(
@@ -100,24 +333,55 @@ class UniversalPlayerManager {
     autoPlay: boolean = true,
     onStatusUpdate?: PlaybackCallback,
     initialPositionSeconds?: number,
-    meta?: { title?: string; artist?: string }
+    meta?: { title?: string; artist?: string; album?: string; artwork?: string },
+    trackId?: string
   ) {
+    const loadId = ++this.currentLoadId;
+    // Arrêter impérativement toute lecture en cours avant de monter une nouvelle piste
+    await this.stopCurrentPlayback();
+    if (this.currentLoadId !== loadId) return;
+
     this.currentUri = uri;
     if (onStatusUpdate) {
       this.onStatus = onStatusUpdate;
     }
 
+    if (Platform.OS !== 'web') {
+      try {
+        await setAudioModeAsync({
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+          interruptionMode: 'doNotMix',
+        });
+      } catch (_) {}
+    }
+
     if (Platform.OS === 'web') {
-      // Un seul élément audio pour toute la session : MediaElementAudioSourceNode
-      // ne peut être attaché qu'une fois par élément, donc on ne recrée pas
-      // `new Audio(uri)` à chaque piste.
-      if (!this.webAudio) {
+      // Résoudre une URL vivante depuis IndexedDB si besoin (ex: après refresh de page web / Safari iOS)
+      let effectiveUri = uri;
+      if (trackId) {
+        effectiveUri = await getLiveWebTrackUri(trackId, uri);
+      }
+      this.currentUri = effectiveUri;
+
+      // Un seul élément audio pour toute la session tant que le moteur est actif :
+      // MediaElementAudioSourceNode ne peut être attaché qu'une fois par élément.
+      // Si webEngine n'est pas encore initialisé, on s'assure d'avoir un élément neuf.
+      if (!this.webAudio || !this.webEngine) {
+        if (this.webAudio) {
+          try {
+            this.webAudio.pause();
+            this.webAudio.src = '';
+          } catch (_) {}
+        }
         this.webAudio = new Audio();
         this.webAudio.onended = () => {
           if (this.onStatus) {
+            const dur = this.webAudio?.duration;
+            const validDur = dur && !isNaN(dur) && isFinite(dur) && dur > 0 ? dur : 1;
             this.onStatus({
-              currentTime: this.webAudio?.duration || 0,
-              duration: this.webAudio?.duration || 1,
+              currentTime: validDur,
+              duration: validDur,
               isPlaying: false,
               didFinish: true,
             });
@@ -127,17 +391,101 @@ class UniversalPlayerManager {
 
       const audio = this.webAudio;
 
+      // Écouteur d'erreur avec récupération dynamique depuis IndexedDB
+      audio.onerror = async () => {
+        const err = audio.error;
+        if (!audio.src) return;
+        console.warn(`[WebAudio] Erreur lecture "${meta?.title || uri}": code=${err?.code} message=${err?.message}`);
+        if (trackId && effectiveUri === uri) {
+          const fresh = await getLiveWebTrackUri(trackId, '');
+          if (fresh && fresh !== uri && fresh.length > 0) {
+            console.log('[WebAudio] Récupération réussie depuis IndexedDB');
+            effectiveUri = fresh;
+            this.currentUri = fresh;
+            audio.src = fresh;
+            audio.load();
+            if (autoPlay) {
+              audio.play().catch(() => {});
+            }
+          }
+        }
+      };
+
+      // Écouteur de métadonnées pour propager immédiatement la vraie durée
+      audio.onloadedmetadata = () => {
+        if (this.onStatus && audio.duration && !isNaN(audio.duration) && isFinite(audio.duration) && audio.duration > 0) {
+          this.onStatus({
+            currentTime: audio.currentTime || 0,
+            duration: audio.duration,
+            isPlaying: !audio.paused,
+          });
+        }
+      };
+
       if (!this.webEngine && WebAudioEngine.isSupported()) {
-        this.webEngine = new WebAudioEngine(audio);
-        if (this.pendingDsp) {
-          // applyDSP pose déjà la largeur via applyStereo : setMono ne serait
-          // qu'un second propriétaire des mêmes gains, qui l'écraserait.
-          this.webEngine.applyDSP(this.pendingDsp);
+        try {
+          this.webEngine = new WebAudioEngine(audio);
+          if (this.pendingDsp) {
+            // applyDSP pose déjà la largeur via applyStereo : setMono ne serait
+            // qu'un second propriétaire des mêmes gains, qui l'écraserait.
+            this.webEngine.applyDSP(this.pendingDsp);
+            this.webEngine.setVolume(this.pendingDsp.volume ?? 100);
+          }
+        } catch (engineErr) {
+          console.warn('[WebAudio] Erreur initialisation WebAudioEngine:', engineErr);
+          this.webEngine = null;
+          this.webAudio = null;
+          throw engineErr;
         }
       }
 
-      audio.src = uri;
+      if (!effectiveUri) {
+        console.warn(`[WebAudio] Piste ignorée : URI vide pour "${meta?.title || 'inconnue'}"`);
+        return;
+      }
+
+      audio.src = effectiveUri;
       audio.load();
+      audio.playbackRate = this.currentPlaybackRate;
+      if (this.pendingDsp?.volume !== undefined) {
+        this.setVolume(this.pendingDsp.volume);
+      }
+
+      // Intégration MediaSession pour la lecture arrière-plan / notification sur navigateur / Safari iOS
+      if (typeof navigator !== 'undefined' && 'mediaSession' in navigator && meta) {
+        try {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: meta.title || 'MAS Player',
+            artist: meta.artist || '',
+            album: meta.album || '',
+            artwork: meta.artwork
+              ? [{ src: meta.artwork, sizes: '512x512', type: 'image/png' }]
+              : [],
+          });
+
+          navigator.mediaSession.setActionHandler('play', () => {
+            this.play();
+            this.dispatchRemoteCommand('play');
+          });
+          navigator.mediaSession.setActionHandler('pause', () => {
+            this.pause();
+            this.dispatchRemoteCommand('pause');
+          });
+          navigator.mediaSession.setActionHandler('previoustrack', () => {
+            this.dispatchRemoteCommand('previous');
+          });
+          navigator.mediaSession.setActionHandler('nexttrack', () => {
+            this.dispatchRemoteCommand('next');
+          });
+          navigator.mediaSession.setActionHandler('seekto', (details) => {
+            if (details.seekTime !== undefined) {
+              this.seekToSeconds(details.seekTime);
+            }
+          });
+        } catch (err) {
+          console.warn('Web mediaSession error:', err);
+        }
+      }
 
       if (initialPositionSeconds && initialPositionSeconds > 0) {
         const applySeek = () => {
@@ -172,13 +520,13 @@ class UniversalPlayerManager {
     // lecteur. Brancher aussi expo-audio jouerait la piste deux fois, et
     // l'égaliseur ne serait de toute façon pas sur le chemin du son.
     if (Platform.OS === 'ios' && isNativeEQAvailable()) {
-      await this.loadViaNativeEQ(uri, autoPlay, initialPositionSeconds, meta);
+      await this.loadViaNativeEQ(uri, autoPlay, initialPositionSeconds, meta, loadId);
       return;
     }
 
     // Native iOS / Android via expo-audio : aussi le repli quand le module
     // AudioDSP est absent (Expo Go) ou que son chargement a échoué.
-    await this.loadViaExpoAudio(uri, autoPlay, initialPositionSeconds);
+    await this.loadViaExpoAudio(uri, autoPlay, initialPositionSeconds, meta, loadId);
   }
 
   /**
@@ -191,21 +539,29 @@ class UniversalPlayerManager {
     uri: string,
     autoPlay: boolean,
     initialPositionSeconds?: number,
-    meta?: { title?: string; artist?: string }
+    meta?: { title?: string; artist?: string; album?: string; artwork?: string },
+    loadId?: number
   ) {
+    if (loadId !== undefined && this.currentLoadId !== loadId) return;
+
     // L'historique de rythme de la piste précédente ne doit pas colorer la
     // nouvelle : on remet l'analyseur à zéro avant le chargement.
     this.stopNativeBeatSampling();
     beatStore.reset();
 
     const loaded = await this.enqueueNative(() =>
-      loadNativeTrack(uri, meta?.title, meta?.artist)
+      loadNativeTrack(uri, meta?.title, meta?.artist, meta?.album, meta?.artwork)
     );
+
+    if (loadId !== undefined && this.currentLoadId !== loadId) {
+      void this.enqueueNative(() => stopNative());
+      return;
+    }
 
     if (!loaded) {
       this.nativeEngineActive = false;
       console.warn('AudioDSP: chargement impossible, repli sur expo-audio');
-      await this.loadViaExpoAudio(uri, autoPlay, initialPositionSeconds);
+      await this.loadViaExpoAudio(uri, autoPlay, initialPositionSeconds, meta, loadId);
       return;
     }
 
@@ -215,7 +571,12 @@ class UniversalPlayerManager {
     if (this.pendingDsp) {
       await this.enqueueNative(() => applyNativeDSP(this.pendingDsp!));
     }
-    await this.enqueueNative(() => setNativeVolume(this.pendingDsp?.volume ?? 75));
+    // Même règle que dans `setVolume` : si l'OS est l'autorité du volume, le graphe
+    // repart à gain unitaire. Le `?? 75` historique réappliquait par ailleurs la
+    // valeur enregistrée avant que lattenuateur ne soit neutralisé.
+    await this.enqueueNative(() =>
+      setNativeVolume(this.systemVolume !== null ? 100 : this.pendingDsp?.volume ?? 100)
+    );
 
     // Le `Timer` Swift (250 ms) est la seule horloge de lecture : l'UI s'y
     // abonne au lieu de son propre `setInterval`.
@@ -257,23 +618,52 @@ class UniversalPlayerManager {
   private async loadViaExpoAudio(
     uri: string,
     autoPlay: boolean,
-    initialPositionSeconds?: number
+    initialPositionSeconds?: number,
+    meta?: { title?: string; artist?: string; album?: string; artwork?: string },
+    loadId?: number
   ) {
     try {
-      if (this.player) {
-        try { this.player.remove(); } catch (_) {}
-        this.player = null;
-      }
-      if (this.intervalTimer) {
-        clearInterval(this.intervalTimer);
-        this.intervalTimer = null;
-      }
+      if (loadId !== undefined && this.currentLoadId !== loadId) return;
 
-      this.stopNativeBeatSampling();
+      await this.stopCurrentPlayback();
+      if (loadId !== undefined && this.currentLoadId !== loadId) return;
+
       beatStore.reset();
 
-      const p = createAudioPlayer(uri, { updateInterval: 250 });
+      const p = createAudioPlayer(uri, { updateInterval: 250, keepAudioSessionActive: true });
+      if (loadId !== undefined && this.currentLoadId !== loadId) {
+        try { p.pause(); p.remove(); } catch (_) {}
+        return;
+      }
       this.player = p;
+
+      // Active les contrôles de notification et de l'écran verrouillé
+      if (meta) {
+        try {
+          p.setActiveForLockScreen(
+            true,
+            {
+              title: meta.title,
+              artist: meta.artist,
+              albumTitle: meta.album,
+              artworkUrl: meta.artwork,
+            },
+            {
+              showSeekBackward: false,
+              showSeekForward: false,
+            }
+          );
+        } catch (e) {
+          console.warn('setActiveForLockScreen error:', e);
+        }
+      }
+
+      // Les boutons précédent / suivant de la notification n'existent qu'en
+      // amont : c'est ici qu'ils deviennent exécutables, en relayant vers la
+      // file que JS détient.
+      if (Platform.OS === 'android') {
+        this.subscribeAndroidRemoteCommands(p);
+      }
 
       this.startNativeBeatSampling(p);
       this.startBeatWatchdog();
@@ -282,6 +672,11 @@ class UniversalPlayerManager {
         try {
           await p.seekTo(initialPositionSeconds);
         } catch (_) {}
+      }
+
+      if (loadId !== undefined && this.currentLoadId !== loadId) {
+        try { p.pause(); p.remove(); } catch (_) {}
+        return;
       }
 
       if (autoPlay) p.play();
@@ -322,9 +717,11 @@ class UniversalPlayerManager {
       const audio = this.webAudio;
       if (audio && this.onStatus) {
         beatStore.setPlaying(!audio.paused);
+        const rawDur = audio.duration;
+        const validDur = rawDur && !isNaN(rawDur) && isFinite(rawDur) && rawDur > 0 ? rawDur : 0;
         this.onStatus({
           currentTime: audio.currentTime || 0,
-          duration: audio.duration || 1,
+          duration: validDur,
           isPlaying: !audio.paused,
         });
       }
@@ -473,6 +870,7 @@ class UniversalPlayerManager {
 
   play() {
     if (Platform.OS === 'web' && this.webAudio) {
+      this.webAudio.playbackRate = this.currentPlaybackRate;
       if (this.webEngine) {
         this.webEngine.resume().catch(() => {});
       }
@@ -513,25 +911,63 @@ class UniversalPlayerManager {
     }
   }
 
+  /**
+   * Synchronise l'état de lecture actuel avec l'interface
+   * (utile lors de la reprise depuis l'arrière-plan).
+   */
+  async syncPlaybackState() {
+    if (Platform.OS === 'web' && this.webAudio) {
+      this.onStatus?.({
+        currentTime: this.webAudio.currentTime || 0,
+        duration: this.webAudio.duration || 1,
+        isPlaying: !this.webAudio.paused,
+      });
+    } else if (this.nativeEngineActive) {
+      const status = await getNativeStatus();
+      if (status && this.onStatus) {
+        this.onStatus({
+          currentTime: status.currentTime,
+          duration: status.duration,
+          isPlaying: status.isPlaying,
+        });
+      }
+    } else if (this.player) {
+      this.onStatus?.({
+        currentTime: this.player.currentTime || 0,
+        duration: this.player.duration || 1,
+        isPlaying: this.player.playing,
+      });
+    }
+  }
+
   setVolume(volumePercent: number) {
-    const vol = Math.max(0, Math.min(1, volumePercent / 100));
+    const clamped = Math.max(0, Math.min(100, volumePercent));
+    if (this.pendingDsp) {
+      this.pendingDsp.volume = clamped;
+    }
+
     if (Platform.OS === 'web' && this.webAudio) {
       if (this.webEngine) {
-        this.webEngine.setVolume(volumePercent);
+        this.webEngine.setVolume(clamped);
       } else {
-        this.webAudio.volume = vol;
+        this.webAudio.volume = clamped / 100;
       }
     } else if (this.nativeEngineActive) {
-      // Le volume passe par le nœud master du graphe, pas par expo-audio :
-      // `this.player` ne joue rien tant que le moteur natif porte l'audio.
-      void this.enqueueNative(() => setNativeVolume(volumePercent));
+      void this.enqueueNative(() => setNativeVolume(clamped));
     } else if (this.player) {
-      this.player.volume = vol;
+      this.player.volume = clamped / 100;
+    }
+  }
+
+  async resumeAudioContext() {
+    if (Platform.OS === 'web' && this.webEngine) {
+      await this.webEngine.resume().catch(() => {});
     }
   }
 
   setPlaybackRate(rate: number) {
     const clamped = Math.max(0.5, Math.min(2.0, rate));
+    this.currentPlaybackRate = clamped;
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.playbackRate = clamped;
     } else if (this.player) {
@@ -556,11 +992,25 @@ class UniversalPlayerManager {
     this.pendingDsp = dsp;
     if (this.webEngine) {
       this.webEngine.applyDSP(dsp);
+      if (dsp.volume !== undefined) {
+        this.webEngine.setVolume(dsp.volume);
+      }
     }
     // Moteur natif iOS : sérialisé, sinon un réglage ancien peut atterrir
     // après le dernier geste de fader et rester affiché.
     if (Platform.OS === 'ios' && isNativeEQAvailable()) {
       void this.enqueueNative(() => applyNativeDSP(dsp));
+    }
+  }
+
+  async stop() {
+    await this.stopCurrentPlayback();
+    if (this.onStatus) {
+      this.onStatus({
+        currentTime: 0,
+        duration: 1,
+        isPlaying: false,
+      });
     }
   }
 
@@ -589,8 +1039,26 @@ class UniversalPlayerManager {
       } catch {}
       this.nativeProgressSub = null;
     }
+    // Même raison pour l'observation KVO du volume : elle continue de pousser
+    // `onSystemVolume` tant qu'elle n'est pas retirée.
+    if (this.systemVolumeSub) {
+      try {
+        this.systemVolumeSub.remove();
+      } catch {}
+      this.systemVolumeSub = null;
+    }
+    this.systemVolumeListeners.clear();
+    this.systemVolume = null;
+    if (this.remoteSub) {
+      try {
+        this.remoteSub.remove();
+      } catch {}
+      this.remoteSub = null;
+    }
+    this.unsubscribeAndroidRemoteCommands();
     if (this.nativeEngineActive) {
       void this.enqueueNative(() => stopNative());
+      void clearNativeNowPlaying();
       this.nativeEngineActive = false;
     }
     if (this.webAudio) {
@@ -603,7 +1071,11 @@ class UniversalPlayerManager {
       this.webEngine = null;
     }
     if (this.player) {
-      this.player.remove();
+      try {
+        this.player.pause();
+        this.player.clearLockScreenControls();
+        this.player.remove();
+      } catch (_) {}
       this.player = null;
     }
   }
