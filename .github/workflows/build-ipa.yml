@@ -128,6 +128,11 @@ jobs:
       - name: 📦 Install npm dependencies
         run: npm ci || npm install
 
+      - name: 📱 Accept Android SDK licenses & ensure Platform 36
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platforms;android-36" || true
+
       - name: 🛠️ Expo Prebuild (Generate Android native project)
         run: npx expo prebuild --platform android --clean
 
