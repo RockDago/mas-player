@@ -159,6 +159,18 @@ class AudioDSPModule : Module() {
     if (sessionId <= 0) return
 
     try {
+      val intent = android.content.Intent(android.media.audiofx.AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION).apply {
+        putExtra(android.media.audiofx.AudioEffect.EXTRA_AUDIO_SESSION, sessionId)
+        putExtra(android.media.audiofx.AudioEffect.EXTRA_PACKAGE_NAME, context.packageName)
+        putExtra(android.media.audiofx.AudioEffect.EXTRA_CONTENT_TYPE, android.media.audiofx.AudioEffect.CONTENT_TYPE_MUSIC)
+      }
+      context.sendBroadcast(intent)
+      Log.i("AudioDSP", "Broadcasted ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION for session $sessionId")
+    } catch (e: Exception) {
+      Log.w("AudioDSP", "Broadcast ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION failed: ${e.message}")
+    }
+
+    try {
       equalizer = Equalizer(0, sessionId).apply {
         enabled = pendingEnabled
       }
@@ -226,6 +238,15 @@ class AudioDSPModule : Module() {
   }
 
   private fun releaseEffects() {
+    if (activeSessionId > 0) {
+      try {
+        val intent = android.content.Intent(android.media.audiofx.AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION).apply {
+          putExtra(android.media.audiofx.AudioEffect.EXTRA_AUDIO_SESSION, activeSessionId)
+          putExtra(android.media.audiofx.EXTRA_PACKAGE_NAME, context.packageName)
+        }
+        context.sendBroadcast(intent)
+      } catch (_: Exception) {}
+    }
     try { equalizer?.release() } catch (_: Exception) {}
     try { bassBoost?.release() } catch (_: Exception) {}
     try { virtualizer?.release() } catch (_: Exception) {}

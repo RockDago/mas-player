@@ -139,12 +139,25 @@ class UniversalPlayerManager {
   private syncAndroidAudioSession(player: AudioPlayer | null) {
     if (Platform.OS !== 'android' || !player || !isNativeEQAvailable()) return;
     try {
+      const statusObj =
+        typeof (player as any).currentStatus === 'function'
+          ? (player as any).currentStatus()
+          : (player as any).currentStatus;
+
       const rawId =
+        (typeof (player as any).getAudioSessionId === 'function'
+          ? (player as any).getAudioSessionId()
+          : undefined) ??
         (player as any).audioSessionId ??
-        (player as any).getAudioSessionId?.() ??
-        (player as any).currentStatus?.()?.audioSessionId;
+        statusObj?.audioSessionId;
+
       const sessionId = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
-      if (typeof sessionId === 'number' && !isNaN(sessionId) && sessionId > 0 && sessionId !== this.activeAndroidSessionId) {
+      if (
+        typeof sessionId === 'number' &&
+        !isNaN(sessionId) &&
+        sessionId > 0 &&
+        sessionId !== this.activeAndroidSessionId
+      ) {
         this.activeAndroidSessionId = sessionId;
         void setNativeAudioSessionId(sessionId).then(() => {
           if (this.pendingDsp) {
@@ -152,7 +165,9 @@ class UniversalPlayerManager {
           }
         });
       }
-    } catch (_) {}
+    } catch (err) {
+      console.warn('syncAndroidAudioSession warning:', err);
+    }
   }
 
   /** Enfile un appel au module natif et attend que les précédents se résolvent. */
@@ -696,8 +711,22 @@ class UniversalPlayerManager {
         this.activeAndroidSessionId = 0;
         this.syncAndroidAudioSession(p);
         try {
-          (p as any).addListener?.('playbackStatusUpdate', () => {
-            this.syncAndroidAudioSession(p);
+          (p as any).addListener?.('playbackStatusUpdate', (status: any) => {
+            if (
+              status?.audioSessionId &&
+              typeof status.audioSessionId === 'number' &&
+              status.audioSessionId > 0 &&
+              status.audioSessionId !== this.activeAndroidSessionId
+            ) {
+              this.activeAndroidSessionId = status.audioSessionId;
+              void setNativeAudioSessionId(status.audioSessionId).then(() => {
+                if (this.pendingDsp) {
+                  void this.enqueueNative(() => applyNativeDSP(this.pendingDsp!));
+                }
+              });
+            } else {
+              this.syncAndroidAudioSession(p);
+            }
           });
         } catch (_) {}
       }

@@ -61,36 +61,7 @@ public class AudioDSPModule: Module {
             let targetURL: URL
             // Support transparent des fichiers locaux (imports) et distants (streaming avec cache)
             if remote.isFileURL || !["http", "https"].contains(remote.scheme?.lowercased()) {
-                var resolved = remote
-                if !FileManager.default.fileExists(atPath: resolved.path) {
-                    let decodedPath = resolved.path.removingPercentEncoding ?? resolved.path
-                    if FileManager.default.fileExists(atPath: decodedPath) {
-                        resolved = URL(fileURLWithPath: decodedPath)
-                    }
-                }
-                if !FileManager.default.fileExists(atPath: resolved.path) {
-                    let path = resolved.path
-                    if let docRange = path.range(of: "/Documents/") {
-                        let subPath = String(path[docRange.upperBound...])
-                        let cleanSub = subPath.removingPercentEncoding ?? subPath
-                        if let currentDocDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                            let candidate = currentDocDir.appendingPathComponent(cleanSub)
-                            if FileManager.default.fileExists(atPath: candidate.path) {
-                                resolved = candidate
-                            }
-                        }
-                    } else if let cacheRange = path.range(of: "/Library/Caches/") {
-                        let subPath = String(path[cacheRange.upperBound...])
-                        let cleanSub = subPath.removingPercentEncoding ?? subPath
-                        if let currentCacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
-                            let candidate = currentCacheDir.appendingPathComponent(cleanSub)
-                            if FileManager.default.fileExists(atPath: candidate.path) {
-                                resolved = candidate
-                            }
-                        }
-                    }
-                }
-                targetURL = resolved
+                targetURL = self.resolveLocalFileURL(remote)
             } else {
                 let local = self.localURL(for: remote)
                 if !FileManager.default.fileExists(atPath: local.path) {
@@ -102,6 +73,13 @@ public class AudioDSPModule: Module {
                     try FileManager.default.moveItem(at: temporary, to: local)
                 }
                 targetURL = local
+            }
+
+            let isSecurityScoped = targetURL.startAccessingSecurityScopedResource()
+            defer {
+                if isSecurityScoped {
+                    targetURL.stopAccessingSecurityScopedResource()
+                }
             }
 
             self.engine.trackTitle = title
@@ -238,6 +216,62 @@ public class AudioDSPModule: Module {
             .joined()
         let ext = remote.pathExtension.isEmpty ? "mp3" : remote.pathExtension
         return cacheDirectory.appendingPathComponent("\(digest).\(ext)")
+    }
+
+    /// Résolution robuste des URLs locales (sandbox, documents, caches, symlinks)
+    private func resolveLocalFileURL(_ remote: URL) -> URL {
+        var candidates: [URL] = [remote]
+
+        let decodedPath = remote.path.removingPercentEncoding ?? remote.path
+        if decodedPath != remote.path {
+            candidates.append(URL(fileURLWithPath: decodedPath))
+        }
+
+        // Support standard /private/var/ mobile paths on iOS
+        if decodedPath.hasPrefix("/var/") {
+            candidates.append(URL(fileURLWithPath: "/private" + decodedPath))
+        } else if decodedPath.hasPrefix("/private/var/") {
+            candidates.append(URL(fileURLWithPath: String(decodedPath.dropFirst(8))))
+        }
+
+        // Résolution dynamique des sous-dossiers lors de migrations de conteneur d'app
+        if let docRange = decodedPath.range(of: "/Documents/") {
+            let subPath = String(decodedPath[docRange.upperBound...])
+            if let currentDocDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+                candidates.append(appendingSubPath(currentDocDir, subPath))
+            }
+        }
+        if let cacheRange = decodedPath.range(of: "/Library/Caches/") {
+            let subPath = String(decodedPath[cacheRange.upperBound...])
+            if let currentCacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
+                candidates.append(appendingSubPath(currentCacheDir, subPath))
+            }
+        }
+        if let tmpRange = decodedPath.range(of: "/tmp/") {
+            let subPath = String(decodedPath[tmpRange.upperBound...])
+            let tmpDir = URL(fileURLWithPath: NSTemporaryDirectory())
+            candidates.append(appendingSubPath(tmpDir, subPath))
+        }
+
+        for candidate in candidates {
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+
+        return candidates.first ?? remote
+    }
+
+    private func appendingSubPath(_ base: URL, _ subPath: String) -> URL {
+        var current = base
+        let clean = subPath.removingPercentEncoding ?? subPath
+        let components = clean.split(separator: "/").map { String($0) }
+        for component in components {
+            if !component.isEmpty {
+                current = current.appendingPathComponent(component)
+            }
+        }
+        return current
     }
 
     private func applyDSP(

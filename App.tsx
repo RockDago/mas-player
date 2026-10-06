@@ -28,6 +28,7 @@ import {
 
 import { Track, DSPState, EqualizerPreset, Playlist } from './src/types/audio';
 import { DEFAULT_PRESETS } from './src/constants/presets';
+import { INITIAL_TRACKS } from './src/data/demoTracks';
 import { formatTime } from './src/services/audioService';
 import { playerManager } from './src/services/playerManager';
 import {
@@ -95,7 +96,7 @@ function MainApp() {
   // une mesure — voir src/theme/insets.ts.
   const insets = useScreenInsets();
 
-  const [tracks, setTracks] = useState<Track[]>([]);
+  const [tracks, setTracks] = useState<Track[]>(INITIAL_TRACKS);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -327,6 +328,9 @@ hasTrackRef.current = hasTrack;
       let currentTrackList: Track[] = savedCustomTracks ?? [];
       if (Platform.OS === 'web' && currentTrackList.length > 0) {
         currentTrackList = await restoreWebAudioBlobs(currentTrackList);
+      }
+      if (currentTrackList.length === 0) {
+        currentTrackList = INITIAL_TRACKS;
       }
       if (currentTrackList.length > 0) {
         setTracks(currentTrackList);

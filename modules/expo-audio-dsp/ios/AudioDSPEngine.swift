@@ -611,7 +611,13 @@ final class AudioDSPEngine: NSObject {
             }
         }
 
-        let file = try AVAudioFile(forReading: url)
+        let file: AVAudioFile
+        do {
+            file = try AVAudioFile(forReading: url)
+        } catch {
+            print("AudioDSP [AVAudioFile ERROR] Impossible de charger '\(url.path)': \(error.localizedDescription)")
+            throw AudioDSPError.engineStartFailed("AVAudioFile read error: \(error.localizedDescription)")
+        }
         audioFile = file
         sampleRate = file.processingFormat.sampleRate
         seekOffset = 0
