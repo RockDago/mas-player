@@ -6,6 +6,31 @@ on:
   workflow_dispatch:
 
 jobs:
+  verify-dsp:
+    name: Verify Native DSP Wiring
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: 📦 Install npm dependencies
+        run: npm ci || npm install
+
+      # Ces harnais vérifient le CÂBLAGE du graphe et exécutent l'algorithme de
+      # répartition des bandes — pas les constantes. Le commit `eef2172` a
+      # débranché trois étages iOS en laissant `verify:sync` au vert : sans une
+      # vérification qui regarde le câblage, cette régression passe inaperçue.
+      - name: 🎛️ Vérifier le câblage DSP natif
+        run: |
+          npm run verify:native
+          npm run verify:sync
+
   build-ipa:
     name: Build Unsigned iOS IPA
     runs-on: macos-15

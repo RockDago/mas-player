@@ -841,8 +841,8 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
     onUpdateDSP({
       ...dsp,
       presetId: 'flat',
-      bass: dsp.bass,
-      treble: dsp.treble,
+      bass: 0,
+      treble: 0,
       preamp: 0,
       bands: [...flat.bands],
     });

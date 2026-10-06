@@ -1,6 +1,7 @@
 import CryptoKit
 import ExpoModulesCore
 import Foundation
+import UIKit
 
 /**
  * Surface JS du moteur d'égaliseur.
@@ -42,6 +43,22 @@ public class AudioDSPModule: Module {
         // MARK: Chargement
 
         AsyncFunction("loadTrackAsync") { (uri: String, title: String?, artist: String?, album: String?, artwork: String?) async throws -> [String: Any] in
+            var bgTask: UIBackgroundTaskIdentifier = .invalid
+            await MainActor.run {
+                bgTask = UIApplication.shared.beginBackgroundTask(withName: "MASPlayer-LoadTrack") {
+                    UIApplication.shared.endBackgroundTask(bgTask)
+                    bgTask = .invalid
+                }
+            }
+            defer {
+                if bgTask != .invalid {
+                    let taskToEnd = bgTask
+                    DispatchQueue.main.async {
+                        UIApplication.shared.endBackgroundTask(taskToEnd)
+                    }
+                }
+            }
+
             let parsedURL: URL? = {
                 if uri.hasPrefix("file://") {
                     let clean = String(uri.dropFirst(7))
@@ -129,6 +146,19 @@ public class AudioDSPModule: Module {
 
         AsyncFunction("clearNowPlayingAsync") { () -> Void in
             self.engine.clearNowPlaying()
+        }
+
+        /**
+         * Reprise automatique après une interruption (appel entrant, alarme).
+         *
+         * iOS seulement. Android n'a pas besoin de ce drapeau : le focus audio
+         * d'`expo-audio` gère déjà la pause et la reprise, et JS le pilote par
+         * `interruptionMode`. Ici, l'engine reprend dans son handler
+         * d'`interruptionNotification` avant de prévenir JS, donc JS ne peut pas
+         * annuler la reprise — il doit la désider en amont.
+         */
+        AsyncFunction("setAutoResumeAsync") { (enabled: Bool) -> Void in
+            self.engine.setAutoResumeOnInterruption(enabled)
         }
 
         // MARK: DSP

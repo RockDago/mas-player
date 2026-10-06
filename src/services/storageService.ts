@@ -13,7 +13,6 @@ export interface AppSettings {
   // Look & Feel
   theme: 'oled' | 'cyber' | 'violet' | 'carbon';
   visualizerStyle: 'vinyl' | 'bars' | 'wave';
-  showAudioDetails: boolean;
   richNotifications: boolean;
   language: 'fr' | 'en' | 'es' | 'de' | 'it';
 
@@ -28,7 +27,6 @@ export interface AppSettings {
 
   // Visualization
   spectrumReactive: 'low' | 'normal' | 'ultra';
-  beatPulse: boolean;
   autoFadeControls: boolean;
   fadedOpacity: number;
 
@@ -78,7 +76,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 
   theme: 'oled',
   visualizerStyle: 'vinyl',
-  showAudioDetails: true,
   richNotifications: true,
   language: 'fr',
 
@@ -91,7 +88,6 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   ultraLowLatency: true,
 
   spectrumReactive: 'normal',
-  beatPulse: true,
   autoFadeControls: false,
   fadedOpacity: 0.4,
 

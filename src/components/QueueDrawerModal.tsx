@@ -6,10 +6,10 @@ import {
   StyleSheet,
   TouchableOpacity,
   FlatList,
-  SafeAreaView,
   Platform,
   Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useScreenInsets, insetPadding } from '../theme/insets';
@@ -54,7 +54,10 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
         />
 
         {/* Drawer sliding in from left */}
-        <SafeAreaView style={styles.drawerContainer}>
+        <SafeAreaView
+          style={styles.drawerContainer}
+          edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
+        >
           <View
             style={[
               styles.header,

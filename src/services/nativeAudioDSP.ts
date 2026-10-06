@@ -29,6 +29,8 @@ export interface AudioDSPNativeModule {
   setVolumeAsync(value: number): Promise<void>;
   getSystemVolumeAsync(): Promise<number>;
   clearNowPlayingAsync(): Promise<void>;
+  /** Reprise après interruption — iOS seulement, cf. `setNativeAutoResumeOnInterruption`. */
+  setAutoResumeAsync?(enabled: boolean): Promise<void>;
   setDSPAsync(
     bands: number[],
     preamp: number,
@@ -118,6 +120,31 @@ export async function setNativeAudioSessionId(sessionId: number): Promise<void> 
     await module.setAudioSessionIdAsync(sessionId);
   } catch (err) {
     console.warn('Native AudioDSP setAudioSessionIdAsync error:', err);
+  }
+}
+
+/**
+ * Autorise ou interdit la reprise après une interruption (iOS uniquement).
+ *
+ * iOS ne peut pas être piloté depuis JS comme Android : `AudioDSPEngine.swift`
+ * traite `AVAudioSession.interruptionNotification` et reprend la lecture si
+ * l'option `.shouldResume` est présente, AVANT d'en informer JS. JS ne voit
+ * donc la reprise qu'une fois faite, et ne peut plus l'empêcher — il doit le
+ * dire au natif AVANT l'interruption, d'où ce drapeau.
+ *
+ * Android n'a pas besoin de ce passage : le focus audio y fait déjà le travail,
+ * piloté par `interruptionMode` dans `playerManager`.
+ *
+ * Sans effet si le module natif est absent (web, Expo Go) : l'appel est un
+ * no-op plutôt qu'une erreur.
+ */
+export async function setNativeAutoResumeOnInterruption(enabled: boolean): Promise<void> {
+  const module = getNativeModule();
+  if (!module || !module.setAutoResumeAsync) return;
+  try {
+    await module.setAutoResumeAsync(enabled);
+  } catch (err) {
+    console.warn('Native AudioDSP setAutoResumeAsync error:', err);
   }
 }
 
@@ -294,6 +321,24 @@ export async function seekNative(seconds: number): Promise<void> {
   }
 }
 
+/** Les quatorze champs DSP transmis au natif, dans l'ordre de `AudioDSPModule`. */
+interface DSPPayload {
+  bands: number[];
+  preamp: number;
+  balance: number;
+  mono: boolean;
+  stereoExpansion: number;
+  enabled: boolean;
+  crossfeed: number;
+  reverbEnabled: boolean;
+  roomSize: number;
+  damping: number;
+  reverbMix: number;
+  reverbWet: number;
+  reverbDry: number;
+  limitEnabled: boolean;
+}
+
 /**
  * Pousse l'état DSP vers le moteur natif.
  */
@@ -337,23 +382,48 @@ export async function applyNativeDSP(dsp: DSPState): Promise<void> {
   // couple wet/dry et ne le recalcule pas.
   const reverbGains = computeReverbGains(dsp.reverbMix ?? 0);
 
+  const payload: DSPPayload = {
+    bands,
+    preamp,
+    balance: dsp.balance ?? 0,
+    mono: dsp.mono ?? false,
+    stereoExpansion: dsp.stereoExpansion ?? 0,
+    enabled: dsp.enabled,
+    crossfeed: dsp.crossfeed ?? 0,
+    reverbEnabled: dsp.reverbEnabled ?? false,
+    roomSize: dsp.roomSize ?? 0,
+    damping: dsp.damping ?? 0,
+    reverbMix: dsp.reverbMix ?? 0,
+    reverbWet: reverbGains.wet,
+    reverbDry: reverbGains.dry,
+    limitEnabled: dsp.limitEnabled ?? true,
+  };
+
   try {
-    await module.setDSPAsync(
-      bands,
-      preamp,
-      dsp.balance ?? 0,
-      dsp.mono ?? false,
-      dsp.stereoExpansion ?? 0,
-      dsp.enabled,
-      dsp.crossfeed ?? 0,
-      dsp.reverbEnabled ?? false,
-      dsp.roomSize ?? 0,
-      dsp.damping ?? 0,
-      dsp.reverbMix ?? 0,
-      reverbGains.wet,
-      reverbGains.dry,
-      dsp.limitEnabled ?? true
-    );
+    if (Platform.OS === 'android') {
+      // Le DSL `AsyncFunction` d'expo-modules-core s'arrête à huit paramètres :
+      // impossible de passer quatorze scalaires depuis Kotlin. Android reçoit donc
+      // un seul dictionnaire. iOS garde sa signature positionnelle — Swift n'a pas
+      // ce plafond — et les deux formes portent le même jeu de champs.
+      await (module.setDSPAsync as unknown as (p: DSPPayload) => Promise<void>)(payload);
+    } else {
+      await module.setDSPAsync(
+        payload.bands,
+        payload.preamp,
+        payload.balance,
+        payload.mono,
+        payload.stereoExpansion,
+        payload.enabled,
+        payload.crossfeed,
+        payload.reverbEnabled,
+        payload.roomSize,
+        payload.damping,
+        payload.reverbMix,
+        payload.reverbWet,
+        payload.reverbDry,
+        payload.limitEnabled
+      );
+    }
   } catch (err) {
     console.warn('Native AudioDSP setDSPAsync error:', err);
   }

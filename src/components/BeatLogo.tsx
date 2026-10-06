@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useMemo } from 'react';
-import { View, Animated, StyleSheet, Image, useWindowDimensions, Platform } from 'react-native';
+import { View, Animated, StyleSheet, Image, useWindowDimensions, Platform, AppState } from 'react-native';
 import { beatStore } from '../services/beatStore';
 
 interface BeatLogoProps {
@@ -31,11 +31,28 @@ export const BeatLogo: React.FC<BeatLogoProps> = ({ size: propSize }) => {
   const breathRef = useRef(0);
 
   useEffect(() => {
-    let rafId: number;
+    let rafId: number | null = null;
     let cancelled = false;
+
+    const stopLoop = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+    };
+
+    const startLoop = () => {
+      if (cancelled || rafId !== null) return;
+      if (Platform.OS !== 'web' && AppState.currentState !== 'active') return;
+      rafId = requestAnimationFrame(tick);
+    };
 
     const tick = () => {
       if (cancelled) return;
+      if (Platform.OS !== 'web' && AppState.currentState !== 'active') {
+        rafId = null;
+        return;
+      }
 
       const { pulse, energy } = beatStore.read();
       breathRef.current += 0.02;
@@ -93,11 +110,22 @@ export const BeatLogo: React.FC<BeatLogoProps> = ({ size: propSize }) => {
       rafId = requestAnimationFrame(tick);
     };
 
-    rafId = requestAnimationFrame(tick);
+    startLoop();
+
+    const appStateSub = Platform.OS !== 'web'
+      ? AppState.addEventListener('change', (state) => {
+          if (state === 'active') {
+            startLoop();
+          } else {
+            stopLoop();
+          }
+        })
+      : null;
 
     return () => {
       cancelled = true;
-      cancelAnimationFrame(rafId);
+      stopLoop();
+      appStateSub?.remove();
     };
   }, []);
 

@@ -6,9 +6,10 @@ import {
   StyleSheet,
   TouchableOpacity,
   FlatList,
-  SafeAreaView,
   Image,
+  Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
@@ -162,7 +163,10 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
       presentationStyle="pageSheet"
       onRequestClose={onClose}
     >
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView
+        style={styles.container}
+        edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
+      >
         <View
           style={[
             styles.header,

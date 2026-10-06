@@ -6,13 +6,13 @@ import {
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  SafeAreaView,
   Platform,
   TextInput,
   Switch,
   Image,
   ActivityIndicator,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { useScreenInsets, insetPadding } from '../theme/insets';
 import * as Haptics from 'expo-haptics';
@@ -26,7 +26,7 @@ import { getTranslation, LANGUAGES, LanguageCode } from '../i18n/translations';
 interface SettingsModalProps {
   visible: boolean;
   onClose: () => void;
-  onRescanLibrary?: () => void;
+  onRescanLibrary?: () => Promise<number>;
   settings?: AppSettings;
   onUpdateSettings?: (newSettings: Partial<AppSettings>) => void;
   currentTrack?: Track;
@@ -129,12 +129,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [isSearchActive, setIsSearchActive] = useState<boolean>(false);
   const [selectedSetting, setSelectedSetting] = useState<SettingCategory | null>(null);
   const [resetSuccess, setResetSuccess] = useState<boolean>(false);
-  const [rescanSuccess, setRescanSuccess] = useState<boolean>(false);
+  // `rescanSuccess` porte le nombre de morceaux ajoutés — `null` tant que le
+  // scan n'a rien donné. Un booléen separate ne suffirait pas : « actualisée »
+  // sans dire combien de morceaux ont réellement été trouvés est exactement le
+  // vide que ce handler vient de combler.
+  const [rescanSuccess, setRescanSuccess] = useState<number | null>(null);
+  const [rescanError, setRescanError] = useState<boolean>(false);
   const [rescanLoading, setRescanLoading] = useState<boolean>(false);
-  const [cacheCleanSuccess, setCacheCleanSuccess] = useState<boolean>(false);
 
   const lang: LanguageCode = (settings.language as LanguageCode) || 'fr';
-  const t = (key: string, fallback?: string): string => getTranslation(lang, key, fallback);
+  // `params` est relayé tel quel : les libellés qui interpolent `{count}`
+  // (le décompte réel du rescan) passent par ici comme par `getTranslation`.
+  const t = (
+    key: string,
+    fallback?: string,
+    params?: Record<string, string | number>
+  ): string => getTranslation(lang, key, fallback, params);
 
   const filteredItems = SETTING_ITEMS.filter((item) => {
     const title = t(item.titleKey);
@@ -152,25 +162,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setSelectedSetting(item);
   };
 
-  const handleTriggerRescan = () => {
-    try {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {}
+  /**
+   * Rescan réel de la bibliothèque.
+   *
+   * Ce handler affichait auparavant un bandeau « Bibliothèque actualisée » après
+   * un `setTimeout` de 800 ms, sans avoir rien scanné : `onRescanLibrary` n'était
+   * qu'un `console.log`. Le bandeau vert annonçait donc un succès fabriqué — le
+   * pire genre de retour, puisque l'utilisateur ne peut pas le contester.
+   *
+   * On attend maintenant la promesse réellement retournée par l'appelant, et on
+   * n'affiche un succès que si elle résout. Une annulation du sélecteur système
+   * et une erreur sont deux résultats distincts, tous deux honnêtes.
+   */
+  const handleTriggerRescan = async () => {
     setRescanLoading(true);
-    if (onRescanLibrary) onRescanLibrary();
-    setTimeout(() => {
-      setRescanLoading(false);
-      setRescanSuccess(true);
-      setTimeout(() => setRescanSuccess(false), 3000);
-    }, 800);
-  };
-
-  const handleCleanArtCache = () => {
+    setRescanSuccess(null);
+    setRescanError(false);
     try {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    } catch {}
-    setCacheCleanSuccess(true);
-    setTimeout(() => setCacheCleanSuccess(false), 3000);
+      const added = await onRescanLibrary?.();
+      try {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      } catch {}
+      setRescanSuccess(added ?? 0);
+    } catch (e) {
+      console.warn('Échec du rescan de la bibliothèque:', e);
+      try {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      } catch {}
+      setRescanError(true);
+    } finally {
+      setRescanLoading(false);
+    }
   };
 
   const renderCategoryContent = () => {
@@ -221,8 +243,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <View style={styles.toggleRow}>
               <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('resumeOnCall')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('resumeOnCallSub')}</Text>
+                <Text style={styles.toggleLabel}>{t('resumeAfterInterruption')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('resumeAfterInterruptionSub')}</Text>
               </View>
               <Switch
                 value={settings.resumeOnHeadset}
@@ -371,19 +393,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </TouchableOpacity>
                 ))}
               </View>
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('fullScreenArt')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('fullScreenArtSub')}</Text>
-              </View>
-              <Switch
-                value={settings.showAudioDetails}
-                onValueChange={(val) => onUpdateSettings?.({ showAudioDetails: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
             </View>
 
             <View style={styles.toggleRow}>
@@ -591,19 +600,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <View style={styles.toggleRow}>
               <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('beatPulseTitle')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('beatPulseSub')}</Text>
-              </View>
-              <Switch
-                value={settings.beatPulse}
-                onValueChange={(val) => onUpdateSettings?.({ beatPulse: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
                 <Text style={styles.toggleLabel}>{t('autoFadeTitle')}</Text>
                 <Text style={styles.toggleSubLabel}>{t('autoFadeSub')}</Text>
               </View>
@@ -781,33 +777,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               />
             </View>
 
-            <View style={styles.statusCard}>
-              <Text style={styles.statusCardTitle}>{t('artCacheTitle')}</Text>
-              <View style={styles.statusCardRow}>
-                <Text style={styles.statusCardLabel}>{t('artCachedCount')}</Text>
-                <Text style={styles.statusCardValue}>{t('artCachedVal')}</Text>
-              </View>
-              <View style={styles.statusCardRow}>
-                <Text style={styles.statusCardLabel}>{t('artTargetRes')}</Text>
-                <Text style={styles.statusCardValue}>{t('artTargetResVal')}</Text>
-              </View>
-            </View>
-
-            {cacheCleanSuccess ? (
-              <View style={styles.resetSuccessBox}>
-                <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
-                <Text style={styles.resetSuccessText}>{t('artCleanSuccess')}</Text>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={handleCleanArtCache}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="trash-bin-outline" size={16} color="#38BDF8" />
-                <Text style={styles.actionBtnText}>{t('artCleanBtn')}</Text>
-              </TouchableOpacity>
-            )}
+            {/* La carte « cache de pochettes » et son bouton « vider » ont été
+                retirés : il n'existe aucun cache. Les pistes importées n'ont pas
+                de pochette sur natif, et la carte annonçait « 18 pochettes ·
+                3.2 Mo » avec un bouton de purge qui vidait rien. Un compteur de
+                cache qui ne compte rien est un mensonge d'interface ; il est plus
+                utile de ne pas avoir de bouton du tout. */}
           </View>
         );
 
@@ -830,10 +805,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </Text>
             </TouchableOpacity>
 
-            {rescanSuccess && (
+            {rescanSuccess !== null && (
               <View style={styles.resetSuccessBox}>
                 <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
-                <Text style={styles.resetSuccessText}>{t('rescanSuccess')}</Text>
+                <Text style={styles.resetSuccessText}>
+                  {t('libRescanFound', undefined, { count: rescanSuccess })}
+                </Text>
+              </View>
+            )}
+
+            {rescanError && (
+              <View style={styles.resetErrorBox}>
+                <Ionicons name="alert-circle" size={16} color="#EF4444" />
+                <Text style={styles.resetErrorText}>{t('libRescanFailed')}</Text>
               </View>
             )}
 
@@ -1032,7 +1016,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       transparent={false}
       onRequestClose={onClose}
     >
-      <SafeAreaView style={styles.safeContainer}>
+      <SafeAreaView
+        style={styles.safeContainer}
+        edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
+      >
         {/* Header */}
         <View
           style={[
@@ -1095,11 +1082,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </View>
         </View>
 
-        {/* Rescan Notification Banner */}
-        {rescanSuccess && (
+        {/* Rescan Notification Banner — refléte le compte réel, jamais un succès par défaut */}
+        {rescanSuccess !== null && (
           <View style={styles.rescanBanner}>
             <Ionicons name="checkmark-circle" size={18} color="#4ADE80" />
-            <Text style={styles.rescanBannerText}>{t('rescanSuccess')}</Text>
+            <Text style={styles.rescanBannerText}>
+              {t('libRescanFound', undefined, { count: rescanSuccess })}
+            </Text>
           </View>
         )}
 
@@ -1512,6 +1501,21 @@ const styles = StyleSheet.create({
   },
   resetSuccessText: {
     color: '#4ADE80',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  resetErrorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderRadius: 10,
+    paddingVertical: 10,
+    marginTop: 4,
+  },
+  resetErrorText: {
+    color: '#EF4444',
     fontSize: 13,
     fontWeight: '600',
   },

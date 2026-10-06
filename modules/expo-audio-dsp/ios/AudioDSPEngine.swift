@@ -139,6 +139,10 @@ final class AudioDSPEngine: NSObject {
     private var pendingGains: [Float] = Array(repeating: 0, count: AudioDSPEngine.bandCount)
     private var pendingPreamp: Float = 0
     private var pendingBalance: Float = 0
+    /// Idem pour la pastille LIMIT : sans ce champ, `load()` omet l'argument et
+    /// le paramètre retombe sur son défaut `true` — le limiteur se rallumait donc
+    /// à chaque changement de piste alors que l'utilisateur l'avait éteint.
+    private var pendingLimitEnabled: Bool = true
 
     /// Rappel de progression : (position, durée, fin de piste).
     var onProgress: ((Double, Double, Bool) -> Void)?
@@ -146,6 +150,11 @@ final class AudioDSPEngine: NSObject {
     // MARK: - Suivi temporel & état de lecture
     private var seekOffset: Double = 0
     private var isPaused: Bool = false
+    /// Reprise automatique après une interruption (appel entrant, alarme).
+    /// Vrai par défaut : reprendre est le comportement attendu d'un lecteur.
+    /// Lu dans le handler d'`interruptionNotification`, qui reprend AVANT de
+    /// prévenir JS — le réglage doit donc être connu du natif.
+    private var autoResumeOnInterruption: Bool = true
     private var pausedTime: Double = 0
     private var lastKnownTime: Double = 0
 
@@ -291,14 +300,180 @@ final class AudioDSPEngine: NSObject {
         engine.attach(preampNode)
         engine.attach(balanceNode)
 
-        // Les unités DSP personnalisées (limiteur, largeur stéréo, réverbération)
-        // sont gérées de manière modulaire : sur iOS, l'injection directe d'un bloc
-        // de rendu dans AVAudioEngine requiert un composant Audio Unit v3 enregistré.
-        // Le graphe est donc configuré avec les nœuds natifs existants (AVAudioUnitEQ,
-        // AVAudioMixerNode) et les états sont mis à jour proprement sans crash.
-        limiterAvailable = false
-        spatialAvailable = false
-        reverbAvailable = false
+        // Le limiteur est un `AVAudioUnitEffect` dont on fournit le bloc de rendu.
+        // L'initializer est optionnel : sans description d'Audio Unit, il renvoie
+        // nil. C'est le seul point où l'étage peut manquer, et il doit manquer
+        // proprement — on continue sans limiteur plutôt que de planter.
+        if let effect = AVAudioUnitEffect(audioComponentDescription: AudioDSPEngine.effectDescription) {
+            effect.auAudioUnit.shouldBypassEffect = false
+            limiterUnit = effect
+            limiterAvailable = true
+            // Le bloc doit être installé AVANT tout `attach`/câblage : il est lié
+            // à l'unité, et le remplacer en cours de route ferait perdre l'état.
+            installLimiterRenderBlock()
+            engine.attach(effect)
+        } else {
+            limiterAvailable = false
+            print("AudioDSP: unité d'effet indisponible, limiteur ignoré (le signal passera sans)")
+        }
+
+        // L'étage de largeur, même principe : un second `AVAudioUnitEffect` avec
+        // son propre bloc de rendu. L'ordre d'attach n'a pas d'importance, seul
+        // l'ordre de câblage compte.
+        if let effect = AVAudioUnitEffect(audioComponentDescription: AudioDSPEngine.effectDescription) {
+            effect.auAudioUnit.shouldBypassEffect = false
+            spatialUnit = effect
+            spatialAvailable = true
+            installSpatialRenderBlock()
+            engine.attach(effect)
+        } else {
+            spatialAvailable = false
+            print("AudioDSP: unité d'effet indisponible, largeur stéréo ignorée")
+        }
+
+        // La réverbération, troisième bloc de rendu. L'état est construit une
+        // seule fois ici ; seule la fréquence d'échantillonnage du fichier
+        // courant est réinjectée, à chaque `load()`.
+        if let effect = AVAudioUnitEffect(audioComponentDescription: AudioDSPEngine.effectDescription) {
+            effect.auAudioUnit.shouldBypassEffect = false
+            reverbUnit = effect
+            reverbAvailable = true
+            installReverbRenderBlock()
+            engine.attach(effect)
+        } else {
+            reverbAvailable = false
+            print("AudioDSP: unité d'effet indisponible, réverbération ignorée")
+        }
+    }
+
+    /// Description d'Audio Unit d'un effet vide : c'est le moyen documenté de
+    /// obtenir un `AVAudioUnitEffect` auquel on installe un bloc de rendu maison.
+    ///
+    /// Aucune inscription de composant v3 n'est nécessaire : c'est bien un
+    /// Audio Unit *système* (`kAudioUnitSubType_Generic`, fabricant Apple) dont
+    /// on remplace le traitement. L'affirmation contraire — présente jusqu'à
+    /// `eef2172` — a fait disparaître trois étages du graphe alors que le signal
+    /// passait : voir `installLimiterRenderBlock`.
+    private static let effectDescription = AudioComponentDescription(
+        componentType: kAudioUnitType_Effect,
+        componentSubType: kAudioUnitSubType_Generic,
+        componentManufacturer: kAudioUnitManufacturer_Apple,
+        componentFlags: 0,
+        componentFlagsMask: 0
+    )
+
+    /**
+     Installe le bloc de rendu du limiteur sur son unité d'effet.
+
+     Une seule installation, ensuite seuls le seuil bougent, via `limiterState`.
+     L'état est une **classe** : le bloc le capture fortement, ce qui est
+     intentionnel — `AVAudioUnitRenderBlock` n'est pas `@Sendable`, donc capturer
+     `self` de classe compile sans diagnostic Swift 6 (cf. `AudioDSPSpatial.swift`).
+
+     Aucune allocation dans la boucle : `LimiterState.processChannels` ne prend
+     son verrou qu'une fois par tampon (~512 échantillons).
+     */
+    private func installLimiterRenderBlock() {
+        guard let limiterUnit else { return }
+        let state = limiterState
+
+        limiterUnit.auAudioUnit.renderBlock = { _, actionFlags, timestamp, frameCount, audioBufferList in
+            let flags = actionFlags.pointee
+            // Rendu hors ligne ou pour une file d'attente : ce sont des chemins de
+            // test ou de pré-calcul, pas de la lecture. On ne touche à rien.
+            if flags.contains(.Offline) || flags.contains(.RenderForQueue) {
+                return noErr
+            }
+
+            let frames = Int(frameCount)
+            guard frames > 0 else { return noErr }
+
+            let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            let sampleRate = timestamp.pointee.mSampleRate
+
+            // Deux tampons = deux lignes de canal distinctes : c'est le cas normal.
+            if ablPointer.count >= 2 {
+                state.processChannels(
+                    left: ablPointer[0].mData?.assumingMemoryBound(to: Float.self),
+                    right: ablPointer[1].mData?.assumingMemoryBound(to: Float.self),
+                    frameCount: frames,
+                    sampleRate: sampleRate
+                )
+            } else if ablPointer.count == 1 {
+                // Entrelacé : L, R, L, R... dans une seule ligne.
+                guard let raw = ablPointer[0].mData?.assumingMemoryBound(to: Float.self) else { return noErr }
+                state.processInterleaved(raw, frameCount: frames, sampleRate: sampleRate)
+            }
+            return noErr
+        }
+    }
+
+    /**
+     Installe le bloc de rendu de la largeur stéréo sur son unité d'effet.
+
+     Même discipline que le limiteur : une seule installation, ensuite seuls les
+     coefficients bougent, via `spatialState`. Aucune allocation dans la boucle.
+     */
+    private func installSpatialRenderBlock() {
+        guard let spatialUnit else { return }
+        let state = spatialState
+
+        spatialUnit.auAudioUnit.renderBlock = { _, actionFlags, _, frameCount, audioBufferList in
+            let flags = actionFlags.pointee
+            if flags.contains(.Offline) || flags.contains(.RenderForQueue) {
+                return noErr
+            }
+
+            let frames = Int(frameCount)
+            guard frames > 0 else { return noErr }
+
+            let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            // La matrice n'a de sens qu'en stéréo : sur un format mono, le
+            // convertisseur a déjà réduit à un canal et il n'y a rien à élargir.
+            guard ablPointer.count >= 2 else { return noErr }
+
+            guard let left = ablPointer[0].mData?.assumingMemoryBound(to: Float.self),
+                  let right = ablPointer[1].mData?.assumingMemoryBound(to: Float.self) else {
+                return noErr
+            }
+            state.process(left: left, right: right, frameCount: frames)
+            return noErr
+        }
+    }
+
+    /**
+     Installe le bloc de rendu de la réverbération sur son unité d'effet.
+
+     Même discipline que les deux autres : une seule installation, ensuite seuls les
+     paramètres bougent, via `reverbState`. Aucune allocation dans la boucle.
+     */
+    private func installReverbRenderBlock() {
+        guard let reverbUnit else { return }
+        let state = reverbState
+
+        reverbUnit.auAudioUnit.renderBlock = { _, actionFlags, _, frameCount, audioBufferList in
+            let flags = actionFlags.pointee
+            if flags.contains(.Offline) || flags.contains(.RenderForQueue) {
+                return noErr
+            }
+
+            let frames = Int(frameCount)
+            guard frames > 0 else { return noErr }
+
+            let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            // Une pièce suppose deux murs. Sur un format mono le convertisseur a
+            // déjà réduit à un canal : il n'y a pas d'image à étendre, donc pas de
+            // queue — et c'est aussi ce que fait le web, dont le graphe est recâblé
+            // en mono.
+            guard ablPointer.count >= 2 else { return noErr }
+
+            guard let left = ablPointer[0].mData?.assumingMemoryBound(to: Float.self),
+                  let right = ablPointer[1].mData?.assumingMemoryBound(to: Float.self) else {
+                return noErr
+            }
+            state.process(left: left, right: right, frameCount: frames)
+            return noErr
+        }
     }
 
     /// Câblage pour un format donné. Réfait à chaque `load()` **et** à chaque
@@ -431,6 +606,10 @@ final class AudioDSPEngine: NSObject {
         //
         // Comme sur le web, on ne retire pas l'étage du graphe : on relève son
         // plafond à 0 dBFS. Voir `LimiterState.setEnabled` pour le raisonnement.
+        // Mémorisé AVANT la garde : `load()` rejoue cette valeur, et elle doit
+        // refléter le dernier réglage reçu même si l'étage n'a pas pu être
+        // construit — sinon le rechargement réécrirait un `true` par défaut.
+        pendingLimitEnabled = limitEnabled
         if limiterAvailable {
             limiterState.setEnabled(limitEnabled)
         }
@@ -537,17 +716,35 @@ final class AudioDSPEngine: NSObject {
     }
 
     @objc private func handleEngineConfigurationChange(notification: Notification) {
-        guard let _ = audioFile else { return }
-        let wasPlaying = !isPaused && playerNode.isPlaying
+        guard let file = audioFile else { return }
+        let shouldResume = !isPaused
         let pos = self.currentTime
         do {
             if !engine.isRunning {
                 engine.prepare()
                 try engine.start()
             }
-            if wasPlaying && !playerNode.isPlaying {
-                seek(to: pos)
+            if shouldResume {
+                let sampleRate = file.processingFormat.sampleRate
+                let frame = AVAudioFramePosition(pos * sampleRate)
+                let remaining = file.length - frame
+                playerNode.stop()
+                let completionHandler: () -> Void = { [weak self] in
+                    DispatchQueue.main.async {
+                        guard let self = self else { return }
+                        if !self.isPaused && self.currentTime >= self.duration - 0.5 {
+                            self.onProgress?(self.duration, self.duration, true)
+                        }
+                    }
+                }
+                if remaining > 0 {
+                    playerNode.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(remaining), at: nil, completionHandler: completionHandler)
+                } else {
+                    seekOffset = 0
+                    playerNode.scheduleFile(file, at: nil, completionHandler: completionHandler)
+                }
                 playerNode.play()
+                isPaused = false
             }
             updateNowPlaying()
         } catch {
@@ -570,6 +767,13 @@ final class AudioDSPEngine: NSObject {
                 self.onRemoteCommand?("pause")
             }
         case .ended:
+            // Le réglage « reprise après interruption » est lu ICI, et pas
+            // seulement en JS : iOS reprend la lecture dans ce handler, avant
+            // d'en informer JS. Un JS qui découvre la reprise après coup ne peut
+            // plus l'empêcher — il ne peut que la constater. C'est pourquoi
+            // Android se règle par `interruptionMode` (le focus audio fait le
+            // travail) et iOS par ce drapeau.
+            guard autoResumeOnInterruption else { break }
             if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
                 let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
                 if options.contains(.shouldResume) {
@@ -646,7 +850,8 @@ final class AudioDSPEngine: NSObject {
               crossfeed: crossfeed,
               reverbEnabled: reverbEnabled, roomSize: roomSize,
               damping: damping, reverbMix: reverbMix,
-              reverbWet: reverbWet, reverbDry: reverbDry)
+              reverbWet: reverbWet, reverbDry: reverbDry,
+              limitEnabled: pendingLimitEnabled)
 
         scheduleProgressUpdates()
     }
@@ -682,11 +887,19 @@ final class AudioDSPEngine: NSObject {
             let sampleRate = file.processingFormat.sampleRate
             let frame = AVAudioFramePosition(seekOffset * sampleRate)
             let remaining = file.length - frame
+            let completionHandler: () -> Void = { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self = self else { return }
+                    if !self.isPaused && self.currentTime >= self.duration - 0.5 {
+                        self.onProgress?(self.duration, self.duration, true)
+                    }
+                }
+            }
             if remaining > 0 {
-                playerNode.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(remaining), at: nil)
+                playerNode.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(remaining), at: nil, completionHandler: completionHandler)
             } else {
                 seekOffset = 0
-                playerNode.scheduleFile(file, at: nil)
+                playerNode.scheduleFile(file, at: nil, completionHandler: completionHandler)
             }
             playerNode.play()
             isPaused = false
@@ -709,6 +922,13 @@ final class AudioDSPEngine: NSObject {
         seekOffset = 0
         pausedTime = 0
         lastKnownTime = 0
+        // Le `Timer` de progression doit être invalidé ici, et pas seulement
+        // dans `scheduleProgressUpdates` : `stopCurrentPlayback` passe par ce
+        // chemin à chaque changement de piste, donc un `Timer` laissé actif
+        // continuerait de pousser `onProgress` à 4 Hz vers une UI démontée.
+        // `scheduleProgressUpdates` le recrée au prochain `load`.
+        progressTimer?.invalidate()
+        progressTimer = nil
         // L'observation du volume système ne doit pas survivre à l'arrêt : elle
         // est strongly-held et continuerait de pousser des événements vers une
         // UI démontée, exactement comme le `Timer` de progression.
@@ -746,7 +966,7 @@ final class AudioDSPEngine: NSObject {
         let clamped = max(0, min(total, seconds))
         let sampleRate = file.processingFormat.sampleRate
         let frame = AVAudioFramePosition(clamped * sampleRate)
-        let wasPlaying = playerNode.isPlaying
+        let wasPlaying = !isPaused
 
         playerNode.stop()
         seekOffset = clamped
@@ -754,8 +974,19 @@ final class AudioDSPEngine: NSObject {
         lastKnownTime = clamped
 
         let remaining = file.length - frame
+        let completionHandler: () -> Void = { [weak self] in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if !self.isPaused && self.currentTime >= self.duration - 0.5 {
+                    self.onProgress?(self.duration, self.duration, true)
+                }
+            }
+        }
         if remaining > 0 {
-            playerNode.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(remaining), at: nil)
+            playerNode.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(remaining), at: nil, completionHandler: completionHandler)
+        } else {
+            seekOffset = clamped
+            playerNode.scheduleFile(file, at: nil, completionHandler: completionHandler)
         }
         if wasPlaying {
             isPaused = false
@@ -916,6 +1147,14 @@ final class AudioDSPEngine: NSObject {
 
     func clearNowPlaying() {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    /// Active ou désactive la reprise après une interruption.
+    ///
+    /// Prise en compte immédiatement : le handler d'interruption lit ce
+    /// drapeau à chaque événement, sans cache ni redemande de session.
+    func setAutoResumeOnInterruption(_ enabled: Bool) {
+        autoResumeOnInterruption = enabled
     }
 }
 

@@ -20,7 +20,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     settingsTitle: 'Paramètres',
     searchSettings: 'Rechercher des paramètres...',
     sectionSettings: 'PARAMÈTRES',
-    rescanSuccess: 'Bibliothèque actualisée avec succès !',
+    libRescanFound: '{count} morceau(s) ajouté(s)',
+    libRescanFailed: 'Actualisation impossible ou annulée',
     close: 'Fermer',
     touchToPlay: 'Touchez pour lancer la lecture',
     loading: 'Chargement...',
@@ -54,8 +55,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     rememberPlaybackPosSub: 'Repart de la seconde précise où vous étiez',
     autoPlayLaunch: 'Lecture auto au démarrage',
     autoPlayLaunchSub: "Lance la lecture dès l'ouverture de l'application",
-    resumeOnCall: 'Reprise après appel ou notification',
-    resumeOnCallSub: 'Reprend en douceur après une interruption vocale',
+    resumeAfterInterruption: 'Reprise après appel ou notification',
+    resumeAfterInterruptionSub: 'Reprend en douceur après une interruption vocale',
     memoryStateTitle: 'ÉTAT EN MÉMOIRE',
     memoryTrack: 'Morceau :',
     memoryPosition: 'Position :',
@@ -74,8 +75,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     visuVinyl: 'Disque Animé',
     visuBars: 'Barres EQ',
     visuWave: 'Onde Circulaire',
-    fullScreenArt: 'Pochette plein écran',
-    fullScreenArtSub: "Affiche l'illustration en grand format immersif",
     techSpecsBadge: 'Badge Codec Audio & Fréquence',
     techSpecsBadgeSub: 'Ex: 44.1 kHz 320 kbps MP3 / FLAC',
     richNotifs: 'Notifications multimédia',
@@ -105,12 +104,10 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     engineActive: 'Actif (10 Bandes EQ)',
 
     // Visualization
-    spectrumSection: 'RÉACTIVITÉ DU SPECTRE AUDIO',
+    spectrumSection: "RÉACTIVITÉ DE L'ONDE",
     specLow: 'Douce',
     specNormal: 'Équilibrée',
     specUltra: 'Ultra-Réactive',
-    beatPulseTitle: 'Pulsation Logo MAS sur le rythme',
-    beatPulseSub: 'Vibre et pulse en synchronisation avec les basses',
     autoFadeTitle: 'Estomper les contrôles en inactivité',
     autoFadeSub: "Donne la priorité au visuel pendant l'écoute",
     opacitySection: 'OPACITÉ ESTOMPÉE',
@@ -139,13 +136,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     artId3Sub: "Utilise d'abord les images encapsulées dans vos fichiers",
     artLossless: 'Rendu sans perte (Non compressé)',
     artLosslessSub: 'Préserve la clarté maximale des visuels',
-    artCacheTitle: 'CACHE DE POCHETTES',
-    artCachedCount: 'Pochettes mémorisées :',
-    artCachedVal: '18 pochettes • 3.2 Mo',
-    artTargetRes: 'Résolution cible :',
-    artTargetResVal: '1080 x 1080 px',
-    artCleanBtn: 'Vider le cache des pochettes',
-    artCleanSuccess: 'Cache vidé avec succès ! (0 Mo)',
 
     // Library
     libRescanBtn: 'Actualiser la bibliothèque maintenant',
@@ -192,7 +182,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     settingsTitle: 'Settings',
     searchSettings: 'Search settings...',
     sectionSettings: 'SETTINGS',
-    rescanSuccess: 'Library refreshed successfully!',
+    libRescanFound: '{count} track(s) added',
+    libRescanFailed: 'Refresh failed or was cancelled',
     close: 'Close',
     touchToPlay: 'Tap to play',
     loading: 'Loading...',
@@ -224,8 +215,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     rememberPlaybackPosSub: 'Resumes from the exact second you left',
     autoPlayLaunch: 'Autoplay on launch',
     autoPlayLaunchSub: 'Starts playback as soon as the app opens',
-    resumeOnCall: 'Resume after call or notification',
-    resumeOnCallSub: 'Smoothly resumes after an audio interruption',
+    resumeAfterInterruption: 'Resume after call or notification',
+    resumeAfterInterruptionSub: 'Smoothly resumes after an audio interruption',
     memoryStateTitle: 'MEMORY STATE',
     memoryTrack: 'Track:',
     memoryPosition: 'Position:',
@@ -243,8 +234,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     visuVinyl: 'Animated Vinyl',
     visuBars: 'EQ Bars',
     visuWave: 'Circular Wave',
-    fullScreenArt: 'Fullscreen album art',
-    fullScreenArtSub: 'Displays immersive large format artwork',
     techSpecsBadge: 'Audio Codec & Sample Rate Badge',
     techSpecsBadgeSub: 'E.g. 44.1 kHz 320 kbps MP3 / FLAC',
     richNotifs: 'Media notifications',
@@ -272,12 +261,10 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     engineDspState: 'DSP State:',
     engineActive: 'Active (10 Bands EQ)',
 
-    spectrumSection: 'SPECTRUM RESPONSIVENESS',
-    specLow: 'Smooth',
+    spectrumSection: 'WAVE RESPONSIVENESS',
+    specLow: 'Gentle',
     specNormal: 'Balanced',
     specUltra: 'Ultra-Responsive',
-    beatPulseTitle: 'MAS Logo beat pulse on bass',
-    beatPulseSub: 'Vibrates and pulses in rhythm with deep bass',
     autoFadeTitle: 'Fade controls on idle',
     autoFadeSub: 'Prioritizes visuals during listening',
     opacitySection: 'FADED OPACITY',
@@ -304,13 +291,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     artId3Sub: 'Uses artwork embedded in music files first',
     artLossless: 'Lossless rendering (Uncompressed)',
     artLosslessSub: 'Preserves maximum clarity and sharpness',
-    artCacheTitle: 'ARTWORK CACHE',
-    artCachedCount: 'Cached artworks:',
-    artCachedVal: '18 covers • 3.2 MB',
-    artTargetRes: 'Target resolution:',
-    artTargetResVal: '1080 x 1080 px',
-    artCleanBtn: 'Clear artwork cache',
-    artCleanSuccess: 'Cache cleared successfully! (0 MB)',
 
     libRescanBtn: 'Refresh library now',
     libRescanning: 'Scanning library...',
@@ -354,7 +334,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     settingsTitle: 'Ajustes',
     searchSettings: 'Buscar ajustes...',
     sectionSettings: 'AJUSTES',
-    rescanSuccess: '¡Biblioteca actualizada con éxito!',
+    libRescanFound: '{count} pista(s) añadida(s)',
+    libRescanFailed: 'Actualización fallida o cancelada',
     close: 'Cerrar',
     touchToPlay: 'Toca para reproducir',
     loading: 'Cargando...',
@@ -386,8 +367,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     rememberPlaybackPosSub: 'Vuelve al segundo exacto donde lo dejaste',
     autoPlayLaunch: 'Reproducción automática al iniciar',
     autoPlayLaunchSub: 'Comienza a reproducir al abrir la aplicación',
-    resumeOnCall: 'Reanudar tras llamada o notificación',
-    resumeOnCallSub: 'Reanuda suavemente tras una interrupción de voz',
+    resumeAfterInterruption: 'Reanudar tras llamada o notificación',
+    resumeAfterInterruptionSub: 'Reanuda suavemente tras una interrupción de voz',
     memoryStateTitle: 'ESTADO EN MEMORIA',
     memoryTrack: 'Pista:',
     memoryPosition: 'Posición:',
@@ -405,8 +386,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     visuVinyl: 'Disco Animado',
     visuBars: 'Barras EQ',
     visuWave: 'Onda Circular',
-    fullScreenArt: 'Carátula a pantalla completa',
-    fullScreenArtSub: 'Muestra la ilustración en formato inmersivo',
     techSpecsBadge: 'Insignia de Códec y Frecuencia',
     techSpecsBadgeSub: 'Ej: 44.1 kHz 320 kbps MP3 / FLAC',
     richNotifs: 'Notificaciones multimedia',
@@ -434,12 +413,10 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     engineDspState: 'Estado DSP:',
     engineActive: 'Activo (EQ de 10 Bandas)',
 
-    spectrumSection: 'RESPUESTA DEL ESPECTRO',
+    spectrumSection: 'REACTIVIDAD DE LA ONDA',
     specLow: 'Suave',
     specNormal: 'Equilibrada',
     specUltra: 'Ultra-Rápida',
-    beatPulseTitle: 'Pulsación del logo MAS con los graves',
-    beatPulseSub: 'Vibra y late al ritmo de las frecuencias bajas',
     autoFadeTitle: 'Atenuar controles en inactividad',
     autoFadeSub: 'Prioriza el visual durante la reproducción',
     opacitySection: 'OPACIDAD ATENUADA',
@@ -466,13 +443,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     artId3Sub: 'Usa primero las imágenes encapsuladas en los archivos',
     artLossless: 'Renderizado sin pérdida (No comprimido)',
     artLosslessSub: 'Conserva la máxima nitidez y claridad',
-    artCacheTitle: 'CACHÉ DE CARÁTULAS',
-    artCachedCount: 'Carátulas guardadas:',
-    artCachedVal: '18 portadas • 3.2 MB',
-    artTargetRes: 'Resolución objetivo:',
-    artTargetResVal: '1080 x 1080 px',
-    artCleanBtn: 'Vaciar caché de carátulas',
-    artCleanSuccess: '¡Caché vaciada con éxito! (0 MB)',
 
     libRescanBtn: 'Actualizar biblioteca ahora',
     libRescanning: 'Actualizando biblioteca...',
@@ -516,7 +486,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     settingsTitle: 'Einstellungen',
     searchSettings: 'Einstellungen suchen...',
     sectionSettings: 'EINSTELLUNGEN',
-    rescanSuccess: 'Bibliothek erfolgreich aktualisiert!',
+    libRescanFound: '{count} Titel hinzugefügt',
+    libRescanFailed: 'Aktualisierung fehlgeschlagen oder abgebrochen',
     close: 'Schließen',
     touchToPlay: 'Tippen zum Abspielen',
     loading: 'Wird geladen...',
@@ -548,8 +519,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     rememberPlaybackPosSub: 'Startet an der genauen Sekunde der Unterbrechung',
     autoPlayLaunch: 'Autoplay beim Start',
     autoPlayLaunchSub: 'Startet die Musik direkt beim Öffnen der App',
-    resumeOnCall: 'Fortsetzen nach Anruf oder Hinweis',
-    resumeOnCallSub: 'Sanftes Fortsetzen nach Sprachunterbrechungen',
+    resumeAfterInterruption: 'Fortsetzen nach Anruf oder Hinweis',
+    resumeAfterInterruptionSub: 'Sanftes Fortsetzen nach Sprachunterbrechungen',
     memoryStateTitle: 'SPEICHERSTATUS',
     memoryTrack: 'Titel:',
     memoryPosition: 'Position:',
@@ -567,8 +538,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     visuVinyl: 'Animierte Schallplatte',
     visuBars: 'EQ-Balken',
     visuWave: 'Kreiswelle',
-    fullScreenArt: 'Vollbild-Cover',
-    fullScreenArtSub: 'Große immersive Darstellung des Cover-Artworks',
     techSpecsBadge: 'Audio-Codec & Abtastrate-Badge',
     techSpecsBadgeSub: 'Z.B. 44.1 kHz 320 kbps MP3 / FLAC',
     richNotifs: 'Medien-Benachrichtigungen',
@@ -596,12 +565,10 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     engineDspState: 'DSP-Status:',
     engineActive: 'Aktiv (10-Band-EQ)',
 
-    spectrumSection: 'SPEKTRUM-EMPFINDLICHKEIT',
+    spectrumSection: 'WELLEN-REAKTIVITÄT',
     specLow: 'Sanft',
     specNormal: 'Ausgewogen',
     specUltra: 'Ultraschnell',
-    beatPulseTitle: 'MAS-Logo pulsiert im Bass-Rhythmus',
-    beatPulseSub: 'Schwingt und pulsiert synchron zu den tiefen Tönen',
     autoFadeTitle: 'Bedienelemente bei Inaktivität ausblenden',
     autoFadeSub: 'Gibt der Visualisierung beim Musikhören den Vorrang',
     opacitySection: 'DECKKRAFT BEI AUSBLENDUNG',
@@ -628,13 +595,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     artId3Sub: 'Verwendet zuerst in Musikdateien gespeicherte Bilder',
     artLossless: 'Verlustfreie Wiedergabe (Unkomprimiert)',
     artLosslessSub: 'Erhält die maximale Bildschärfe',
-    artCacheTitle: 'COVER-CACHE',
-    artCachedCount: 'Gespeicherte Cover:',
-    artCachedVal: '18 Cover • 3.2 MB',
-    artTargetRes: 'Zielauflösung:',
-    artTargetResVal: '1080 x 1080 px',
-    artCleanBtn: 'Cover-Cache leeren',
-    artCleanSuccess: 'Cache erfolgreich geleert! (0 MB)',
 
     libRescanBtn: 'Bibliothek jetzt aktualisieren',
     libRescanning: 'Bibliothek wird gescannt...',
@@ -678,7 +638,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     settingsTitle: 'Impostazioni',
     searchSettings: 'Cerca impostazioni...',
     sectionSettings: 'IMPOSTAZIONI',
-    rescanSuccess: 'Libreria aggiornata con successo!',
+    libRescanFound: '{count} brano/i aggiunto/i',
+    libRescanFailed: 'Aggiornamento non riuscito o annullato',
     close: 'Chiudi',
     touchToPlay: 'Tocca per riprodurre',
     loading: 'Caricamento...',
@@ -710,8 +671,8 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     rememberPlaybackPosSub: 'Ricomincia dal secondo esatto in cui ti eri fermato',
     autoPlayLaunch: "Riproduzione automatica all'avvio",
     autoPlayLaunchSub: "Avvia l'ascolto non appena apri l'applicazione",
-    resumeOnCall: 'Ripresa dopo chiamata o notifica',
-    resumeOnCallSub: "Riprende dolcemente dopo un'interruzione audio",
+    resumeAfterInterruption: 'Ripresa dopo chiamata o notifica',
+    resumeAfterInterruptionSub: "Riprende dolcemente dopo un'interruzione audio",
     memoryStateTitle: 'STATO IN MEMORIA',
     memoryTrack: 'Brano:',
     memoryPosition: 'Posizione:',
@@ -729,8 +690,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     visuVinyl: 'Vinile Animato',
     visuBars: 'Barre EQ',
     visuWave: 'Onda Circolare',
-    fullScreenArt: 'Copertina a schermo intero',
-    fullScreenArtSub: 'Mostra la copertina in formato grande e immersivo',
     techSpecsBadge: 'Badge Codec Audio e Frequenza',
     techSpecsBadgeSub: 'Es: 44.1 kHz 320 kbps MP3 / FLAC',
     richNotifs: 'Notifiche multimediali',
@@ -758,12 +717,10 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     engineDspState: 'Stato DSP:',
     engineActive: 'Attivo (EQ a 10 Bande)',
 
-    spectrumSection: 'REATTIVITÀ DELLO SPETTRO',
+    spectrumSection: "REATTIVITÀ DELL'ONDA",
     specLow: 'Morbida',
     specNormal: 'Bilanciata',
     specUltra: 'Ultra-Reattiva',
-    beatPulseTitle: 'Pulsazione logo MAS sui bassi',
-    beatPulseSub: 'Vibra e pulsa a ritmo con le basse frequenze',
     autoFadeTitle: 'Dissolvi controlli in inattività',
     autoFadeSub: "Dà priorità all'aspetto visivo durante l'ascolto",
     opacitySection: 'OPACITÀ DISSOLTA',
@@ -790,13 +747,6 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
     artId3Sub: 'Usa prima le immagini incorporate nei file musicali',
     artLossless: 'Resa senza perdita (Non compressa)',
     artLosslessSub: 'Mantiene la massima nitidezza visiva',
-    artCacheTitle: 'CACHE DELLE COPERTINE',
-    artCachedCount: 'Copertine memorizzate:',
-    artCachedVal: '18 copertine • 3.2 MB',
-    artTargetRes: 'Risoluzione obiettivo:',
-    artTargetResVal: '1080 x 1080 px',
-    artCleanBtn: 'Svuota la cache delle copertine',
-    artCleanSuccess: 'Cache svuotata con successo! (0 MB)',
 
     libRescanBtn: 'Aggiorna libreria adesso',
     libRescanning: 'Scansione in corso...',
@@ -836,13 +786,33 @@ export const TRANSLATIONS: Record<LanguageCode, Record<string, string>> = {
   },
 };
 
-export function getTranslation(lang: LanguageCode = 'fr', key: string, fallback?: string): string {
+/**
+ * Résout une clé de traduction pour une langue.
+ *
+ * `count` est substitué dans le texte via `{count}`. Les langues ne concatènent
+ * pas de la même façon — l'anglais et le français n'ont qu'une forme, mais
+ * certaines formulations exigent un accord au pluriel — donc la substitution se
+ * fait ici plutôt que d'assembler la phrase à l'appelant, qui parlerait la
+ * langue de l'interface et non celle de l'utilisateur.
+ *
+ * Le repli reste inchangé : la valeur par défaut d'abord, puis le français, puis
+ * la clé. Une clé absente affiche donc du texte lisible partout.
+ */
+export function getTranslation(
+  lang: LanguageCode = 'fr',
+  key: string,
+  fallback?: string,
+  params?: Record<string, string | number>
+): string {
   const selectedLang = TRANSLATIONS[lang] || TRANSLATIONS.fr;
-  if (selectedLang && selectedLang[key]) {
-    return selectedLang[key];
-  }
-  if (TRANSLATIONS.fr && TRANSLATIONS.fr[key]) {
-    return TRANSLATIONS.fr[key];
-  }
-  return fallback || key;
+  const raw =
+    (selectedLang && selectedLang[key]) ||
+    (TRANSLATIONS.fr && TRANSLATIONS.fr[key]) ||
+    fallback ||
+    key;
+  if (!params) return raw;
+  return Object.entries(params).reduce(
+    (acc, [name, value]) => acc.replace(new RegExp(`\\{${name}\\}`, 'g'), String(value)),
+    raw
+  );
 }

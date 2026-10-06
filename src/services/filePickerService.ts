@@ -298,6 +298,7 @@ async function extractZipArchive(
         bitrate: '320 kbps',
         folder: detectedFolder,
         folderPath: relativePath,
+        addedAt: Date.now(),
       });
     }
   }
@@ -369,6 +370,7 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
               bitrate: '320 kbps',
               folder: folderName,
               folderPath: file.name,
+              addedAt: Date.now(),
             });
           }
 
@@ -423,6 +425,7 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
                 bitrate: '320 kbps',
                 folder: folderName,
                 folderPath: file.relativePath || file.name,
+                addedAt: Date.now(),
               });
             }
 
@@ -481,6 +484,7 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
             bitrate: '320 kbps',
             folder: folderName,
             folderPath: file.name,
+            addedAt: Date.now(),
           });
         }
 
@@ -629,6 +633,7 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
             bitrate: '320 kbps',
             folder: trackFolder,
             folderPath: relativePath,
+            addedAt: Date.now(),
           });
         }
 
@@ -744,6 +749,7 @@ export async function pickAudioFiles(existingTracks?: Track[]): Promise<ImportFi
             bitrate: '320 kbps',
             folder: 'Fichiers Locaux',
             folderPath: file.name,
+            addedAt: Date.now(),
           });
         }
 
@@ -813,6 +819,7 @@ export async function pickAudioFiles(existingTracks?: Track[]): Promise<ImportFi
           bitrate: '320 kbps',
           folder: 'Fichiers Locaux',
           folderPath: file.name,
+          addedAt: Date.now(),
         });
       }
 

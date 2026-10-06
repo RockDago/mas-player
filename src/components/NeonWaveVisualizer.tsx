@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { View, StyleSheet, Platform, useWindowDimensions } from 'react-native';
+import { View, StyleSheet, Platform, useWindowDimensions, AppState } from 'react-native';
 import Svg, { Path, Defs, LinearGradient, Stop, Rect } from 'react-native-svg';
 import { beatStore } from '../services/beatStore';
 
@@ -7,7 +7,37 @@ interface NeonWaveVisualizerProps {
   height?: number;
   isActive?: boolean;
   hasTrack?: boolean;
+  /**
+   * Réactivité de l'onde aux basses.
+   *
+   * Le réglage s'appelait « spectre », mais `SpectrumVisualizer` n'est rendu
+   * nulle part : le seul visualiseur monté est celui-ci, et il ne consomme
+   * déjà que `beatStore.pulse`/`energy`. « Réactivité » est donc le seul mot
+   * honnête — c'est la vitesse à laquelle l'onde suit le rythme, pas une
+   * analyse fréquentielle.
+   *
+   * Lu par une ref dans la boucle RAF, pas par un `useState` : la boucle est
+   * une `useEffect` qui ne dépend d'aucune prop, donc un changement ici ne
+   * serait visible qu'au prochain remontage du composant — c'est-à-dire jamais
+   * pendant que l'utilisateur regarde. Voir `spectrumRef`.
+   */
+  spectrumReactive?: 'low' | 'normal' | 'ultra';
 }
+
+/**
+ * Coefficients de lissage : attaque, décroissance de la pulsation, et
+ * réactivité de l'énergie.
+ *
+ * `normal` reproduit À L'IDENTIQUE les constantes qui étaient en dur dans la
+ * boucle (0.7 / 0.22 / 0.16). Toute valeur différente ferait changer le rendu
+ * par défaut alors que personne n'a touché à aucun réglage — un réglage par
+ * défaut qui altère l'apparence de l'app est un bug, pas une améliore.
+ */
+const SPECTRUM_PROFILES = {
+  low: { attack: 0.35, decay: 0.10, energy: 0.08, speedPulse: 1.4, speedEnergy: 0.5 },
+  normal: { attack: 0.7, decay: 0.22, energy: 0.16, speedPulse: 2.2, speedEnergy: 0.8 },
+  ultra: { attack: 0.92, decay: 0.45, energy: 0.34, speedPulse: 3.2, speedEnergy: 1.2 },
+} as const;
 
 interface Spark {
   x: number;
@@ -35,6 +65,7 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
   height: propHeight,
   isActive: propIsActive,
   hasTrack = true,
+  spectrumReactive = 'normal',
 }) => {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [layoutWidth, setLayoutWidth] = useState<number>(windowWidth || 360);
@@ -44,6 +75,10 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
   isActiveRef.current = propIsActive;
   const hasTrackRef = useRef(hasTrack);
   hasTrackRef.current = hasTrack;
+  // Idem pour la réactivité : lue par la boucle RAF sans la reconstruire.
+  const spectrumRef = useRef(spectrumReactive);
+  spectrumRef.current = spectrumReactive;
+  const spectrum = SPECTRUM_PROFILES[spectrumRef.current] ?? SPECTRUM_PROFILES.normal;
 
   const containerHeight = useMemo(() => {
     if (propHeight && propHeight > 0) return propHeight;
@@ -77,7 +112,7 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
   const height = containerHeight;
 
   useEffect(() => {
-    let animId: number;
+    let animId: number | null = null;
     let cancelled = false;
 
     // Étincelles lumineuses
@@ -98,8 +133,26 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
     let currentAmp = 0;
     let lastTime = performance.now();
 
+    const stopLoop = () => {
+      if (animId !== null) {
+        cancelAnimationFrame(animId);
+        animId = null;
+      }
+    };
+
+    const startLoop = () => {
+      if (cancelled || animId !== null) return;
+      if (Platform.OS !== 'web' && AppState.currentState !== 'active') return;
+      lastTime = performance.now();
+      animId = requestAnimationFrame(render);
+    };
+
     const render = (time: number) => {
       if (cancelled) return;
+      if (Platform.OS !== 'web' && AppState.currentState !== 'active') {
+        animId = null;
+        return;
+      }
       // Delta-time pour dynamique indépendante du framerate (60Hz, 90Hz, 120Hz)
       const rawDt = (time - lastTime) / 1000;
       const dt = Math.min(0.04, Math.max(0.005, rawDt));
@@ -122,16 +175,18 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
         // En lecture : détection ultra-réactive des basses
         // Attaque instantanée sur le front montant du beat
         if (pulse > smoothedPulse) {
-          smoothedPulse += (pulse - smoothedPulse) * 0.7; // Attaque rapide
+          // Attaque rapide sur le front montant du beat
+          smoothedPulse += (pulse - smoothedPulse) * spectrum.attack;
         } else {
-          smoothedPulse += (pulse - smoothedPulse) * 0.22; // Décroissance douce
+          // Décroissance douce
+          smoothedPulse += (pulse - smoothedPulse) * spectrum.decay;
         }
 
         const targetEnergy = Math.max(0.25, energy);
-        smoothedEnergy += (targetEnergy - smoothedEnergy) * 0.16;
+        smoothedEnergy += (targetEnergy - smoothedEnergy) * spectrum.energy;
 
         // Vitesse d'ondulation influencée directement par le rythme
-        const speedMult = 1.0 + smoothedPulse * 2.2 + smoothedEnergy * 0.8;
+        const speedMult = 1.0 + smoothedPulse * spectrum.speedPulse + smoothedEnergy * spectrum.speedEnergy;
         phase += dt * 1.8 * speedMult;
 
         // Amplitude dynamique : les BASSES jaillissent de manière visible et percutante
@@ -489,11 +544,22 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
       animId = requestAnimationFrame(render);
     };
 
-    animId = requestAnimationFrame(render);
+    startLoop();
+
+    const appStateSub = Platform.OS !== 'web'
+      ? AppState.addEventListener('change', (state) => {
+          if (state === 'active') {
+            startLoop();
+          } else {
+            stopLoop();
+          }
+        })
+      : null;
 
     return () => {
       cancelled = true;
-      cancelAnimationFrame(animId);
+      stopLoop();
+      appStateSub?.remove();
     };
   }, [width, height]);
 

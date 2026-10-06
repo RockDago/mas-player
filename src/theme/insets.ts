@@ -6,14 +6,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
  * d'état et la barre de navigation.
  *
  * ── Pourquoi ce fichier existe ─────────────────────────────────────────────
- * L'appogroupait ses marges de deux façons incohérentes. Elle enveloppait ses
- * écrans dans le `SafeAreaView` de React Native, qui sur Android **est un simple
- * `View`** : `Platform.select({ ios: ..., default: View })`. Cinq écrans se
- * croyaient donc protégés et ne l'étaient pas. Le reste compensait à la main,
- * avec `StatusBar.currentHeight`, sur quatre écrans, chacun avec son propre
- * décalage (+4, +10), et la lecture n'était pas symétrique : le haut était
- * traité, le bas jamais. Le dock et la feuille d'action étaient donc dessinés
- * *sous* la barre de navigation.
+ * L'app utilisait initialement le `SafeAreaView` de React Native (déprécié),
+ * qui sur Android était un simple `View` sans marge. Les écrans ont depuis été
+ * migrés vers `react-native-safe-area-context`. Ce module centralise et garantit
+ * la lecture des insets sur Android 15+ (bord-à-bord obligatoire) et iOS.
  *
  * Sur Android 15+ le mode bord à bord est obligatoire (targetSdk 36) et les deux
  * barres sont transparentes : aucun réglage natif ne les détourne. La seule façon

@@ -63,10 +63,13 @@ export function resolveTrackUri(uri: string): string {
 }
 
 /**
- * Normalise une piste ou une liste de pistes en s'assurant que leurs URIs
- * pointent vers le répertoire actuel du sandbox.
+ * Normalise une piste en s'assurant que son URI pointe vers le répertoire actuel
+ * du sandbox.
+ *
+ * Non exportée : le seul appelant est `normalizeTracks` ci-dessous, lui-même
+ * appelé par `storageService`. Était `export` sans consommateur.
  */
-export function normalizeTrack(track: Track): Track {
+function normalizeTrack(track: Track): Track {
   if (!track) return track;
   const resolved = resolveTrackUri(track.uri);
   if (resolved !== track.uri) {

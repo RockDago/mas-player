@@ -16,6 +16,7 @@ import { MaterialCommunityIcons, Ionicons, Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { pickAudioFolder, pickAudioFiles, isIOSDevice } from '../services/filePickerService';
 import { Track, Playlist } from '../types/audio';
+import { sortTracks, filterShortTracks, LibrarySort } from '../utils/trackSort';
 import { formatTime } from '../services/audioService';
 import { useScreenInsets, insetPadding } from '../theme/insets';
 
@@ -39,6 +40,14 @@ interface LibraryViewProps {
   onRenameFolder?: (oldFolderName: string, newFolderName: string) => void;
   onOpenQueueDrawer: () => void;
   onNavigateCategory?: (category: string | null, groupKey?: string | null, playlist?: Playlist | null) => void;
+  /** Tri de la bibliothèque, appliqué APRÈS le filtrage playlist/groupe. */
+  sort?: LibrarySort;
+  /**
+   * Masque les morceaux dont la durée connue est sous 30 s. Les morceaux à la
+   * durée inconnue (`0` sur natif) ne sont jamais masqués — voir
+   * `filterShortTracks`.
+   */
+  ignoreShortAudio?: boolean;
 }
 
 interface CategoryItem {
@@ -81,6 +90,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onRenameFolder,
   onOpenQueueDrawer,
   onNavigateCategory,
+  sort = 'title',
+  ignoreShortAudio,
 }) => {
   // Marge système mesurée (encoche / barre d'état). Remplace
   // `StatusBar.currentHeight` — voir src/theme/insets.ts.
@@ -254,20 +265,30 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   }, [activeCategory, tracks]);
 
   // Tracks for the currently selected group (or playlist, or all songs)
+  // Tri et filtre court s'appliquent APRÈS la sélection playlist/groupe, jamais
+  // avant : trier d'abord, puis re-sélectionner par `trackIds`, laisserait les
+  // groupes incohérents entre eux — un groupe d'artiste rangerait ses morceaux
+  // dans l'ordre du titre, un autre dans celui de l'album.
+  //
+  // Le filtrage passe par `filterShortTracks` et non par un `!t.duration < 30`
+  // direct : sur natif, `duration` vaut 0 tant que le morceau n'a pas été joué,
+  // et un prédicat naïf masquerait la bibliothèque entière.
   const displayTracks = useMemo(() => {
+    let base: Track[];
     if (selectedPlaylist) {
       // `Set` plutôt que `includes` : ce filtre est O(n·m), donc 25 millions de
       // comparaisons de chaînes sur une playlist et une bibliothèque de 5000
       // morceaux — plusieurs centaines de ms de gel à l'ouverture.
       const wanted = new Set(selectedPlaylist.trackIds);
-      return tracks.filter((t) => wanted.has(t.id));
-    }
-    if (selectedGroupKey) {
+      base = tracks.filter((t) => wanted.has(t.id));
+    } else if (selectedGroupKey) {
       const found = groupedData.find((g) => g.id === selectedGroupKey);
-      return found ? found.tracks : [];
+      base = found ? found.tracks : [];
+    } else {
+      base = tracks;
     }
-    return tracks;
-  }, [selectedPlaylist, selectedGroupKey, groupedData, tracks]);
+    return sortTracks(filterShortTracks(base, !!ignoreShortAudio), sort);
+  }, [selectedPlaylist, selectedGroupKey, groupedData, tracks, sort, ignoreShortAudio]);
 
   const getHeaderTitle = () => {
     if (selectedPlaylist) return selectedPlaylist.name;
@@ -298,6 +319,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     if (!currentTrack?.id || displayTracks.length === 0) return -1;
     return displayTracks.findIndex((t) => t.id === currentTrack.id);
   }, [displayTracks, currentTrack?.id]);
+
+  // Changer de tri réordonne `displayTracks` sans changer le nombre de lignes :
+  // la position de scroll garde donc son offset en pixels alors que la ligne
+  // sous l'écran n'est plus la même. Sans cette remise à zéro, l'utilisateur
+  // reste figé au milieu d'une liste qui a bougé sous ses doigts, et il ne
+  // voit plus où il se trouve.
+  useEffect(() => {
+    try {
+      flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+    } catch {
+      // Liste pas encore montée : rien à réinitialiser.
+    }
+  }, [sort, ignoreShortAudio]);
 
   const scrollToCurrentTrack = (animated: boolean = false) => {
     if (currentIndex >= 0 && flatListRef.current) {

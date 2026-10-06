@@ -84,6 +84,7 @@ const newBuildNotification = `private fun buildNotification(): Notification? {
       .setLargeIcon(currentArtwork)
       .setContentIntent(buildContentIntent())
       .setAutoCancel(false)
+      .setOngoing(session.player.isPlaying)
       .setCategory(NotificationCompat.CATEGORY_TRANSPORT)
 
     val style = MediaStyleNotificationHelper.MediaStyle(session)
@@ -174,6 +175,24 @@ const newUpdateLayout = `private fun updateSessionCustomLayout(isPlaying: Boolea
   }`;
 
 controlsService = controlsService.replace(updateLayoutRegex, newUpdateLayout);
+
+// 1f. Prévention de la coupure brutale du service d'arrière-plan
+if (controlsService.includes('stopForeground(STOP_FOREGROUND_REMOVE)\n      return super.onStartCommand(intent, flags, startId)')) {
+  controlsService = controlsService.replace(
+    'stopForeground(STOP_FOREGROUND_REMOVE)\n      return super.onStartCommand(intent, flags, startId)',
+    'return super.onStartCommand(intent, flags, startId)'
+  );
+}
+
+if (controlsService.includes('currentPlayer?.assignBasicMediaSession()\n    stopForeground(STOP_FOREGROUND_REMOVE)')) {
+  controlsService = controlsService.replace(
+    'currentPlayer?.assignBasicMediaSession()\n    stopForeground(STOP_FOREGROUND_REMOVE)',
+    `currentPlayer?.assignBasicMediaSession()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+      stopForeground(STOP_FOREGROUND_DETACH)
+    }`
+  );
+}
 
 fs.writeFileSync(controlsServicePath, controlsService, 'utf8');
 console.log('[patch-expo-audio-android] AudioControlsService.kt updated successfully.');
@@ -321,6 +340,21 @@ if (fs.existsSync(audioPlayerPath)) {
       '"id" to id,',
       '"id" to id,\n      "audioSessionId" to ref.audioSessionId,'
     );
+  }
+  if (!playerContent.includes('WAKE_MODE_LOCAL')) {
+    playerContent = playerContent.replace(
+      '.setAudioAttributes(AudioAttributes.DEFAULT, false)',
+      `.setWakeMode(androidx.media3.common.C.WAKE_MODE_LOCAL)
+    .setHandleAudioBecomingNoisy(true)
+    .setAudioAttributes(
+      androidx.media3.common.AudioAttributes.Builder()
+        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
+        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
+        .build(),
+      true
+    )`
+    );
+    console.log('[patch-expo-audio-android] AudioPlayer.kt patched with WAKE_MODE_LOCAL & proper AudioAttributes.');
   }
   fs.writeFileSync(audioPlayerPath, playerContent, 'utf8');
   console.log('[patch-expo-audio-android] AudioPlayer.kt patched with audioSessionId.');

@@ -3,7 +3,6 @@ import {
   StyleSheet,
   Text,
   View,
-  SafeAreaView,
   TouchableOpacity,
   Dimensions,
   useWindowDimensions,
@@ -18,7 +17,7 @@ import {
   Alert,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import {
   Ionicons,
@@ -48,8 +47,10 @@ import { AppLoadingScreen } from './src/components/AppLoadingScreen';
 import { APP_VERSION } from './src/constants/version';
 import { getTranslation } from './src/i18n/translations';
 import { resolveTrackUri, deletePersistedAudioFile } from './src/utils/audioStorage';
+import { mergeTracks } from './src/utils/trackMerge';
 import { restoreWebAudioBlobs } from './src/services/webAudioStorage';
-import { requestAndroidStoragePermission } from './src/services/filePickerService';
+import { requestAndroidStoragePermission, pickAudioFiles } from './src/services/filePickerService';
+import { useAutoFade } from './src/hooks/useAutoFade';
 import { useScreenInsets, insetPadding } from './src/theme/insets';
 
 /**
@@ -217,6 +218,18 @@ const hasTrack = tracks.length > 0 && currentTrack.id !== '__empty__' && !!curre
 const hasTrackRef = useRef(hasTrack);
 hasTrackRef.current = hasTrack;
 
+  // Estompage des contrôles après inactivité. Borné aux DEUX blocs de commandes
+  // (pastilles utilitaires et transport) : étendu à l'écran, ce réglage rendrait
+  // la bibliothèque et les modales inutilisables tant qu'il est actif.
+  const {
+    opacity: fadeOpacity,
+    panHandlers: fadePanHandlers,
+  } = useAutoFade({
+    enabled: appSettings.autoFadeControls,
+    minOpacity: appSettings.fadedOpacity,
+    isPlaying,
+  });
+
   // Résolution de la playlist active et de la liste de lecture courante
   const activePlaylist = useMemo(() => {
     if (!activePlaylistId) return null;
@@ -308,6 +321,11 @@ hasTrackRef.current = hasTrack;
       if (savedSettings) {
         setAppSettings(savedSettings);
         appSettingsRef.current = savedSettings;
+        // Le mode audio est posé dans `playerManager.init()` AVANT ce point, et
+        // init() lit `autoResumeOnInterruption` — encore à sa valeur par défaut.
+        // Sans cet appel, un utilisateur qui a coupé la reprise dans les
+        // réglages la retrouverait activée à chaque lancement.
+        void playerManager.setAutoResumeOnInterruption(savedSettings.resumeOnHeadset);
       }
       if (savedDsp) {
         setDsp(savedDsp);
@@ -421,13 +439,13 @@ hasTrackRef.current = hasTrack;
     });
   };
 
-  // Sauvegarde périodique (toutes les 2.5 secondes)
+  // Sauvegarde périodique (toutes les 5 secondes en premier plan uniquement)
   useEffect(() => {
     const timer = setInterval(() => {
-      if (isPlayingRef.current) {
+      if (isPlayingRef.current && (Platform.OS === 'web' || AppState.currentState === 'active')) {
         persistSession();
       }
-    }, 2500);
+    }, 5000);
     return () => clearInterval(timer);
   }, []);
 
@@ -452,6 +470,10 @@ hasTrackRef.current = hasTrack;
     } else {
       const sub = AppState.addEventListener('change', (state) => {
         if (state === 'background' || state === 'inactive') {
+          // Avant toute sauvegarde : la détection de rythme n'a aucun intérêt en
+          // screen off, et son flux natif traverserait le pont en continu. Voir
+          // `playerManager.setAppActive`.
+          playerManager.setAppActive(false);
           persistSession();
           if (isHydratedRef.current) {
             void storageService.saveDSP(dspRef.current);
@@ -464,7 +486,13 @@ hasTrackRef.current = hasTrack;
             void storageService.saveCustomTracks(tracksRef.current);
           }
         } else if (state === 'active') {
+          playerManager.setAppActive(true);
           playerManager.syncPlaybackState();
+          setPositionMillis(positionMillisRef.current);
+          if (durationMillisRef.current > 0) {
+            setDurationMillis(durationMillisRef.current);
+          }
+          setIsPlaying(isPlayingRef.current);
         }
       });
       return () => sub.remove();
@@ -505,6 +533,15 @@ hasTrackRef.current = hasTrack;
     const updated = await storageService.saveSettings(newSettings);
     setAppSettings(updated);
     appSettingsRef.current = updated;
+
+    // La reprise après interruption se décide AU NIVEAU DU MODE AUDIO, pas
+    // dans un rendu : sans cet appel, le réglage n'aurait d'effet qu'au
+    // prochain démarrage de l'app — l'utilisateur le couperait, verrait que la
+    // musique reprend quand même après un appel, et aurait raison de dire que
+    // ça ne marche pas.
+    if (newSettings.resumeOnHeadset !== undefined) {
+      void playerManager.setAutoResumeOnInterruption(newSettings.resumeOnHeadset);
+    }
   };
 
   const handleClearSession = async () => {
@@ -592,26 +629,31 @@ hasTrackRef.current = hasTrack;
         (status) => {
           if (!status) return;
           const curMs = (status.currentTime || 0) * 1000;
-          setPositionMillis(curMs);
           positionMillisRef.current = curMs;
 
           // Durée dynamique et synchronisée
           const durSeconds = status.duration && status.duration > 0 ? status.duration : 0;
           const durMs = (durSeconds > 0 ? durSeconds : targetTrack.duration || 0) * 1000;
-          setDurationMillis(durMs);
           durationMillisRef.current = durMs;
-
-          // Si le morceau n'avait pas encore sa durée calculée, la sauvegarder immédiatement
-          if (durSeconds > 0 && (!targetTrack.duration || targetTrack.duration <= 0)) {
-            const intDur = Math.round(durSeconds);
-            targetTrack.duration = intDur;
-            setTracks((prev) =>
-              prev.map((t) => (t.id === targetTrack.id ? { ...t, duration: intDur } : t))
-            );
-          }
-
-          setIsPlaying(status.isPlaying);
           isPlayingRef.current = status.isPlaying;
+
+          // En arrière-plan (écran verrouillé / autre app), éviter 4 reconciliations React
+          // complètes par seconde qui saturent le thread JS et provoquent la fermeture de l'app.
+          const isAppActive = Platform.OS === 'web' || AppState.currentState === 'active';
+          if (isAppActive) {
+            setPositionMillis(curMs);
+            setDurationMillis(durMs);
+            setIsPlaying(status.isPlaying);
+
+            // Si le morceau n'avait pas encore sa durée calculée, la sauvegarder immédiatement
+            if (durSeconds > 0 && (!targetTrack.duration || targetTrack.duration <= 0)) {
+              const intDur = Math.round(durSeconds);
+              targetTrack.duration = intDur;
+              setTracks((prev) =>
+                prev.map((t) => (t.id === targetTrack.id ? { ...t, duration: intDur } : t))
+              );
+            }
+          }
 
           // Garde de ré-entrance : le lecteur peut émettre `didFinish` à
           // plusieurs reprises tant que la piste suivante n'est pas chargée.
@@ -828,8 +870,8 @@ hasTrackRef.current = hasTrack;
     setDsp((prev) => ({
       ...prev,
       presetId: preset.id,
-      bass: prev.bass, // Conserve le réglage bass configuré par l'utilisateur
-      treble: prev.treble, // Conserve le réglage treble configuré par l'utilisateur
+      bass: preset.bass ?? 0,
+      treble: preset.treble ?? 0,
       preamp: preset.preamp ?? 0,
       bands: [...preset.bands],
     }));
@@ -868,83 +910,18 @@ hasTrackRef.current = hasTrack;
 
   const handleAddTracks = (newTracks: Track[]) => {
     setTracks((prev) => {
-      // Générer une empreinte unique pour chaque morceau afin d'éviter tout doublon
-      const getFingerprint = (t: Track) => {
-        const normTitle = (t.title || '').trim().toLowerCase();
-        const normArtist = (t.artist || '').trim().toLowerCase();
-        const normAlbum = (t.album || '').trim().toLowerCase();
-        const normFolder = (t.folder || '').trim().toLowerCase();
-        const uriFilename = (t.uri || '').split('/').pop()?.toLowerCase() || '';
-        const pathFilename = (t.folderPath || '').split('/').pop()?.toLowerCase() || '';
-        const filename = pathFilename || uriFilename;
-
-        return {
-          metaKey: normTitle && normArtist ? `${normTitle}:::${normArtist}` : '',
-          fullKey: `${normTitle}:::${normArtist}:::${normAlbum}`,
-          filenameKey: filename ? `${normFolder}:::${filename}` : '',
-          uri: t.uri || '',
-        };
-      };
-
-      const existingMetaKeys = new Set<string>();
-      const existingFilenames = new Set<string>();
-      const existingUris = new Set<string>();
-
-      prev.forEach((t) => {
-        const fp = getFingerprint(t);
-        if (fp.metaKey) existingMetaKeys.add(fp.metaKey);
-        if (fp.filenameKey) existingFilenames.add(fp.filenameKey);
-        if (fp.uri) existingUris.add(fp.uri);
-      });
-
-      const updatedPrev = [...prev];
-      const uniqueNewTracks: Track[] = [];
-      const skippedTracks: Track[] = [];
-      let repairedCount = 0;
-
-      newTracks.forEach((t) => {
-        const fp = getFingerprint(t);
-        // Chercher si un morceau identique existe déjà
-        const existingIdx = updatedPrev.findIndex((existing) => {
-          const efp = getFingerprint(existing);
-          return (
-            (fp.uri && efp.uri === fp.uri) ||
-            (fp.filenameKey && efp.filenameKey === fp.filenameKey) ||
-            (fp.metaKey && efp.metaKey === fp.metaKey)
-          );
-        });
-
-        if (existingIdx !== -1) {
-          const existing = updatedPrev[existingIdx];
-          // Si le morceau existant est corrompu ou a une durée de 0 ou un blob URL non persisté, le réparer avec la nouvelle version saine !
-          const isBroken = (!existing.duration || existing.duration <= 0) || (Platform.OS === 'web' && existing.uri.startsWith('blob:') && existing.uri !== t.uri);
-          if (isBroken) {
-            updatedPrev[existingIdx] = {
-              ...existing,
-              id: t.id,
-              uri: t.uri,
-              duration: t.duration > 0 ? t.duration : existing.duration,
-              format: t.format || existing.format,
-            };
-            repairedCount++;
-          } else {
-            skippedTracks.push(t);
-          }
-        } else {
-          uniqueNewTracks.push(t);
-        }
-      });
+      const { tracks: merged, added, repaired, skipped } = mergeTracks(prev, newTracks);
 
       // Supprimer les copies locales temporaires créées pour des pistes qui sont des doublons réels
-      if (skippedTracks.length > 0) {
-        skippedTracks.forEach((t) => {
+      if (skipped.length > 0) {
+        skipped.forEach((t) => {
           if (t.uri && t.uri.includes('/tracks/') && !prev.some((p) => p.uri === t.uri)) {
             void deletePersistedAudioFile(t.uri);
           }
         });
       }
 
-      if (uniqueNewTracks.length === 0 && repairedCount === 0) {
+      if (added === 0 && repaired === 0) {
         Alert.alert(
           'Morceaux déjà présents',
           newTracks.length === 1
@@ -954,15 +931,53 @@ hasTrackRef.current = hasTrack;
         return prev;
       }
 
-      if (repairedCount > 0 || skippedTracks.length > 0) {
+      if (repaired > 0 || skipped.length > 0) {
         Alert.alert(
           'Importation terminée',
-          `${uniqueNewTracks.length} nouveau(x) morceau(x) ajouté(s)${repairedCount > 0 ? `, ${repairedCount} morceau(x) réparé(s)` : ''}.${skippedTracks.length > 0 ? ` ${skippedTracks.length} doublon(s) ignoré(s).` : ''}`
+          `${added} nouveau(x) morceau(x) ajouté(s)${repaired > 0 ? `, ${repaired} morceau(x) réparé(s)` : ''}.${skipped.length > 0 ? ` ${skipped.length} doublon(s) ignoré(s).` : ''}`
         );
       }
 
-      return [...updatedPrev, ...uniqueNewTracks];
+      return merged;
     });
+  };
+
+  /**
+   * Rescan de la bibliothèque, et Renvoie le nombre de morceaux RÉELLEMENT ajoutés.
+   *
+   * Ce bouton affichait « Bibliothèque actualisée avec succès ! » après 800 ms
+   * sans avoir rien fait : le callback fourni à la modale n'était qu'un
+   * `console.log`. Le compte rendu vient donc du scan lui-même, et une
+   * annulation du sélecteur remonte en échec au lieu d'être absorbée.
+   *
+   * Une limite assumée : `pickAudioFiles` ouvre le sélecteur système — il n'existe
+   * aucun chemin non interactif pour relire un dossier en arrière-plan. « Actualiser »
+   * est donc un ré-import, pas une réindexation ; c'est aussi ce que voit
+   * l'utilisateur, puisque c'est lui qui choisit les fichiers.
+   *
+   * On ne rapporte que des AJOUTS. Rien ne prouve qu'un fichier a disparu du
+   * stockage sans le relire entièrement, et annoncer des suppressions
+   * invérifiables serait retomber dans le mensonge que ce handler corrige.
+   */
+  const handleRescanLibrary = async (): Promise<number> => {
+    const res = await pickAudioFiles(tracksRef.current);
+    // Sélecteur annulé, ou aucun fichier audio lisible : ni l'un ni l'autre
+    // n'est une erreur technique, mais aucun n'est un succès à annoncer.
+    if (!res || res.tracks.length === 0) {
+      throw new Error(res ? 'Aucun nouveau fichier audio' : 'Sélection annulée');
+    }
+
+    // Le dédoublonnage est refait ici, et non délégué à `handleAddTracks` : celui-ci
+    // travaille dans un `setTracks` dont le corps n'est pas exécuté avant le
+    // rendu suivant, donc le nombre d'ajouts n'y est pas lisible au moment où
+    // le rescan doit rendre son verdict.
+    const { added } = mergeTracks(tracksRef.current, res.tracks);
+    if (added === 0) {
+      throw new Error('Tous les morceaux sont déjà présents');
+    }
+
+    handleAddTracks(res.tracks);
+    return added;
   };
 
   // Sleep Timer effect
@@ -1206,9 +1221,28 @@ hasTrackRef.current = hasTrack;
     }
   };
 
+  /**
+   * Choix d'un morceau PAR L'UTILISATEUR — un des deux points d'entrée du
+   * réglage « vider la file ».
+   *
+   * Volontairement pas dans `loadTrack` : tout démarrage de lecture y passe, y
+   * compris l'enchaînement automatique en fin de morceau, qui décale lui-même
+   * la file (`setQueue(prev => prev.slice(1))`). Vider là-bas effacerait la
+   * file à chaque morceau terminé, et le morceau suivant n'aurait jamais rien à
+   * jouer. Seuls les clics humans vident la file ; la lecture depuis la file
+   * elle-même (`handlePlayQueuedTrack`) est exclue pour la même raison — vider
+   * au moment d'en consume un élément le ferait disparaître.
+   */
+  const clearQueueIfRequested = () => {
+    if (appSettingsRef.current.clearQueueOnNewPlay) {
+      setQueue([]);
+    }
+  };
+
   const handleSelectTrack = (track: Track) => {
     const idx = tracks.findIndex((t) => t.id === track.id);
     if (idx !== -1) {
+      clearQueueIfRequested();
       loadTrack(idx, true);
     }
   };
@@ -1231,7 +1265,10 @@ hasTrackRef.current = hasTrack;
 
   return (
     <View style={styles.rootBackground}>
-      <SafeAreaView style={styles.safeContainer}>
+      <SafeAreaView
+        style={styles.safeContainer}
+        edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
+      >
         <StatusBar style="light" />
 
         <View style={styles.appContainer}>
@@ -1286,7 +1323,11 @@ hasTrackRef.current = hasTrack;
                   },
                 ]}
               >
-                <NeonWaveVisualizer isActive={hasTrack && isPlaying} hasTrack={hasTrack} />
+                <NeonWaveVisualizer
+                  isActive={hasTrack && isPlaying}
+                  hasTrack={hasTrack}
+                  spectrumReactive={appSettings.spectrumReactive}
+                />
               </View>
 
               {/* Like / Dislike + 3-Dots Row matching latest user screenshot */}
@@ -1352,9 +1393,11 @@ hasTrackRef.current = hasTrack;
 
               {/* Quick Utility Pill Buttons Row: EQ, Timer, Repeat, Shuffle */}
               <View
+                {...fadePanHandlers}
                 style={[
                   styles.utilityPillsRow,
                   { marginBottom: isShortScreen ? 6 : 14 },
+                  { opacity: fadeOpacity },
                 ]}
               >
                 {/* Left Utility Pills */}
@@ -1439,6 +1482,7 @@ hasTrackRef.current = hasTrack;
                 style={[
                   styles.transportRow,
                   { marginVertical: isShortScreen ? 4 : 8 },
+                  { opacity: fadeOpacity },
                 ]}
               >
                 <TouchableOpacity
@@ -1571,7 +1615,10 @@ hasTrackRef.current = hasTrack;
                   setActiveGroupKey(groupKey || null);
                 }
                 const idx = tracks.findIndex((t) => t.id === track.id);
-                if (idx !== -1) loadTrack(idx, true);
+                if (idx !== -1) {
+                  clearQueueIfRequested();
+                  loadTrack(idx, true);
+                }
               }}
               onNavigateCategory={(category, groupKey, playlist) => {
                 setActiveCategory(category);
@@ -1588,6 +1635,8 @@ hasTrackRef.current = hasTrack;
               onDeleteFolder={handleDeleteFolder}
               onRenameFolder={handleRenameFolder}
               onOpenQueueDrawer={() => setIsQueueDrawerVisible(true)}
+              sort={appSettings.librarySort}
+              ignoreShortAudio={appSettings.ignoreShortAudio}
             />
           </View>
 
@@ -1937,9 +1986,7 @@ hasTrackRef.current = hasTrack;
         <SettingsModal
           visible={isSettingsVisible}
           onClose={() => setIsSettingsVisible(false)}
-          onRescanLibrary={() => {
-            console.log('Bibliothèque actualisée');
-          }}
+          onRescanLibrary={handleRescanLibrary}
           settings={appSettings}
           onUpdateSettings={handleUpdateSettings}
           currentTrack={currentTrack}

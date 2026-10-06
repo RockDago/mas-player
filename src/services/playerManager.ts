@@ -23,6 +23,7 @@ import {
   seekNative,
   getNativeStatus,
   setNativeAudioSessionId,
+  setNativeAutoResumeOnInterruption,
 } from './nativeAudioDSP';
 import { beatStore } from './beatStore';
 import { getLiveWebTrackUri } from './webAudioStorage';
@@ -80,6 +81,24 @@ class UniversalPlayerManager {
   private webBeatBuffer: Float32Array | null = null;
   private webBeatRaf: number | null = null;
   private beatWatchdog: ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Verrou d'arrière-plan : quand il est armé, aucun flux d'échantillons n'est
+   * ouvert, quel que soit le chemin qui le réclame.
+   *
+   * Arrêter le tap au passage en arrière-plan ne suffit pas. En fond, le lecteur
+   * reste vivant et n'émet plus de `didFinish` vers l'UI… mais le passage à la
+   * piste suivante passe quand même par `loadTrack`, donc par
+   * `startNativeBeatSampling`. Une simple coupure serait donc rallumée au premier
+   * changement de morceau en screen off — c'est-à-dire au moment où la fuite est
+   * la plus coûteuse. Ce drapeau est la seule constante qui rend l'état
+   * «background» lisible depuis tous les points d'entrée du tap.
+   *
+   * Le chien de garde est coupé avec : il ne sert qu'à surveiller un flux qui
+   * n'existe plus, et le laisser tourner ne fait que consommer du CPU pendant que
+   * l'app est censée dormir.
+   */
+  private isBackgrounded = false;
 
   /**
    * Dernier état DSP reçu. Conservé pour que les réglages appliqués avant
@@ -249,12 +268,82 @@ class UniversalPlayerManager {
     });
   }
 
+  /**
+   * Reprise automatique après une interruption (appel entrant, alarme).
+   *
+   * `true` par défaut : la reprise est le comportement attendu d'un lecteur de
+   * musique, et couper cette option laisse la musique silencieuse après un appel
+   * jusqu'au toucher — c'est un choix de l'utilisateur, pas un défaut.
+   */
+  private autoResumeOnInterruption = true;
+
+  /**
+   * Android n'a pas besoin d'un événement natif pour cette feature, et c'est
+   * contre-intuitif : il n'y a rien à écouter, rien à notifier.
+   *
+   * Tout se joue sur le focus audio, que le module `expo-audio` gère déjà :
+   * `AUDIOFOCUS_LOSS_TRANSIENT` met `isPaused = true`, `AUDIOFOCUS_GAIN` remet
+   * `isPaused = false` et appelle `play()`. JS voit le résultat par la sonde
+   * d'état à 250 ms, qui relit `player.playing` — donc JS peut SAVOIR, mais pas
+   * EMPÊCHER.
+   *
+   * Le levier est `interruptionMode` :
+   *   - `'doNotMix'`     → demande le focus → pause puis reprise automatiques.
+   *   - `'mixWithOthers'` → ne demande aucun focus → aucune pause, donc aucune
+   *                         reprise automatique.
+   *
+   * Couper la reprise revient donc à ne plus demander le focus. C'est
+   * contre-intuitif parce que le mode mélangeur semble signifier « tolère les
+   * interruptions », alors qu'en réalité il supprime complètement la gestion
+   * du focus — mais le comportement observé est bien le voulu : avec
+   * `mixWithOthers`, une alarme ne met pas la musique en pause, donc il n'y a
+   * rien à reprendre.
+   *
+   * iOS, lui, ne peut pas être piloté de ce côté : `AudioDSPEngine.swift`
+   * reprend sur `AVAudioSession.interruptionNotification` avant que JS ne soit
+   * prévenu. Il lui faut un drapeau natif — voir `setAutoResumeOnInterruption`.
+   */
+  private interruptionModeForPlatform(): 'doNotMix' | 'mixWithOthers' {
+    // Le web n'a pas de session audio : le mode y est ignoré, et en demander un
+    // chose n'aurait aucun effet mais pourrait brouiller les pistes de test.
+    if (Platform.OS === 'web') return 'mixWithOthers';
+    return this.autoResumeOnInterruption ? 'doNotMix' : 'mixWithOthers';
+  }
+
+  /**
+   * Active ou désactive la reprise après une interruption, puis réapplique le
+   * mode audio pour qu'un changement en cours de session prenne effet
+   * immédiatement — sans cela, le réglage ne s'appliquerait qu'au prochain
+   * démarrage de l'app.
+   */
+  async setAutoResumeOnInterruption(enabled: boolean): Promise<void> {
+    if (this.autoResumeOnInterruption === enabled) return;
+    this.autoResumeOnInterruption = enabled;
+    try {
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        shouldPlayInBackground: true,
+        interruptionMode: this.interruptionModeForPlatform(),
+      });
+    } catch (err) {
+      console.warn('setAudioModeAsync (reprise après interruption) a échoué:', err);
+    }
+
+    // iOS lit ce drapeau côté natif : le module Swift reprend avant de prévenir
+    // JS, donc JS ne peut pas annuler la reprise, seulement la dédire au
+    // moment de l'interruption. Sans cet appel, l'option resterait inerte sur
+    // iOS alors qu'elle semble active dans les réglages.
+    if (Platform.OS === 'ios') {
+      await setNativeAutoResumeOnInterruption(enabled);
+    }
+  }
+
   async init() {
     try {
       await setAudioModeAsync({
         playsInSilentMode: true,
         shouldPlayInBackground: true,
-        interruptionMode: 'doNotMix',
+        interruptionMode: this.interruptionModeForPlatform(),
       });
     } catch (err) {
       console.warn('init audio mode warning:', err);
@@ -396,7 +485,7 @@ class UniversalPlayerManager {
         await setAudioModeAsync({
           playsInSilentMode: true,
           shouldPlayInBackground: true,
-          interruptionMode: 'doNotMix',
+          interruptionMode: this.interruptionModeForPlatform(),
         });
       } catch (_) {}
     }
@@ -731,8 +820,13 @@ class UniversalPlayerManager {
         } catch (_) {}
       }
 
-      this.startNativeBeatSampling(p);
-      this.startBeatWatchdog();
+      // En arrière-plan, aucun flux d'échantillons : `startNativeBeatSampling`
+      // respecte `isBackgrounded` et ne fait donc rien ici. Le chien de garde
+      // n'a rien à surveiller dans ce cas.
+      if (!this.isBackgrounded) {
+        this.startNativeBeatSampling(p);
+        this.startBeatWatchdog();
+      }
 
       if (initialPositionSeconds && initialPositionSeconds > 0) {
         try {
@@ -843,6 +937,9 @@ class UniversalPlayerManager {
    * le comportement attendu ici.
    */
   private startNativeBeatSampling(player: AudioPlayer) {
+    // Porte d'arrière-plan : aucun flux ne s'ouvre depuis cet appareil quand
+    // l'app est en fond. Voir `isBackgrounded`.
+    if (this.isBackgrounded) return;
     try {
       player.setAudioSamplingEnabled(true);
       this.sampleSubscription = player.addListener('audioSampleUpdate', (data: any) => {
@@ -908,6 +1005,9 @@ class UniversalPlayerManager {
   private resumeBeatSampling() {
     if (Platform.OS !== 'ios' && Platform.OS !== 'android') return;
     if (!this.player) return;
+    // Même porte qu'au chargement : un seek déclenché en arrière-plan ne doit
+    // pas rouvrir le flux.
+    if (this.isBackgrounded) return;
     try {
       this.player.setAudioSamplingEnabled(true);
       beatStore.setSource('native');
@@ -985,6 +1085,32 @@ class UniversalPlayerManager {
       // Un seek coupe le flux d'échantillons : sans ce rattrapage, le chien
       // de garde finit par basculer sur 'none' et le logo ne revient plus.
       this.resumeBeatSampling();
+    }
+  }
+
+  /**
+   * Ouvre ou ferme la détection de rythme selon que l'app est au premier plan.
+   *
+   * À appeler depuis le `AppState` de l'écran. En fond, ferme le flux natif et
+   * coupe le chien de garde ; au retour, ne rouvre que si un lecteur est monté —
+   * sinon le premier plan suivant n'aurait aucun flux tant qu'aucune piste n'est
+   * chargée, ce qui est le comportement normal.
+   *
+   * Symétrique par construction : `setAppActive(false)` est idempotent, donc
+   * les transitions `inactive` → `background` d'iOS (qui publient deux états
+   * successifs) ne font rien de plus.
+   */
+  setAppActive(active: boolean) {
+    if (this.isBackgrounded === !active) return;
+    this.isBackgrounded = !active;
+    if (active) {
+      if (this.player && !this.sampleSubscription) {
+        this.startNativeBeatSampling(this.player);
+        this.startBeatWatchdog();
+      }
+    } else {
+      this.stopNativeBeatSampling();
+      this.stopBeatWatchdog();
     }
   }
 

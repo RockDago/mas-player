@@ -14,6 +14,18 @@ export interface Track {
   isFavorite?: boolean;
   folder?: string;
   folderPath?: string;
+  /**
+   * Instant d'import, en millisecondes epoch.
+   *
+   * Ce n'est PAS la date du fichier : rien ici ne lit les métadonnées du
+   * disque, et `year` n'est jamais renseigné à l'import. C'est donc le seul
+   * sens honnête du tri « Récent » — l'ordre d'arrivée dans la bibliothèque,
+   * pas l'ordre d'édition.
+   *
+   * Absent sur les morceaux importés avant l'existence de ce champ : le tri
+   * par date les place alors en fin de liste.
+   */
+  addedAt?: number;
 }
 
 export interface Playlist {

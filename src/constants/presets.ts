@@ -34,9 +34,6 @@ export const EQ_BANDS: EQBandSpec[] = [
   { type: 'highshelf', freq: 8000, label: '8kHz' },
 ];
 
-/** Labels des bandes, dans l'ordre du tableau `bands[]` de DSPState. */
-export const EQ_BAND_LABELS = EQ_BANDS.map((band) => band.label);
-
 /** Labels MAS Player courts (10 bandes) */
 export const MAS_PLAYER_BAND_LABELS = [
   '250',
@@ -53,9 +50,10 @@ export const MAS_PLAYER_BAND_LABELS = [
 
 
 /**
- * Libellés ISO historiques (31 Hz → 16 kHz). Conservés pour l'EqualizerModal,
- * qui n'est plus monté : la topologie audible est EQ_BANDS ci-dessus, dont les
- * libellés correspondent à la grille 250 Hz / 125 Hz → 8 kHz.
+ * Libellés ISO historiques (31 Hz → 16 kHz), alignés sur `EQ_BANDS`.
+ *
+ * La topologie audible est celle d'`EQ_BANDS` ci-dessus : grille 250 Hz /
+ * 125 Hz → 8 kHz.
  */
 export const EQ_FREQUENCIES = [
   '250Hz',
@@ -149,7 +147,7 @@ export const REVERB_DELAY_R = 0.058;
 export const REVERB_ROOM_SCALE = 8;
 
 /** Retard maximal, en secondes — borne d'allocation des lignes de retard. */
-export const REVERB_MAX_DELAY = REVERB_DELAY_R * REVERB_ROOM_SCALE;
+const REVERB_MAX_DELAY = REVERB_DELAY_R * REVERB_ROOM_SCALE;
 
 /**
  * Retard → facteur multiplicatif, borné à `REVERB_ROOM_SCALE`.
