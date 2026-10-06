@@ -5,6 +5,8 @@ import { beatStore } from '../services/beatStore';
 
 interface NeonWaveVisualizerProps {
   height?: number;
+  isActive?: boolean;
+  hasTrack?: boolean;
 }
 
 interface Spark {
@@ -26,13 +28,22 @@ interface Spark {
  * - Suivi précis du rythme : les basses (kicks / transitoires graves) provoquent des jaillissements
  *   d'amplitude très marqués et visibles.
  * - Arrêt immédiat et aplatissement complet : quand la musique est coupée ou mise en pause,
- *   l'onde s'arrête de défiler et s'aplatit en une ligne plane lumineuse calme.
+ *   ou lorsqu'aucun morceau n'est chargé, l'onde est bloquée, plate et immobile.
  * - Reprise instantanée et bondissante dès la lecture.
  */
-export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({ height: propHeight }) => {
+export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
+  height: propHeight,
+  isActive: propIsActive,
+  hasTrack = true,
+}) => {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const [layoutWidth, setLayoutWidth] = useState<number>(windowWidth || 360);
   const canvasRef = useRef<any>(null);
+
+  const isActiveRef = useRef(propIsActive);
+  isActiveRef.current = propIsActive;
+  const hasTrackRef = useRef(hasTrack);
+  hasTrackRef.current = hasTrack;
 
   const containerHeight = useMemo(() => {
     if (propHeight && propHeight > 0) return propHeight;
@@ -95,18 +106,18 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({ height: 
       lastTime = time;
 
       const { pulse, energy } = beatStore.read();
-      const isPlaying = beatStore.isPlaying;
+      const isPlaybackRunning =
+        hasTrackRef.current &&
+        (isActiveRef.current !== undefined ? isActiveRef.current : beatStore.isPlaying) &&
+        beatStore.isPlaying;
 
-      // ── COMPORTEMENT EN PAUSE / ARRÊT ──────────────────────────────────────
-      // L'utilisateur exige : "il doit arreter et plat si on arrete le musique"
-      // Si pause : amplitude cible = 0, énergie cible = 0, pulsation = 0.
-      if (!isPlaying) {
-        smoothedPulse *= 0.85;
-        smoothedEnergy *= 0.88;
-        // Décroissance rapide vers le plat (en ~180 ms)
-        currentAmp *= 0.86;
-        if (currentAmp < 0.2) currentAmp = 0;
-        // Arrêt du défilement : phase reste figée
+      // ── COMPORTEMENT EN PAUSE / ARRÊT / SANS MORCEAU ──────────────────────
+      // Si pause ou aucun morceau : onde bloquée, plate et immobile.
+      if (!isPlaybackRunning) {
+        smoothedPulse = 0;
+        smoothedEnergy = 0;
+        currentAmp = 0;
+        // Arrêt complet du défilement : phase reste figée
       } else {
         // En lecture : détection ultra-réactive des basses
         // Attaque instantanée sur le front montant du beat

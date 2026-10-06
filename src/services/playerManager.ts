@@ -22,6 +22,7 @@ import {
   stopNative,
   seekNative,
   getNativeStatus,
+  setNativeAudioSessionId,
 } from './nativeAudioDSP';
 import { beatStore } from './beatStore';
 import { getLiveWebTrackUri } from './webAudioStorage';
@@ -125,6 +126,34 @@ class UniversalPlayerManager {
    * dernier et rester affiché — le « dernier geste gagne » n'est plus vrai.
    */
   private nativeChain: Promise<unknown> = Promise.resolve();
+  private activeAndroidSessionId = 0;
+
+  /**
+   * Synchronise dynamiquement l'audioSessionId d'ExoPlayer avec AudioDSPModule sur Android.
+   *
+   * ExoPlayer initialise son audioSessionId de façon asynchrone lors de la préparation
+   * ou du démarrage du décodeur (initialement 0 ou C.AUDIO_SESSION_ID_UNSET).
+   * Cette méthode vérifie et attache les effets matériels natifs dès qu'un session ID
+   * réel (> 0) devient disponible.
+   */
+  private syncAndroidAudioSession(player: AudioPlayer | null) {
+    if (Platform.OS !== 'android' || !player || !isNativeEQAvailable()) return;
+    try {
+      const rawId =
+        (player as any).audioSessionId ??
+        (player as any).getAudioSessionId?.() ??
+        (player as any).currentStatus?.()?.audioSessionId;
+      const sessionId = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
+      if (typeof sessionId === 'number' && !isNaN(sessionId) && sessionId > 0 && sessionId !== this.activeAndroidSessionId) {
+        this.activeAndroidSessionId = sessionId;
+        void setNativeAudioSessionId(sessionId).then(() => {
+          if (this.pendingDsp) {
+            void this.enqueueNative(() => applyNativeDSP(this.pendingDsp!));
+          }
+        });
+      }
+    } catch (_) {}
+  }
 
   /** Enfile un appel au module natif et attend que les précédents se résolvent. */
   private enqueueNative<T>(task: () => Promise<T>): Promise<T> {
@@ -143,7 +172,7 @@ class UniversalPlayerManager {
    * garde alors son knob en attestation app-locale, sans crash ni faux positif.
    */
   subscribeSystemVolume(listener: (volume: number | null) => void): () => void {
-    if (Platform.OS !== 'ios') {
+    if (Platform.OS !== 'ios' && Platform.OS !== 'android') {
       listener(null);
       return () => {};
     }
@@ -308,6 +337,7 @@ class UniversalPlayerManager {
       } catch (_) {}
       this.player = null;
     }
+    this.activeAndroidSessionId = 0;
 
     // 4. Moteur natif Swift DSP iOS
     if (this.nativeEngineActive) {
@@ -663,6 +693,13 @@ class UniversalPlayerManager {
       // file que JS détient.
       if (Platform.OS === 'android') {
         this.subscribeAndroidRemoteCommands(p);
+        this.activeAndroidSessionId = 0;
+        this.syncAndroidAudioSession(p);
+        try {
+          (p as any).addListener?.('playbackStatusUpdate', () => {
+            this.syncAndroidAudioSession(p);
+          });
+        } catch (_) {}
       }
 
       this.startNativeBeatSampling(p);
@@ -683,6 +720,9 @@ class UniversalPlayerManager {
 
       this.intervalTimer = setInterval(() => {
         if (!this.player) return;
+        if (Platform.OS === 'android') {
+          this.syncAndroidAudioSession(this.player);
+        }
         const cur = this.player.currentTime || 0;
         const dur = this.player.duration || 0;
         const isPlaying = this.player.playing;
@@ -869,6 +909,9 @@ class UniversalPlayerManager {
   }
 
   play() {
+    if (!this.currentUri) {
+      return;
+    }
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.playbackRate = this.currentPlaybackRate;
       if (this.webEngine) {
@@ -879,8 +922,13 @@ class UniversalPlayerManager {
       void this.enqueueNative(() => playNative());
     } else if (this.player) {
       this.player.play();
+      if (Platform.OS === 'android') {
+        this.syncAndroidAudioSession(this.player);
+      }
       // Même raison qu'après un seek : la reprise relance aussi le flux.
       this.resumeBeatSampling();
+    } else {
+      return;
     }
     // Immédiat : sans cela le logo resterait en respiration jusqu'au prochain
     // tick de progression (jusqu'à 250 ms sur natif).
@@ -996,9 +1044,12 @@ class UniversalPlayerManager {
         this.webEngine.setVolume(dsp.volume);
       }
     }
-    // Moteur natif iOS : sérialisé, sinon un réglage ancien peut atterrir
+    if (Platform.OS === 'android' && this.player) {
+      this.syncAndroidAudioSession(this.player);
+    }
+    // Moteur natif iOS / Android : sérialisé, sinon un réglage ancien peut atterrir
     // après le dernier geste de fader et rester affiché.
-    if (Platform.OS === 'ios' && isNativeEQAvailable()) {
+    if ((Platform.OS === 'ios' || Platform.OS === 'android') && isNativeEQAvailable()) {
       void this.enqueueNative(() => applyNativeDSP(dsp));
     }
   }

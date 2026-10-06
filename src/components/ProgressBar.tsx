@@ -32,6 +32,7 @@ interface ProgressBarProps {
   playedColor?: string;
   unplayedColor?: string;
   onSeekCommit: (millis: number) => void;
+  disabled?: boolean;
 }
 
 export const ProgressBar: React.FC<ProgressBarProps> = ({
@@ -40,6 +41,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   playedColor = '#38BDF8',
   unplayedColor = 'rgba(255,255,255,0.18)',
   onSeekCommit,
+  disabled = false,
 }) => {
   const [previewMs, setPreviewMs] = useState<number | null>(null);
 
@@ -60,6 +62,8 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   durationRef.current = durationMillis > 0 ? durationMillis : 0;
   const onSeekCommitRef = useRef(onSeekCommit);
   onSeekCommitRef.current = onSeekCommit;
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
 
   const duration = durationMillis > 0 ? durationMillis : 0;
 
@@ -75,8 +79,8 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
    */
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => !disabledRef.current && durationRef.current > 0,
+      onMoveShouldSetPanResponder: () => !disabledRef.current && durationRef.current > 0,
       // Sur le web, la barre doit capter le geste horizontal avant que le
       // navigateur ne l'utilise pour défiler la page.
       onPanResponderTerminationRequest: () => false,
@@ -148,9 +152,12 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({
   };
 
   return (
-    <View style={styles.wrapper}>
+    <View style={[styles.wrapper, disabled && { opacity: 0.35 }]}>
       <View
-        style={styles.hitArea}
+        style={[
+          styles.hitArea,
+          disabled && (Platform.OS === 'web' ? ({ cursor: 'default' } as object) : {}),
+        ]}
         onLayout={(event) => {
           widthRef.current = event.nativeEvent.layout.width;
         }}

@@ -1,18 +1,19 @@
 import { Platform } from 'react-native';
+import { requireOptionalNativeModule } from 'expo-modules-core';
 import type { DSPState } from '../types/audio';
 import { EQ_BANDS, BASS_WEIGHTS, TREBLE_WEIGHTS, computeHeadroom, computeReverbGains } from '../constants/presets';
 
 /**
- * Pont vers le moteur d'égaliseur natif iOS (`modules/expo-audio-dsp`).
+ * Pont vers le moteur d'égaliseur natif iOS / Android (`modules/expo-audio-dsp`).
  *
- * Le module natif n'existe que dans un build natif (`expo run:ios` / EAS). Dans
- * Expo Go ou sur le Web, ce module n'est pas disponible et tout ce fichier
- * devient un no-op : l'app continue de fonctionner sur le chemin webAudioEngine
- * (Web) ou expo-audio (Go / natif sans module).
+ * Le module natif n'existe que dans un build natif (`expo run:ios` / `expo run:android` / EAS / APK / IPA).
+ * Dans Expo Go ou sur le Web, ce module n'est pas disponible et ce fichier
+ * dégrade avec grâce sur le chemin webAudioEngine (Web) ou expo-audio pur (Expo Go).
  */
 
-/** Surface JS du module Swift, reflétant `AudioDSPModule.swift`. */
+/** Surface JS du module natif AudioDSP (iOS Swift & Android Kotlin). */
 export interface AudioDSPNativeModule {
+  setAudioSessionIdAsync?(sessionId: number): Promise<void>;
   loadTrackAsync(
     uri: string,
     title?: string | null,
@@ -73,12 +74,17 @@ export interface AudioDSPNativeModule {
 }
 
 /**
- * Accès au module natif iOS.
+ * Accès au module natif AudioDSP (iOS & Android).
  */
 function getNativeModule(): AudioDSPNativeModule | null {
-  if (Platform.OS !== 'ios') {
+  if (Platform.OS !== 'ios' && Platform.OS !== 'android') {
     return null;
   }
+
+  try {
+    const mod = requireOptionalNativeModule<AudioDSPNativeModule>('AudioDSP');
+    if (mod) return mod;
+  } catch (_) {}
 
   const proxy = (
     globalThis as unknown as {
@@ -97,9 +103,22 @@ function getNativeModule(): AudioDSPNativeModule | null {
   return candidate as AudioDSPNativeModule;
 }
 
-/** Vrai si le module natif est présent (build natif iOS, pas Expo Go / Web). */
+/** Vrai si le module natif est présent (build natif iOS ou Android). */
 export function isNativeEQAvailable(): boolean {
   return getNativeModule() !== null;
+}
+
+/**
+ * Associe la session audio courante (Android) aux effets matériels natifs.
+ */
+export async function setNativeAudioSessionId(sessionId: number): Promise<void> {
+  const module = getNativeModule();
+  if (!module || !module.setAudioSessionIdAsync) return;
+  try {
+    await module.setAudioSessionIdAsync(sessionId);
+  } catch (err) {
+    console.warn('Native AudioDSP setAudioSessionIdAsync error:', err);
+  }
 }
 
 /** Charge une piste (téléchargement local puis ouverture), ou `null` si absent. */

@@ -212,6 +212,9 @@ function MainApp() {
 // rendu déréférence (`currentTrack.title`), d'où un crash natif. On garde donc
 // un objet de repli plutôt que de laisser fuire `undefined`.
 const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
+const hasTrack = tracks.length > 0 && currentTrack.id !== '__empty__' && !!currentTrack.uri;
+const hasTrackRef = useRef(hasTrack);
+hasTrackRef.current = hasTrack;
 
   // Résolution de la playlist active et de la liste de lecture courante
   const activePlaylist = useMemo(() => {
@@ -648,6 +651,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   };
 
   const handlePlayPause = async () => {
+    if (!hasTrack) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     } catch {}
@@ -665,6 +669,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   };
 
   const handleNextTrack = async () => {
+    if (!hasTrack) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
@@ -692,6 +697,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   };
 
   const handlePrevTrack = async () => {
+    if (!hasTrack) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
@@ -753,6 +759,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
       } else if (action === 'previous') {
         handlePrevTrackRef.current();
       } else if (action === 'play') {
+        if (!hasTrackRef.current) return;
         playerManager.play();
         setIsPlaying(true);
         isPlayingRef.current = true;
@@ -770,6 +777,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   }, []);
 
   const handleFastForward = async () => {
+    if (!hasTrack) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
@@ -781,6 +789,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
   };
 
   const handleFastRewind = async () => {
+    if (!hasTrack) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
@@ -800,6 +809,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
    * seek n'est pas instantané.
    */
   const handleSeekCommit = async (targetPos: number) => {
+    if (!hasTrack) return;
     const clamped = Math.max(0, Math.min(durationMillis, targetPos));
     setPositionMillis(clamped);
     positionMillisRef.current = clamped;
@@ -1260,46 +1270,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                   )}
                 </TouchableOpacity>
 
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <TouchableOpacity
-                    onPress={() => {
-                      try {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      } catch {}
-                      alert('MAS Player Output: Bluetooth WH-1000XM4 LDAC 32-BIT 96 KHZ');
-                    }}
-                    style={styles.topPlayerIconBtn}
-                    activeOpacity={0.7}
-                  >
-                    <MaterialCommunityIcons name="cast" size={22} color="#FFFFFF" />
-                  </TouchableOpacity>
-
-                  {/* Accès direct à la playlist active / liste de lecture */}
-                  <TouchableOpacity
-                    onPress={() => {
-                      try {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      } catch {}
-                      setCurrentTab('library');
-                    }}
-                    style={styles.topPlayerIconBtn}
-                    activeOpacity={0.7}
-                  >
-                    <MaterialCommunityIcons
-                      name="playlist-music"
-                      size={24}
-                      color={activePlaylist ? '#38BDF8' : '#FFFFFF'}
-                    />
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    onPress={() => setIsTrackListVisible(true)}
-                    style={styles.topPlayerIconBtn}
-                    activeOpacity={0.7}
-                  >
-                    <Feather name="more-vertical" size={22} color="#FFFFFF" />
-                  </TouchableOpacity>
-                </View>
+                <View style={{ width: 34 }} />
               </View>
 
               {/* Main Visualizer Area: visualiseur d'ondes néon réactif au rythme du son */}
@@ -1311,7 +1282,7 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                   },
                 ]}
               >
-                <NeonWaveVisualizer />
+                <NeonWaveVisualizer isActive={hasTrack && isPlaying} hasTrack={hasTrack} />
               </View>
 
               {/* Like / Dislike + 3-Dots Row matching latest user screenshot */}
@@ -1321,16 +1292,17 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                   { marginBottom: isShortScreen ? 4 : 10 },
                 ]}
               >
-                <View style={styles.thumbsPill}>
+                <View style={[styles.thumbsPill, !hasTrack && { opacity: 0.35 }]}>
                   <TouchableOpacity
                     style={styles.thumbBtn}
                     onPress={() => handleToggleFavorite(currentTrack)}
+                    disabled={!hasTrack}
                     activeOpacity={0.7}
                   >
                     <Ionicons
                       name={currentTrack.isFavorite ? 'thumbs-up' : 'thumbs-up-outline'}
                       size={18}
-                      color={currentTrack.isFavorite ? '#38BDF8' : '#D1D5DB'}
+                      color={hasTrack ? (currentTrack.isFavorite ? '#38BDF8' : '#D1D5DB') : '#64748B'}
                     />
                   </TouchableOpacity>
 
@@ -1339,19 +1311,21 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                   <TouchableOpacity
                     style={styles.thumbBtn}
                     onPress={handleNextTrack}
+                    disabled={!hasTrack}
                     activeOpacity={0.7}
                   >
-                    <Ionicons name="thumbs-down-outline" size={18} color="#D1D5DB" />
+                    <Ionicons name="thumbs-down-outline" size={18} color={hasTrack ? '#D1D5DB' : '#64748B'} />
                   </TouchableOpacity>
                 </View>
 
                 {/* 3-Dots Menu Button */}
                 <TouchableOpacity
-                  style={styles.songMoreBtn}
+                  style={[styles.songMoreBtn, !hasTrack && { opacity: 0.35 }]}
                   onPress={() => openTrackAction(currentTrack)}
+                  disabled={!hasTrack}
                   activeOpacity={0.7}
                 >
-                  <MaterialCommunityIcons name="dots-vertical" size={22} color="#FFFFFF" />
+                  <MaterialCommunityIcons name="dots-vertical" size={22} color={hasTrack ? '#FFFFFF' : '#64748B'} />
                 </TouchableOpacity>
               </View>
 
@@ -1368,30 +1342,8 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                   </Text>
                 </View>
                 <Text numberOfLines={1} style={styles.trackSubtitleText}>
-                  {currentTrack.artist} - {currentTrack.album}
+                  {currentTrack.artist}{currentTrack.album ? ` - ${currentTrack.album}` : ''}
                 </Text>
-
-                {/* Badge d'accès direct à la Playlist active / Source */}
-                <TouchableOpacity
-                  onPress={() => {
-                    try {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    } catch {}
-                    setCurrentTab('library');
-                  }}
-                  style={styles.activePlaylistPill}
-                  activeOpacity={0.75}
-                >
-                  <MaterialCommunityIcons
-                    name={activePlaylist ? 'playlist-music' : 'music-box-multiple'}
-                    size={13}
-                    color="#38BDF8"
-                  />
-                  <Text numberOfLines={1} style={styles.activePlaylistPillText}>
-                    {activePlaylist ? `Playlist : ${activePlaylist.name}` : activeGroupKey ? `Dossier : ${activeGroupKey}` : 'Toutes les pistes'}
-                  </Text>
-                  <Ionicons name="chevron-forward" size={12} color="#38BDF8" />
-                </TouchableOpacity>
               </View>
 
               {/* Quick Utility Pill Buttons Row: EQ, Timer, Repeat, Shuffle */}
@@ -1487,32 +1439,38 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
               >
                 <TouchableOpacity
                   onPress={handleFastRewind}
+                  disabled={!hasTrack}
                   style={[
                     styles.smallTransportBtn,
                     isShortScreen && { width: 32, height: 32, borderRadius: 16 },
+                    !hasTrack && { opacity: 0.35 },
                   ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-back" size={isShortScreen ? 13 : 15} color="#FFFFFF" />
+                  <Ionicons name="play-back" size={isShortScreen ? 13 : 15} color={hasTrack ? '#FFFFFF' : '#64748B'} />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   onPress={handlePrevTrack}
+                  disabled={!hasTrack}
                   style={[
                     styles.mediumTransportBtn,
                     isShortScreen && { width: 44, height: 44, borderRadius: 22 },
+                    !hasTrack && { opacity: 0.35 },
                   ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-back" size={isShortScreen ? 20 : 24} color="#FFFFFF" />
+                  <Ionicons name="play-back" size={isShortScreen ? 20 : 24} color={hasTrack ? '#FFFFFF' : '#64748B'} />
                 </TouchableOpacity>
 
                 {/* Central Play/Pause Button - Responsive size */}
                 <TouchableOpacity
                   onPress={handlePlayPause}
+                  disabled={!hasTrack}
                   style={[
                     styles.bigCentralPlayBtn,
                     isShortScreen && { width: 68, height: 68, borderRadius: 34 },
+                    !hasTrack && { opacity: 0.35 },
                   ]}
                   activeOpacity={0.8}
                 >
@@ -1520,42 +1478,47 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
                     <ActivityIndicator color="#FFFFFF" size="small" />
                   ) : (
                     <Ionicons
-                      name={isPlaying ? 'pause' : 'play'}
+                      name={isPlaying && hasTrack ? 'pause' : 'play'}
                       size={isShortScreen ? 34 : 42}
-                      color="#FFFFFF"
-                      style={{ marginLeft: isPlaying ? 0 : 3 }}
+                      color={hasTrack ? '#FFFFFF' : '#64748B'}
+                      style={{ marginLeft: isPlaying && hasTrack ? 0 : 3 }}
                     />
                   )}
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   onPress={handleNextTrack}
+                  disabled={!hasTrack}
                   style={[
                     styles.mediumTransportBtn,
                     isShortScreen && { width: 44, height: 44, borderRadius: 22 },
+                    !hasTrack && { opacity: 0.35 },
                   ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-forward" size={isShortScreen ? 20 : 24} color="#FFFFFF" />
+                  <Ionicons name="play-forward" size={isShortScreen ? 20 : 24} color={hasTrack ? '#FFFFFF' : '#64748B'} />
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   onPress={handleFastForward}
+                  disabled={!hasTrack}
                   style={[
                     styles.smallTransportBtn,
                     isShortScreen && { width: 32, height: 32, borderRadius: 16 },
+                    !hasTrack && { opacity: 0.35 },
                   ]}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play-forward" size={isShortScreen ? 13 : 15} color="#FFFFFF" />
+                  <Ionicons name="play-forward" size={isShortScreen ? 13 : 15} color={hasTrack ? '#FFFFFF' : '#64748B'} />
                 </TouchableOpacity>
               </View>
 
               {/* Barre de progression scrubbable */}
               <ProgressBar
-                positionMillis={positionMillis}
-                durationMillis={durationMillis}
+                positionMillis={hasTrack ? positionMillis : 0}
+                durationMillis={hasTrack ? durationMillis : 0}
                 onSeekCommit={handleSeekCommit}
+                disabled={!hasTrack}
               />
 
               {/* Time & Tech Specs Row */}
@@ -1664,13 +1627,14 @@ const currentTrack = tracks[currentTrackIndex] || tracks[0] || EMPTY_TRACK;
               {/* Mini Play/Pause button */}
               <TouchableOpacity
                 onPress={handlePlayPause}
-                style={styles.miniPlayBtn}
+                disabled={!hasTrack}
+                style={[styles.miniPlayBtn, !hasTrack && { opacity: 0.35 }]}
                 activeOpacity={0.7}
               >
                 <Ionicons
-                  name={isPlaying ? 'pause' : 'play'}
+                  name={isPlaying && hasTrack ? 'pause' : 'play'}
                   size={24}
-                  color="#FFFFFF"
+                  color={hasTrack ? '#FFFFFF' : '#64748B'}
                 />
               </TouchableOpacity>
             </TouchableOpacity>

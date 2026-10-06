@@ -292,4 +292,58 @@ class AudioMediaSessionCallback : MediaSession.Callback {
 
 fs.writeFileSync(sessionCallbackPath, newSessionCallbackContent, 'utf8');
 console.log('[patch-expo-audio-android] AudioMediaSessionCallback.kt updated successfully.');
-console.log('[patch-expo-audio-android] All Android notification patches applied.');
+
+// ── 3. Patch AudioPlayer.kt and AudioModule.kt to expose audioSessionId ─────────
+const audioPlayerPath = path.join(expoAudioDir, 'AudioPlayer.kt');
+if (fs.existsSync(audioPlayerPath)) {
+  let playerContent = fs.readFileSync(audioPlayerPath, 'utf8');
+  if (!playerContent.includes('setAudioSessionId')) {
+    playerContent = playerContent.replace(
+      'player = ExoPlayer.Builder(context)',
+      `player = run {
+    val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+    val sid = am?.generateAudioSessionId() ?: androidx.media3.common.C.AUDIO_SESSION_ID_UNSET
+    ExoPlayer.Builder(context).apply {
+      if (sid != androidx.media3.common.C.AUDIO_SESSION_ID_UNSET && sid > 0) {
+        setAudioSessionId(sid)
+      }
+    }
+  }`
+    );
+    console.log('[patch-expo-audio-android] AudioPlayer.kt patched with setAudioSessionId on ExoPlayer.Builder.');
+  }
+  if (!playerContent.includes('val audioSessionId: Int')) {
+    playerContent = playerContent.replace(
+      'var preservesPitch = true',
+      'var preservesPitch = true\n  val audioSessionId: Int\n    get() = ref.audioSessionId'
+    );
+    playerContent = playerContent.replace(
+      '"id" to id,',
+      '"id" to id,\n      "audioSessionId" to ref.audioSessionId,'
+    );
+  }
+  fs.writeFileSync(audioPlayerPath, playerContent, 'utf8');
+  console.log('[patch-expo-audio-android] AudioPlayer.kt patched with audioSessionId.');
+}
+
+const audioModulePath = path.join(expoAudioDir, 'AudioModule.kt');
+if (fs.existsSync(audioModulePath)) {
+  let moduleContent = fs.readFileSync(audioModulePath, 'utf8');
+  if (!moduleContent.includes('Property("audioSessionId")')) {
+    moduleContent = moduleContent.replace(
+      'Property("id") { player ->',
+      'Property("audioSessionId") { player ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }\n\n      Function("getAudioSessionId") { player: AudioPlayer ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }\n\n      Property("id") { player ->'
+    );
+    fs.writeFileSync(audioModulePath, moduleContent, 'utf8');
+    console.log('[patch-expo-audio-android] AudioModule.kt patched with audioSessionId property.');
+  } else if (!moduleContent.includes('Function("getAudioSessionId")')) {
+    moduleContent = moduleContent.replace(
+      'Property("audioSessionId") { player ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }',
+      'Property("audioSessionId") { player ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }\n\n      Function("getAudioSessionId") { player: AudioPlayer ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }'
+    );
+    fs.writeFileSync(audioModulePath, moduleContent, 'utf8');
+    console.log('[patch-expo-audio-android] AudioModule.kt patched with getAudioSessionId function.');
+  }
+}
+
+console.log('[patch-expo-audio-android] All Android audio & notification patches applied.');

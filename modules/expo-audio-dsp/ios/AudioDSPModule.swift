@@ -42,7 +42,19 @@ public class AudioDSPModule: Module {
         // MARK: Chargement
 
         AsyncFunction("loadTrackAsync") { (uri: String, title: String?, artist: String?, album: String?, artwork: String?) async throws -> [String: Any] in
-            guard let remote = URL(string: uri) else {
+            let parsedURL: URL? = {
+                if uri.hasPrefix("file://") {
+                    let clean = String(uri.dropFirst(7))
+                    let decoded = clean.removingPercentEncoding ?? clean
+                    return URL(fileURLWithPath: decoded)
+                }
+                if let u = URL(string: uri) {
+                    return u
+                }
+                let clean = uri.removingPercentEncoding ?? uri
+                return URL(fileURLWithPath: clean)
+            }()
+            guard let remote = parsedURL else {
                 throw AudioDSPModuleException.invalidUrl(uri)
             }
 
@@ -51,19 +63,27 @@ public class AudioDSPModule: Module {
             if remote.isFileURL || !["http", "https"].contains(remote.scheme?.lowercased()) {
                 var resolved = remote
                 if !FileManager.default.fileExists(atPath: resolved.path) {
+                    let decodedPath = resolved.path.removingPercentEncoding ?? resolved.path
+                    if FileManager.default.fileExists(atPath: decodedPath) {
+                        resolved = URL(fileURLWithPath: decodedPath)
+                    }
+                }
+                if !FileManager.default.fileExists(atPath: resolved.path) {
                     let path = resolved.path
                     if let docRange = path.range(of: "/Documents/") {
                         let subPath = String(path[docRange.upperBound...])
+                        let cleanSub = subPath.removingPercentEncoding ?? subPath
                         if let currentDocDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
-                            let candidate = currentDocDir.appendingPathComponent(subPath)
+                            let candidate = currentDocDir.appendingPathComponent(cleanSub)
                             if FileManager.default.fileExists(atPath: candidate.path) {
                                 resolved = candidate
                             }
                         }
                     } else if let cacheRange = path.range(of: "/Library/Caches/") {
                         let subPath = String(path[cacheRange.upperBound...])
+                        let cleanSub = subPath.removingPercentEncoding ?? subPath
                         if let currentCacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
-                            let candidate = currentCacheDir.appendingPathComponent(subPath)
+                            let candidate = currentCacheDir.appendingPathComponent(cleanSub)
                             if FileManager.default.fileExists(atPath: candidate.path) {
                                 resolved = candidate
                             }

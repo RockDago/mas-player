@@ -28,36 +28,21 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
 }) => {
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
-  const glowAnim = useRef(new Animated.Value(0.4)).current;
 
   // Animation de pulsation du logo
   useEffect(() => {
     const pulseLoop = Animated.loop(
       Animated.sequence([
-        Animated.parallel([
-          Animated.timing(pulseAnim, {
-            toValue: 1.05,
-            duration: 1200,
-            useNativeDriver: true,
-          }),
-          Animated.timing(glowAnim, {
-            toValue: 0.85,
-            duration: 1200,
-            useNativeDriver: true,
-          }),
-        ]),
-        Animated.parallel([
-          Animated.timing(pulseAnim, {
-            toValue: 0.98,
-            duration: 1200,
-            useNativeDriver: true,
-          }),
-          Animated.timing(glowAnim, {
-            toValue: 0.4,
-            duration: 1200,
-            useNativeDriver: true,
-          }),
-        ]),
+        Animated.timing(pulseAnim, {
+          toValue: 1.04,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0.98,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
       ])
     );
     pulseLoop.start();
@@ -65,7 +50,7 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
     return () => {
       pulseLoop.stop();
     };
-  }, [pulseAnim, glowAnim]);
+  }, [pulseAnim]);
 
   // Fondu de sortie quand le chargement est terminé
   useEffect(() => {
@@ -91,18 +76,7 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       pointerEvents={visible ? 'auto' : 'none'}
     >
       <View style={styles.content}>
-        {/* Halo lumineux en arrière-plan du logo */}
-        <Animated.View
-          style={[
-            styles.glowRing,
-            {
-              opacity: glowAnim,
-              transform: [{ scale: pulseAnim }],
-            },
-          ]}
-        />
-
-        {/* Logo MAS Player animé */}
+        {/* Logo MAS Player rond animé sans ombre bleu ciel */}
         <Animated.View
           style={[
             styles.logoWrapper,
@@ -112,17 +86,11 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
           ]}
         >
           <Image
-            source={require('../../assets/mas_icon_square.png')}
+            source={require('../../assets/mas_logo_circle.png')}
             style={styles.logoImage}
             resizeMode="cover"
           />
         </Animated.View>
-
-        {/* Titre & Identité Visuelle */}
-        <Text style={styles.brandTitle}>MAS PLAYER</Text>
-        <View style={styles.badgeRow}>
-          <Text style={styles.badgeText}>HI-RES AUDIOPHILE</Text>
-        </View>
 
         {/* Section Chargement : Spinner + Mot "Chargement..." */}
         <View style={styles.loadingRow}>
@@ -137,12 +105,12 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
 };
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const LOGO_SIZE = Math.min(130, Math.round(SCREEN_WIDTH * 0.32));
+const LOGO_SIZE = Math.min(136, Math.round(SCREEN_WIDTH * 0.34));
 
 const styles = StyleSheet.create({
   container: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: '#080B10',
+    backgroundColor: '#07090E',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 99999,
@@ -153,67 +121,36 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
-  glowRing: {
-    position: 'absolute',
-    top: -15,
-    width: LOGO_SIZE + 50,
-    height: LOGO_SIZE + 50,
-    borderRadius: (LOGO_SIZE + 50) / 2,
-    backgroundColor: 'rgba(56, 189, 248, 0.25)',
-  },
   logoWrapper: {
     width: LOGO_SIZE,
     height: LOGO_SIZE,
-    borderRadius: Math.round(LOGO_SIZE * 0.22),
+    borderRadius: LOGO_SIZE / 2,
     overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: 'rgba(56, 189, 248, 0.4)',
-    shadowColor: '#38BDF8',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.5,
-    shadowRadius: 16,
-    elevation: 12,
-    backgroundColor: '#0C0D11',
+    borderWidth: 1.5,
+    borderColor: '#1E293B',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.6,
+    shadowRadius: 14,
+    elevation: 8,
+    backgroundColor: '#090B10',
   },
   logoImage: {
     width: '100%',
     height: '100%',
   },
-  brandTitle: {
-    color: '#FFFFFF',
-    fontSize: 24,
-    fontWeight: '800',
-    letterSpacing: 2.5,
-    marginTop: 24,
-    textAlign: 'center',
-  },
-  badgeRow: {
-    backgroundColor: '#121620',
-    borderColor: '#1E2536',
-    borderWidth: 1,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 8,
-    marginTop: 8,
-    marginBottom: 28,
-  },
-  badgeText: {
-    color: '#38BDF8',
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-  },
   loadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 36,
     gap: 10,
   },
   spinner: {
     marginRight: 4,
   },
   loadingText: {
-    color: '#F1F5F9',
+    color: '#F8FAFC',
     fontSize: 16,
     fontWeight: '600',
     letterSpacing: 0.8,
@@ -223,5 +160,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 10,
     textAlign: 'center',
+    letterSpacing: 0.3,
   },
 });
