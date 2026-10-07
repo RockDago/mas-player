@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
-import { useScreenInsets, insetPadding } from '../theme/insets';
+import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
 import { pickAudioFolder, pickAudioFiles, isIOSDevice } from '../services/filePickerService';
 
 interface TrackListModalProps {
@@ -221,7 +221,16 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
           data={tracks}
           keyExtractor={(item) => item.id}
           renderItem={renderTrackItem}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[
+            styles.listContent,
+            {
+              // Le fond à 40 px ne couvrait pas la barre de navigation : sous
+              // Android 15 bord à bord, la dernière piste disparaissait sous
+              // la barre gestuelle. La marge mesurée s'y ajoute sur Android ;
+              // sur iOS le SafeAreaView la pose déjà (cf. insetPaddingBelow).
+              paddingBottom: insetPaddingBelow(insets, 40),
+            },
+          ]}
           showsVerticalScrollIndicator={false}
           initialScrollIndex={currentIndex >= 0 && currentIndex < tracks.length ? currentIndex : undefined}
           onScrollToIndexFailed={(info) => {
@@ -384,7 +393,6 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: 16,
     paddingTop: 12,
-    paddingBottom: 40,
   },
   trackItem: {
     flexDirection: 'row',

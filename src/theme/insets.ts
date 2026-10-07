@@ -98,3 +98,39 @@ export function insetPadding(
 ): number {
   return insets[edge] + aesthetic;
 }
+
+/**
+ * Marge de bas pour un contenu qui vit DANS un `SafeAreaView` déclaré ainsi :
+ *
+ *   edges={Platform.OS === 'ios' ? ['top','bottom','left','right'] : ['left','right']}
+ *
+ * ── Pourquoi cette fonction existe ────────────────────────────────────────
+ * Sur Android, ce `SafeAreaView` ne réclame que `left`/`right` : le bas n'est
+ * protégé par rien, il faut l'appliquer à la main. Sur iOS il réclame DÉJÀ
+ * `bottom` — l'appliquer à nouveau reviendrait à sommer deux fois la même
+ * barre, et le contenu se retrouverait remonté d'une barre home entière.
+ *
+ * L'écart est invisible tant qu'on ne regarde pas iOS : sur Android le
+ * correctif est nécessaire, sur iOS il gêne. C'est exactement la classe de
+ * bug qu'un test sur une seule plateforme ne voit jamais.
+ *
+ * Le correctif est donc explicite ici plutôt que laissé au tri par cas dans
+ * chaque écran — c'est la seule façon que les deux plateformes restent
+ * d'accord après le prochain ajout d'un écran.
+ */
+export function insetPaddingBelow(
+  insets: { top: number; bottom: number },
+  aesthetic = 0
+): number {
+  if (Platform.OS === 'android') {
+    return insetPadding(insets, 'bottom', aesthetic);
+  }
+  // iOS : le SafeAreaView a déjà posé la barre. Seule l'esthétique reste due.
+  //
+  // Le web suit le même chemin : `useScreenInsets` y renvoie des marges nulles
+  // faute de barre système, mais l'esthétique reste due — sans elle, les
+  // listes web se colleraient au bord de la fenêtre. Retirer la respiration
+  // « parce qu'il n'y a pas de barre » serait une régression : ce qu'il n'y a
+  // pas, c'est la marge système, pas l'espace choisi.
+  return aesthetic;
+}

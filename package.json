@@ -43,6 +43,7 @@
     "verify:bands": "node scripts/check-band-mapping.cjs",
     "verify:native": "node scripts/check-native-dsp-wiring.cjs && node scripts/check-band-mapping.cjs",
     "verify:settings": "node scripts/check-settings-wiring.cjs",
+    "verify:merge": "node scripts/verify-trackmerge.cjs",
     "postinstall": "node scripts/patch-expo-jsi.cjs && node scripts/patch-expo-audio-android.cjs",
     "build:ios:ipa": "npx eas-cli build -p ios --profile preview",
     "build:ios:prod": "npx eas-cli build -p ios --profile production",

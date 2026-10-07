@@ -96,6 +96,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   // Marge système mesurée (encoche / barre d'état). Remplace
   // `StatusBar.currentHeight` — voir src/theme/insets.ts.
   const insets = useScreenInsets();
+  // Respiration sous la dernière ligne de chaque liste.
+  //
+  // C'était un spacer fixe de 90 px, choisi à l'œil. Sous Android 15 bord à
+  // bord il est plus court que la barre de navigation : la dernière catégorie,
+  // ou le dernier morceau d'une playlist, passait dessous sans que rien ne le
+  // signale — la liste continuait simplement sous la barre, inatteignable au
+  // doigt. La marge mesurée s'ajoute à l'esthétique au lieu de la remplacer.
+  //
+  // La vue est un `<View>` nu, sans SafeAreaView : c'est donc la seule
+  // compensation possible, sur les deux plateformes.
+  const bottomSpacer = insetPadding(insets, 'bottom', 28);
   const [activeCategory, setActiveCategory] = useState<string | null>(propActiveCategory ?? null);
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(propSelectedGroupKey ?? null);
   // La playlist ouverte dans la vue ne part JAMAIS de `activePlaylistId` : cet
@@ -517,7 +528,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <Ionicons name="chevron-forward" size={18} color="#52525B" />
             </TouchableOpacity>
           ))}
-          <View style={{ height: 90 }} />
+          <View style={{ height: bottomSpacer }} />
         </ScrollView>
       ) : activeCategory === 'playlists' && !selectedPlaylist ? (
         /* PLAYLISTS MANAGEMENT VIEW */
@@ -640,7 +651,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               );
             })
           )}
-          <View style={{ height: 90 }} />
+          <View style={{ height: bottomSpacer }} />
         </ScrollView>
       ) : (activeCategory === 'folders' || activeCategory === 'folders_hierarchy') && !selectedGroupKey ? (
         /* FOLDERS VIEW (1-CLIC FOLDER SELECTION) */
@@ -769,7 +780,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               </TouchableOpacity>
             ))
           )}
-          <View style={{ height: 90 }} />
+          <View style={{ height: bottomSpacer }} />
         </ScrollView>
       ) : (groupedData.length > 0 && !selectedGroupKey) ? (
         /* GROUPED CATEGORIES VIEW (Albums, Artists, Genres, Years) */
@@ -808,7 +819,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <Ionicons name="chevron-forward" size={18} color="#52525B" />
             </TouchableOpacity>
           )}
-          ListFooterComponent={<View style={{ height: 90 }} />}
+          ListFooterComponent={<View style={{ height: bottomSpacer }} />}
         />
       ) : (
         /* SONGS LIST (All Songs, Playlist tracks, or Group tracks) */
@@ -1014,7 +1025,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               <Text style={styles.emptyViewTitle}>Aucun morceau trouvé</Text>
             </View>
           }
-          ListFooterComponent={<View style={{ height: 90 }} />}
+          ListFooterComponent={<View style={{ height: bottomSpacer }} />}
         />
       )}
 

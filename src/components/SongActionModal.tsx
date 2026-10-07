@@ -290,7 +290,20 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
         {/* SUB-MODAL 1: EDIT TAGS */}
         {subModal === 'editTags' && (
           <Modal visible transparent animationType="slide">
-            <View style={styles.subOverlay}>
+            <View
+              style={[
+                styles.subOverlay,
+                {
+                  // La boîte est centrée : la marge libre restante en bas
+                  // peut être plus courte que la barre de navigation, et
+                  // celle du haut plus courte que la barre d'état. Les deux
+                  // sont réservées pour que le centrage se fasse dans la zone
+                  // réellement visible.
+                  paddingTop: insetPadding(insets, 'top', 20),
+                  paddingBottom: insetPadding(insets, 'bottom', 20),
+                },
+              ]}
+            >
               <View style={styles.subBox}>
                 <View style={styles.subHeader}>
                   <Text style={styles.subTitle}>Éditeur de Tags MAS Player</Text>
@@ -374,7 +387,20 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
         {/* SUB-MODAL 2: ADD TO PLAYLIST */}
         {subModal === 'addToPlaylist' && (
           <Modal visible transparent animationType="slide">
-            <View style={styles.subOverlay}>
+            <View
+              style={[
+                styles.subOverlay,
+                {
+                  // La boîte est centrée : la marge libre restante en bas
+                  // peut être plus courte que la barre de navigation, et
+                  // celle du haut plus courte que la barre d'état. Les deux
+                  // sont réservées pour que le centrage se fasse dans la zone
+                  // réellement visible.
+                  paddingTop: insetPadding(insets, 'top', 20),
+                  paddingBottom: insetPadding(insets, 'bottom', 20),
+                },
+              ]}
+            >
               <View style={styles.subBox}>
                 <View style={styles.subHeader}>
                   <Text style={styles.subTitle}>Ajouter à une playlist</Text>
@@ -471,7 +497,20 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
         {/* SUB-MODAL 3: TRACK INFO */}
         {subModal === 'trackInfo' && (
           <Modal visible transparent animationType="fade">
-            <View style={styles.subOverlay}>
+            <View
+              style={[
+                styles.subOverlay,
+                {
+                  // La boîte est centrée : la marge libre restante en bas
+                  // peut être plus courte que la barre de navigation, et
+                  // celle du haut plus courte que la barre d'état. Les deux
+                  // sont réservées pour que le centrage se fasse dans la zone
+                  // réellement visible.
+                  paddingTop: insetPadding(insets, 'top', 20),
+                  paddingBottom: insetPadding(insets, 'bottom', 20),
+                },
+              ]}
+            >
               <View style={styles.subBox}>
                 <View style={styles.subHeader}>
                   <Text style={styles.subTitle}>Détails Techniques Audio</Text>

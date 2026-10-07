@@ -72,6 +72,7 @@ final class AudioDSPEngine: NSObject {
     private let engine = AVAudioEngine()
     private let playerNode = AVAudioPlayerNode()
     private let eqUnit = AVAudioUnitEQ(numberOfBands: AudioDSPEngine.bandCount)
+    private let timePitchUnit = AVAudioUnitTimePitch()
     private let preampNode = AVAudioMixerNode()
     private let balanceNode = AVAudioMixerNode()
 
@@ -297,6 +298,7 @@ final class AudioDSPEngine: NSObject {
 
         engine.attach(playerNode)
         engine.attach(eqUnit)
+        engine.attach(timePitchUnit)
         engine.attach(preampNode)
         engine.attach(balanceNode)
 
@@ -320,15 +322,17 @@ final class AudioDSPEngine: NSObject {
     private func connectGraph(format: AVAudioFormat) {
         engine.disconnectNodeOutput(playerNode)
         engine.disconnectNodeOutput(eqUnit)
+        engine.disconnectNodeOutput(timePitchUnit)
         engine.disconnectNodeOutput(preampNode)
         engine.disconnectNodeOutput(balanceNode)
         if let limiterUnit { engine.disconnectNodeOutput(limiterUnit) }
         if let spatialUnit { engine.disconnectNodeOutput(spatialUnit) }
         if let reverbUnit { engine.disconnectNodeOutput(reverbUnit) }
 
-        // L'ordre compte : EQ → préampli → largeur → réverbération → balance → limiteur.
+        // L'ordre compte : EQ → tempo → préampli → largeur → réverbération → balance → limiteur.
         engine.connect(playerNode, to: eqUnit, format: format)
-        engine.connect(eqUnit, to: preampNode, format: format)
+        engine.connect(eqUnit, to: timePitchUnit, format: format)
+        engine.connect(timePitchUnit, to: preampNode, format: format)
 
         var currentNode: AVAudioNode = preampNode
 
@@ -481,6 +485,11 @@ final class AudioDSPEngine: NSObject {
 
     func setVolume(_ value: Float) {
         engine.mainMixerNode.outputVolume = max(0, min(1, value))
+    }
+
+    /// Change le tempo sans modifier la hauteur, avant ou pendant la lecture.
+    func setPlaybackRate(_ value: Float) {
+        timePitchUnit.rate = max(0.5, min(2.0, value))
     }
 
     // MARK: - Volume système

@@ -140,6 +140,10 @@ public class AudioDSPModule: Module {
             self.engine.setVolume(value)
         }
 
+        AsyncFunction("setPlaybackRateAsync") { (rate: Float) -> Void in
+            self.engine.setPlaybackRate(rate)
+        }
+
         AsyncFunction("getSystemVolumeAsync") { () -> Float in
             return AVAudioSession.sharedInstance().outputVolume
         }

@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { useScreenInsets, insetPadding } from '../theme/insets';
+import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
 import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
 
@@ -119,7 +119,15 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
             <FlatList
               data={queue}
               keyExtractor={(item, idx) => `${item.id}-${idx}`}
-              contentContainerStyle={styles.listContent}
+              contentContainerStyle={[
+                styles.listContent,
+                {
+                  // Aucune marge basse n'était prévue : la dernière ligne de la
+                  // file se retrouvait sous la barre de navigation. Le tiroir est
+                  // bord à bord, donc c'est la seule protection possible ici.
+                  paddingBottom: insetPaddingBelow(insets, 20),
+                },
+              ]}
               renderItem={({ item, index }) => (
                 <View style={styles.queueItemRow}>
                   {/* Order Index */}

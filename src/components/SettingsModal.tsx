@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
-import { useScreenInsets, insetPadding } from '../theme/insets';
+import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
 import * as Haptics from 'expo-haptics';
 
 import { Track, DSPState } from '../types/audio';
@@ -1100,7 +1100,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Settings List */}
         <ScrollView
           style={styles.scrollList}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            {
+              // Le fond fixe de 40 px ne suffisait pas : sous Android 15 bord à bord il
+              // est plus court que la barre de navigation, et la dernière ligne
+              // passait dessous. `insetPaddingBelow` ajoute la marge mesurée
+              // sur Android sans la doubler sur iOS, où le SafeAreaView la
+              // pose déjà.
+              paddingBottom: insetPaddingBelow(insets, 24),
+            },
+          ]}
           showsVerticalScrollIndicator={false}
         >
           {filteredItems.map((item) => (
@@ -1147,8 +1157,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               © 2026 {APP_AUTHOR} • {t('allRightsReserved')}
             </Text>
           </View>
-
-          <View style={{ height: 40 }} />
         </ScrollView>
 
         {/* Detail Sub-Panel Modal */}
@@ -1159,7 +1167,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             transparent
             onRequestClose={() => setSelectedSetting(null)}
           >
-            <View style={styles.subModalOverlay}>
+            <View
+              style={[
+                styles.subModalOverlay,
+                {
+                  // La boîte est centrée et plafonnée à 88 % : la marge libre
+                  // restante en bas vaut ~6 % de la hauteur, soit à peine la
+                  // barre gestuelle Android. On réserve la marge système pour
+                  // que le centrage se fasse dans la zone visible — un
+                  // paddingBottom fixe ne réglerait qu'une barre de 16 px.
+                  paddingBottom: insetPadding(insets, 'bottom', 16),
+                },
+              ]}
+            >
               <View style={styles.subModalBox}>
                 <View style={styles.subModalHeader}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>

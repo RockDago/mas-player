@@ -376,14 +376,6 @@ hasTrackRef.current = hasTrack;
         queueRef.current = filteredQueue;
       }
 
-      // Marquer l'hydratation comme terminée une fois les données restaurées
-      // afin que les effets de sauvegarde ne soient autorisés que sur de vrais changements
-      setTimeout(() => {
-        if (isMounted) {
-          isHydratedRef.current = true;
-        }
-      }, 150);
-
       // Restauration de la dernière musique et de la position d'écoute
       let targetIndex = 0;
       let resumePosMs = 0;
@@ -409,13 +401,58 @@ hasTrackRef.current = hasTrack;
 
       await loadTrack(targetIndex, shouldAutoPlay, resumePosMs, currentTrackList);
 
+      // ── Verrou d'hydratation : ici, et pas 150 ms plus tôt ────────────────
+      //
+      // Il était posé par un `setTimeout(…, 150)` placé AVANT le
+      // `await loadTrack`. Un minuteur n'est pas une barrière : sur un
+      // démarrage natif à froid, `loadTrack` est encore en vol 150 ms plus
+      // tard — c'est le cas ordinaire, pas l'exception. Le verrou s'ouvrait donc
+      // pendant que la restauration n'était pas terminée.
+      //
+      // Ce qui pouvait alors écrire : l'abonnement au volume système (ligne
+      // ~800) appelle `setDsp(prev => ({ ...prev, volume }))` dès que iOS
+      // rapporte un niveau, ce qui arrive typiquement dans cette fenêtre. Cet
+      // effet déclenche `saveDSP`, protégé par `isHydratedRef` — donc la courbe
+      // d'égaliseur de l'utilisateur, relue à l'instant, était écrasée par un
+      // état construit sur les valeurs PAR DÉFAUT. Au lancement suivant, la
+      // courbe était plate. Aucune erreur, aucun signe : l'égaliseur se
+      // réinitialisait seul.
+      //
+      // Le curseur est donc posé ici, après le dernier `await` : à partir de
+      // cette ligne, tout ce que l'application a restauré est en place, et les
+      // effets de sauvegarde ne peuvent plus écrire que des changements réels.
+      if (isMounted) {
+        isHydratedRef.current = true;
+      }
+
       // Fin du chargement initial : transition fluide vers le lecteur
       setTimeout(() => {
         if (isMounted) {
           setIsStartingUp(false);
         }
       }, 400);
-    })();
+    })().catch((e) => {
+      // Un rejet ICI avait un effet terminal : `setIsStartingUp(false)` n'est
+      // atteint qu'en fin de ce chemin, et le splash reste affiché tant que
+      // ce drapeau est vrai. Une seule promesse rejetée — un pont natif qui
+      // refuse, un fichier illisible — suffisait donc à boucher l'app au
+      // démarrage, sans message et sans issue.
+      //
+      // Le chargement a échoué, mais l'application est utilisable : on libère
+      // l'écran de chargement et on laisse l'utilisateur atteindre l'interface vide
+      // plutôt que de le garder devant un logo éternel.
+      console.warn('Échec du démarrage, ouverture sur une bibliothèque vide:', e);
+      if (isMounted) {
+        // Le verrou doit être levé ICI aussi. `loadTrack` est le dernier await
+        // de l'hydratation : s'il rejette, la ligne qui le pose n'est jamais
+        // atteinte, et les cinq effets de sauvegarde resteraient bloqués
+        // indéfiniment. L'utilisateur pourrait changer tous ses réglages sans
+        // que rien ne soit jamais écrit sur le disque — le défaut inverse de
+        // celui qu'on corrige, et tout aussi silencieux.
+        isHydratedRef.current = true;
+        setIsStartingUp(false);
+      }
+    });
 
     return () => {
       isMounted = false;
@@ -1702,11 +1739,15 @@ hasTrackRef.current = hasTrack;
                 // La barre de navigation du système occupe le bas de l'écran et
                 // le dock se dessinait dessous. La marge système s'ajoute à
                 // l'espacement esthétique du dock.
-                marginBottom: insetPadding(
-                  insets,
-                  'bottom',
-                  isShortScreen ? 4 : 8
-                ),
+                //
+                // Android seulement : le SafeAreaView racine ne réclame que
+                // ['left','right'], donc il faut la marge ici. Sur iOS il
+                // réclame déjà 'bottom' (ligne 1270) — l'appliquer aussi
+                // surélevait le dock d'une seconde barre home.
+                marginBottom:
+                  Platform.OS === 'android'
+                    ? insetPadding(insets, 'bottom', isShortScreen ? 4 : 8)
+                    : 0,
               },
             ]}
           >
@@ -1782,7 +1823,17 @@ hasTrackRef.current = hasTrack;
           transparent
           onRequestClose={() => setIsPresetsVisible(false)}
         >
-          <View style={styles.searchModalOverlay}>
+          <View
+            style={[
+              styles.searchModalOverlay,
+              {
+                // Marge système mesurée : la constante 60 px était devinée et
+                // ne tombait juste sur aucun écran. En bas, rien n'était prévu.
+                paddingTop: Platform.OS === 'web' ? 40 : insetPadding(insets, 'top', 12),
+                paddingBottom: insetPadding(insets, 'bottom', 16),
+              },
+            ]}
+          >
             <View style={styles.searchModalBox}>
               <View style={styles.presetsModalHeader}>
                 <Text style={styles.presetsModalTitle}>PRÉRÉGLAGES MAS PLAYER</Text>
@@ -1910,7 +1961,17 @@ hasTrackRef.current = hasTrack;
           transparent
           onRequestClose={() => setIsSearchVisible(false)}
         >
-          <View style={styles.searchModalOverlay}>
+          <View
+            style={[
+              styles.searchModalOverlay,
+              {
+                // Marge système mesurée : la constante 60 px était devinée et
+                // ne tombait juste sur aucun écran. En bas, rien n'était prévu.
+                paddingTop: Platform.OS === 'web' ? 40 : insetPadding(insets, 'top', 12),
+                paddingBottom: insetPadding(insets, 'bottom', 16),
+              },
+            ]}
+          >
             <View style={styles.searchModalBox}>
               <View style={styles.searchBarRow}>
                 <Ionicons name="search" size={22} color="#7D8A99" />
@@ -2035,7 +2096,17 @@ hasTrackRef.current = hasTrack;
           transparent
           onRequestClose={() => setIsSleepTimerVisible(false)}
         >
-          <View style={styles.searchModalOverlay}>
+          <View
+            style={[
+              styles.searchModalOverlay,
+              {
+                // Marge système mesurée : la constante 60 px était devinée et
+                // ne tombait juste sur aucun écran. En bas, rien n'était prévu.
+                paddingTop: Platform.OS === 'web' ? 40 : insetPadding(insets, 'top', 12),
+                paddingBottom: insetPadding(insets, 'bottom', 16),
+              },
+            ]}
+          >
             <View style={styles.searchModalBox}>
               <View style={styles.presetsModalHeader}>
                 <Text style={styles.presetsModalTitle}>
@@ -2469,7 +2540,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.85)',
     justifyContent: 'flex-start',
-    paddingTop: Platform.OS === 'web' ? 40 : 60,
+    // La marge haute était une constante devinée (60 px) : elle ne tombe juste
+    // ni sur un statut bar de 24 px ni sur une encoche de 48, et sur un écran
+    // plus bas la boîte passe sous l'horloge. Le web n'a pas de barre système —
+    // il garde sa valeur propre.
+    paddingTop: Platform.OS === 'web' ? 40 : undefined,
     paddingHorizontal: 16,
   },
   searchModalBox: {

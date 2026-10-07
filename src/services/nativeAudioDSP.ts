@@ -27,6 +27,7 @@ export interface AudioDSPNativeModule {
   getStatusAsync(): Promise<{ currentTime: number; duration: number; isPlaying: boolean }>;
   seekAsync(seconds: number): Promise<void>;
   setVolumeAsync(value: number): Promise<void>;
+  setPlaybackRateAsync?(rate: number): Promise<void>;
   getSystemVolumeAsync(): Promise<number>;
   clearNowPlayingAsync(): Promise<void>;
   /** Reprise après interruption — iOS seulement, cf. `setNativeAutoResumeOnInterruption`. */
@@ -280,6 +281,17 @@ export async function pauseNative(): Promise<void> {
     await module.pauseAsync();
   } catch (err) {
     console.warn('Native AudioDSP pauseAsync error:', err);
+  }
+}
+
+/** Change la vitesse de lecture du moteur natif iOS sans modifier la hauteur. */
+export async function setNativePlaybackRate(rate: number): Promise<void> {
+  const module = getNativeModule();
+  if (!module?.setPlaybackRateAsync) return;
+  try {
+    await module.setPlaybackRateAsync(Math.max(0.5, Math.min(2, rate)));
+  } catch (err) {
+    console.warn('Native AudioDSP setPlaybackRateAsync error:', err);
   }
 }
 

@@ -20,6 +20,7 @@ import {
   playNative,
   pauseNative,
   stopNative,
+  setNativePlaybackRate,
   seekNative,
   getNativeStatus,
   setNativeAudioSessionId,
@@ -421,6 +422,24 @@ class UniversalPlayerManager {
       this.intervalTimer = null;
     }
 
+    // 1 bis. Boucles web.
+    //
+    // Elles n'étaient annulées que dans `release()`, jamais entre deux pistes.
+    // `startWebProgressLoop` se re-garde d'elle-même, mais la pompe de rythme
+    // ne le faisait pas : entre deux morceaux, une boucle
+    // survivait et continuait de pousser `beatStore` depuis le moteur
+    // précédent, pendant que la piste suivante en lançait une autre. D'où des
+    // battements incohérents en cours de lecture, sur web seulement.
+    // La pompe de rythme a reçu le même garde dans `startWebBeatPump`.
+    if (this.rafId !== null) {
+      cancelAnimationFrame(this.rafId);
+      this.rafId = null;
+    }
+    if (this.webBeatRaf !== null) {
+      cancelAnimationFrame(this.webBeatRaf);
+      this.webBeatRaf = null;
+    }
+
     // 2. Chien de garde et détection de rythme
     this.stopBeatWatchdog();
     this.stopNativeBeatSampling();
@@ -711,6 +730,7 @@ class UniversalPlayerManager {
     await this.enqueueNative(() =>
       setNativeVolume(this.systemVolume !== null ? 100 : this.pendingDsp?.volume ?? 100)
     );
+    await this.enqueueNative(() => setNativePlaybackRate(this.currentPlaybackRate));
 
     // Le `Timer` Swift (250 ms) est la seule horloge de lecture : l'UI s'y
     // abonne au lieu de son propre `setInterval`.
@@ -770,6 +790,9 @@ class UniversalPlayerManager {
         return;
       }
       this.player = p;
+      // Le tempo peut avoir été sélectionné avant la création de ce lecteur.
+      // Chaque nouvelle instance expo-audio doit reprendre le réglage courant.
+      p.setPlaybackRate(this.currentPlaybackRate);
 
       // Active les contrôles de notification et de l'écran verrouillé
       if (meta) {
@@ -904,6 +927,15 @@ class UniversalPlayerManager {
   private startWebBeatPump() {
     if (Platform.OS !== 'web') return;
     if (!this.webEngine) return;
+    // Garde anti-double-boucle, comme dans `startWebProgressLoop`.
+    //
+    // Cette fonction est appelée à CHAQUE chargement de piste. Sans cette
+    // annulation, le `webBeatRaf` d'origine n'était jamais annulé et sa
+    // closure survivait : après dix morceaux, dix boucles tournaient à 60 Hz,
+    // chacune poussant le même tampon vers `beatStore` — dix fois le travail
+    // CPU et un tempo de détection faussé. Le symptôme (battement décalé après
+    // quelques pistes) n'apparaît qu'après usage, jamais au premier morceau.
+    if (this.webBeatRaf !== null) cancelAnimationFrame(this.webBeatRaf);
     if (!this.webBeatBuffer) {
       this.webBeatBuffer = new Float32Array(WEB_ANALYSER_BUFFER_SIZE);
     }
@@ -1173,12 +1205,11 @@ class UniversalPlayerManager {
     this.currentPlaybackRate = clamped;
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.playbackRate = clamped;
+    } else if (Platform.OS === 'ios' && isNativeEQAvailable()) {
+      void this.enqueueNative(() => setNativePlaybackRate(clamped));
     } else if (this.player) {
       this.player.setPlaybackRate(clamped);
     }
-    // Le graphe natif n'expose pas de vitesse de lecture : le tempo reste
-    // donc inopérant sur iPhone. `AVAudioUnitTimePitch` le permettrait, mais la
-    // simple vitesse de lecture déforme les aigus sans correction de hauteur.
   }
 
   /**
