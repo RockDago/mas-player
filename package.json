@@ -41,7 +41,7 @@
     "verify:restore": "node scripts/test-dsp-restore.cjs",
     "verify:wiring": "node scripts/check-native-dsp-wiring.cjs",
     "verify:bands": "node scripts/check-band-mapping.cjs",
-    "verify:native": "node scripts/check-native-dsp-wiring.cjs && node scripts/check-band-mapping.cjs",
+    "verify:native": "node scripts/check-native-dsp-wiring.cjs",
     "verify:settings": "node scripts/check-settings-wiring.cjs",
     "verify:merge": "node scripts/verify-trackmerge.cjs",
     "postinstall": "node scripts/patch-expo-jsi.cjs && node scripts/patch-expo-audio-android.cjs",

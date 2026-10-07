@@ -12,6 +12,7 @@ const { readFileSync } = require('fs');
 
 const ts = readFileSync('src/constants/presets.ts', 'utf8');
 const swift = readFileSync('modules/expo-audio-dsp/ios/AudioDSPEngine.swift', 'utf8');
+const renderUnit = readFileSync('modules/expo-audio-dsp/ios/AudioDSPRenderUnit.swift', 'utf8');
 const web = readFileSync('src/services/webAudioEngine.ts', 'utf8');
 // Le pont natif est lu ici, et non à l'endroit où l'on s'en sert pour la
 // première fois : les vérifications de la section 3 (pastilles TONE et LIMIT)
@@ -88,7 +89,7 @@ if (webBypass && swiftBypass) {
 // La pastille doit être câblée des deux côtés, du `DSPState` jusqu'au nœud.
 check('web : la pastille LIMIT est lue', /dsp\.limitEnabled/.test(web), 'true');
 check('natif : la pastille LIMIT est lue', /limitEnabled/.test(swift), 'true');
-check('natif : setEnabled est appelé', /limiterState\.setEnabled\(/.test(swift), 'true');
+check('natif : setEnabled est appelé', /dspRenderState\.limiter\.setEnabled\(/.test(swift), 'true');
 check('natif : le seuil variable n était pas du code mort', /func setEnabled\(/.test(limiter), 'true');
 check('pont : limitEnabled transmis au natif', /dsp\.limitEnabled \?\? true/.test(bridge), 'true');
 
@@ -247,7 +248,8 @@ check(
 );
 check(
   'reverb : avant la balance (natif)',
-  swift.includes('engine.connect(reverbNode, to: balanceNode'),
+  swift.includes('engine.connect(currentNode, to: balanceNode') &&
+    renderUnit.indexOf('reverb.process(') < renderUnit.indexOf('limiter.processChannels('),
   'true'
 );
 check(

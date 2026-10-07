@@ -7,12 +7,11 @@ import MediaPlayer
  *
  * Chaîne du graphe, alignée sur le moteur web (`webAudioEngine.ts`) :
  *
- *   playerNode → AVAudioUnitEQ (10 bandes) → preampNode → spatialUnit (largeur +
- *   crossfeed) → reverbUnit → balanceNode → limiterUnit → mainMixerNode
+ *   playerNode → AVAudioUnitEQ (10 bandes) → preampNode → AudioDSPRenderUnit
+ *   (largeur + crossfeed + réverbération + limiteur) → balanceNode → mainMixerNode
  *
- * Les trois étages en chaîne — largeur, réverbération, limiteur — sont des
- * `AVAudioUnitEffect` munis d'un bloc de rendu maison, parce qu'aucun nœud
- * système ne sait élargir une image ni reboucler une queue avec amortissement.
+ * Les étages de rendu personnalisés sont réunis dans un Audio Unit v3 local :
+ * aucun nœud système ne sait élargir une image ni reboucler une queue avec amortissement.
  *
  * Pourquoi AVAudioEngine plutôt qu'un `MTAudioProcessingTap` sur l'AVPlayer
  * d'expo-audio : ce lecteur est privé au module et son tap est déjà occupé par
@@ -80,18 +79,14 @@ final class AudioDSPEngine: NSObject {
     /// `AudioDSPLimiter.swift` pour l'algorithme et le choix du bloc de rendu.
     /// Il est enveloppé dans un `AVAudioUnitEffect` parce que c'est le seul moyen
     /// d'insérer un bloc de rendu arbitraire dans le graphe.
-    private var limiterUnit: AVAudioUnitEffect?
-    private let limiterState = LimiterState()
+    private var dspRenderUnit: AVAudioUnit?
+    private let dspRenderState = AudioDSPRenderState.shared
 
     /// Étage de largeur stéréo — matrice Mid/Side dans un bloc de rendu, voir
     /// `AudioDSPSpatial.swift`. Placé APRÈS le préampli (le préampli est le
     /// contrôle de marge de l'utilisateur : il doit agir sur l'EQ avant toute
     /// matrice) et AVANT la balance et le limiteur (ces deux-là sont des contrôles
     /// de sortie : ils doivent voir l'image finale).
-    private var spatialUnit: AVAudioUnitEffect?
-    private let spatialState = SpatialState()
-    private var spatialAvailable = false
-
     /// Crossfeed, en pourcentage 0…100. Borné en interne par la largeur.
     private var crossfeed: Float = 0
 
@@ -100,14 +95,11 @@ final class AudioDSPEngine: NSObject {
     /// doit connaître l'image finale, pas la matrice qui la produit) et AVANT la
     /// balance et le limiteur (les deux restent des contrôles de sortie, et le
     /// limiteur doit rester le dernier étage de la chaîne).
-    private var reverbUnit: AVAudioUnitEffect?
 
     /// Construit une fois pour toute la session et **jamais remplacé** : le bloc
     /// de rendu le capture à l'installation, donc le remplacer au `load()`
     /// ferait rendre l'ancien état pendant que le nouveau attendrait. La
     /// fréquence d'échantillonnage réelle est passée à chaque `setParameters`.
-    private let reverbState = ReverbState()
-    private var reverbAvailable = false
 
     /// Réglages de réverbération mémorisés, comme `pendingGains` pour l'EQ : le
     /// `load()` d'un nouveau fichier change la fréquence d'échantillonnage, donc
@@ -118,11 +110,6 @@ final class AudioDSPEngine: NSObject {
     private var reverbMix: Float = 0
     private var reverbWet: Float = 0
     private var reverbDry: Float = 1
-
-    /// `false` si l'unité d'effet n'a pas pu être instanciée. Le signal passe
-    /// alors sans limiteur — l'application reste fonctionnelle, on perd seulement
-    /// la garantie anti-écrêtage. Jamais de crash.
-    private var limiterAvailable = false
 
     private var audioFile: AVAudioFile?
 
@@ -302,14 +289,28 @@ final class AudioDSPEngine: NSObject {
         engine.attach(preampNode)
         engine.attach(balanceNode)
 
-        // Les unités DSP personnalisées (limiteur, largeur stéréo, réverbération)
-        // sont gérées de manière modulaire : sur iOS, l'injection directe d'un bloc
-        // de rendu dans AVAudioEngine requiert un composant Audio Unit v3 enregistré.
-        // Le graphe est donc configuré avec les nœuds natifs existants (AVAudioUnitEQ,
-        // AVAudioMixerNode) et les états sont mis à jour proprement sans crash.
-        limiterAvailable = false
-        spatialAvailable = false
-        reverbAvailable = false
+    }
+
+    private func createDSPRenderUnit() async throws -> AVAudioUnit {
+        _ = AudioDSPRenderUnit.registerSubclassOnce
+        return try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<AVAudioUnit, Error>) in
+            AVAudioUnit.instantiate(
+                with: AudioDSPRenderUnit.componentDescription,
+                options: []
+            ) { unit, error in
+                if let unit {
+                    continuation.resume(returning: unit)
+                } else {
+                    continuation.resume(
+                        throwing: error ?? NSError(
+                            domain: "MASPlayer.AudioDSP",
+                            code: Int(kAudioUnitErr_FailedInitialization)
+                        )
+                    )
+                }
+            }
+        }
     }
 
     /// Câblage pour un format donné. Réfait à chaque `load()` **et** à chaque
@@ -325,36 +326,21 @@ final class AudioDSPEngine: NSObject {
         engine.disconnectNodeOutput(timePitchUnit)
         engine.disconnectNodeOutput(preampNode)
         engine.disconnectNodeOutput(balanceNode)
-        if let limiterUnit { engine.disconnectNodeOutput(limiterUnit) }
-        if let spatialUnit { engine.disconnectNodeOutput(spatialUnit) }
-        if let reverbUnit { engine.disconnectNodeOutput(reverbUnit) }
+        if let dspRenderUnit { engine.disconnectNodeOutput(dspRenderUnit) }
 
-        // L'ordre compte : EQ → tempo → préampli → largeur → réverbération → balance → limiteur.
+        // L'unité DSP applique largeur, crossfeed, réverbération et limiteur.
         engine.connect(playerNode, to: eqUnit, format: format)
         engine.connect(eqUnit, to: timePitchUnit, format: format)
         engine.connect(timePitchUnit, to: preampNode, format: format)
 
         var currentNode: AVAudioNode = preampNode
 
-        if spatialAvailable, let spatial = spatialUnit {
-            engine.connect(currentNode, to: spatial, format: format)
-            currentNode = spatial
+        if let dspRenderUnit {
+            engine.connect(currentNode, to: dspRenderUnit, format: format)
+            currentNode = dspRenderUnit
         }
-
-        let reverbNode: AVAudioNode
-        if reverbAvailable, let reverb = reverbUnit {
-            engine.connect(currentNode, to: reverb, format: format)
-            reverbNode = reverb
-        } else {
-            reverbNode = currentNode
-        }
-        engine.connect(reverbNode, to: balanceNode, format: format)
+        engine.connect(currentNode, to: balanceNode, format: format)
         currentNode = balanceNode
-
-        if limiterAvailable, let limiter = limiterUnit {
-            engine.connect(currentNode, to: limiter, format: format)
-            currentNode = limiter
-        }
 
         if isMono, let monoFormat = AVAudioFormat(standardFormatWithSampleRate: format.sampleRate,
                                                    channels: 1) {
@@ -413,9 +399,7 @@ final class AudioDSPEngine: NSObject {
         // plus d'image à élargir.
         let width = max(0, min(100, stereoExpansion))
         self.crossfeed = max(0, min(100, crossfeed))
-        if spatialAvailable {
-            spatialState.setParameters(widthPercent: width, crossfeedPercent: self.crossfeed)
-        }
+        dspRenderState.spatial.setParameters(widthPercent: width, crossfeedPercent: self.crossfeed)
 
         // Réverbération : les trois knobs et les deux gains de dosage. Les gains
         // viennent de `computeReverbGains` (côté JS) ; `reverbMix` n'est transmis
@@ -430,13 +414,11 @@ final class AudioDSPEngine: NSObject {
         self.reverbWet = reverbWet
         self.reverbDry = reverbDry
 
-        if reverbAvailable {
-            reverbState.setParameters(sampleRate: Float(sampleRate),
-                                      roomSizePercent: self.roomSize,
-                                      dampingPercent: self.damping,
-                                      wet: self.reverbWet, dry: self.reverbDry,
-                                      enabled: self.reverbEnabled)
-        }
+        dspRenderState.reverb.setParameters(sampleRate: Float(sampleRate),
+                                            roomSizePercent: self.roomSize,
+                                            dampingPercent: self.damping,
+                                            wet: self.reverbWet, dry: self.reverbDry,
+                                            enabled: self.reverbEnabled)
 
         // Limiteur : la pastille LIMIT le commute. Il tournait en permanence à
         // −3 dBFS, sans aucun moyen de l'éteindre — alors que l'interface le
@@ -448,9 +430,7 @@ final class AudioDSPEngine: NSObject {
         // refléter le dernier réglage reçu même si l'étage n'a pas pu être
         // construit — sinon le rechargement réécrirait un `true` par défaut.
         pendingLimitEnabled = limitEnabled
-        if limiterAvailable {
-            limiterState.setEnabled(limitEnabled)
-        }
+        dspRenderState.limiter.setEnabled(limitEnabled)
 
         // Le mono change le câblage (format 1 canal) et non un paramètre : il
         // faut recâbler et redémarrer. À tester AVANT d'affecter `isMono`,
@@ -644,7 +624,7 @@ final class AudioDSPEngine: NSObject {
     // MARK: - Lecture
 
     /// Charge un fichier déjà téléchargé et câble le graphe sur son format.
-    func load(url: URL) throws {
+    func load(url: URL) async throws {
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default, options: [])
@@ -666,6 +646,11 @@ final class AudioDSPEngine: NSObject {
             throw AudioDSPError.engineStartFailed("AVAudioFile read error: \(error.localizedDescription)")
         }
         audioFile = file
+        if dspRenderUnit == nil {
+            let unit = try await createDSPRenderUnit()
+            engine.attach(unit)
+            dspRenderUnit = unit
+        }
         sampleRate = file.processingFormat.sampleRate
         seekOffset = 0
         isPaused = false
@@ -675,6 +660,7 @@ final class AudioDSPEngine: NSObject {
         playerNode.stop()
         engine.stop()
 
+        dspRenderState.prepare(sampleRate: sampleRate)
         connectGraph(format: file.processingFormat)
         engine.prepare()
 

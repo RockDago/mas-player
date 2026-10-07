@@ -36,6 +36,8 @@ class AudioDSPModule : Module() {
   private var pendingRoomSize: Double = 0.0
   private var pendingDamping: Double = 0.0
   private var pendingReverbMix: Double = 0.0
+  private var pendingReverbWet: Double = 0.0
+  private var pendingReverbDry: Double = 1.0
   private var pendingLimitEnabled: Boolean = true
 
   // Les 10 fréquences canoniques de MAS Player, EN KILOHERTZ.
@@ -255,6 +257,8 @@ class AudioDSPModule : Module() {
       pendingRoomSize = (state["roomSize"] as? Number)?.toDouble() ?: 0.0
       pendingDamping = (state["damping"] as? Number)?.toDouble() ?: 0.0
       pendingReverbMix = (state["reverbMix"] as? Number)?.toDouble() ?: 0.0
+      pendingReverbWet = (state["reverbWet"] as? Number)?.toDouble() ?: 0.0
+      pendingReverbDry = (state["reverbDry"] as? Number)?.toDouble() ?: 1.0
       pendingLimitEnabled = (state["limitEnabled"] as? Boolean) ?: true
 
       applyCurrentDSP()
@@ -327,12 +331,12 @@ class AudioDSPModule : Module() {
 
     try {
       equalizer = Equalizer(0, sessionId).apply {
-        enabled = pendingEnabled
+        enabled = false
       }
     } catch (e: Exception) {
       try {
         equalizer = Equalizer(1000, sessionId).apply {
-          enabled = pendingEnabled
+          enabled = false
         }
       } catch (e2: Exception) {
         Log.w("AudioDSP", "Failed to init Equalizer for session $sessionId: ${e2.message}")
@@ -341,12 +345,12 @@ class AudioDSPModule : Module() {
 
     try {
       bassBoost = BassBoost(0, sessionId).apply {
-        enabled = pendingEnabled
+        enabled = false
       }
     } catch (e: Exception) {
       try {
         bassBoost = BassBoost(1000, sessionId).apply {
-          enabled = pendingEnabled
+          enabled = false
         }
       } catch (e2: Exception) {
         Log.w("AudioDSP", "Failed to init BassBoost for session $sessionId: ${e2.message}")
@@ -355,12 +359,12 @@ class AudioDSPModule : Module() {
 
     try {
       virtualizer = Virtualizer(0, sessionId).apply {
-        enabled = pendingEnabled
+        enabled = false
       }
     } catch (e: Exception) {
       try {
         virtualizer = Virtualizer(1000, sessionId).apply {
-          enabled = pendingEnabled
+          enabled = false
         }
       } catch (e2: Exception) {
         Log.w("AudioDSP", "Failed to init Virtualizer for session $sessionId: ${e2.message}")
@@ -370,7 +374,7 @@ class AudioDSPModule : Module() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
       try {
         loudnessEnhancer = LoudnessEnhancer(sessionId).apply {
-          enabled = pendingEnabled
+          enabled = false
         }
       } catch (e: Exception) {
         Log.w("AudioDSP", "Failed to init LoudnessEnhancer for session $sessionId: ${e.message}")
@@ -379,12 +383,12 @@ class AudioDSPModule : Module() {
 
     try {
       presetReverb = PresetReverb(0, sessionId).apply {
-        enabled = pendingReverbEnabled
+        enabled = false
       }
     } catch (e: Exception) {
       try {
         presetReverb = PresetReverb(1000, sessionId).apply {
-          enabled = pendingReverbEnabled
+          enabled = false
         }
       } catch (e2: Exception) {
         Log.w("AudioDSP", "Failed to init PresetReverb for session $sessionId: ${e2.message}")
@@ -415,6 +419,21 @@ class AudioDSPModule : Module() {
   }
 
   private fun applyCurrentDSP() {
+    AudioDSPProcessorState.update(
+      bandsDb = pendingBands,
+      preampDb = pendingPreamp,
+      balance = pendingBalance,
+      mono = pendingMono,
+      stereoExpansion = pendingStereoExpansion,
+      enabled = pendingEnabled,
+      crossfeed = pendingCrossfeed,
+      reverbEnabled = pendingReverbEnabled,
+      roomSize = pendingRoomSize,
+      damping = pendingDamping,
+      reverbWet = pendingReverbWet,
+      reverbDry = pendingReverbDry,
+      limitEnabled = pendingLimitEnabled
+    )
     if (activeSessionId <= 0) {
       try {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -437,7 +456,7 @@ class AudioDSPModule : Module() {
     //    réellement offertes par le matériel (souvent 5, pas 10).
     equalizer?.let { eq ->
       try {
-        eq.enabled = pendingEnabled
+        eq.enabled = false
         if (pendingEnabled) {
           val numBands = eq.numberOfBands.toInt()
           val levelRange = eq.bandLevelRange
@@ -477,7 +496,7 @@ class AudioDSPModule : Module() {
         val lowGain = if (pendingBands.isNotEmpty()) pendingBands[0] else 0.0
         val effectiveBass = if (lowGain > 0) lowGain else 0.0
         val strength = ((effectiveBass / 12.0) * 1000.0).toInt().coerceIn(0, 1000).toShort()
-        bb.enabled = pendingEnabled && strength > 0
+        bb.enabled = false
         if (strength > 0 && bb.strengthSupported) {
           bb.setStrength(strength)
         }
@@ -490,7 +509,7 @@ class AudioDSPModule : Module() {
     virtualizer?.let { virt ->
       try {
         val strength = ((pendingStereoExpansion / 100.0) * 1000.0).toInt().coerceIn(0, 1000).toShort()
-        virt.enabled = pendingEnabled && strength > 0
+        virt.enabled = false
         if (strength > 0 && virt.strengthSupported) {
           virt.setStrength(strength)
         }
@@ -512,7 +531,7 @@ class AudioDSPModule : Module() {
     // 5. PresetReverb (Réverbération)
     presetReverb?.let { pr ->
       try {
-        pr.enabled = pendingReverbEnabled && pendingReverbMix > 0
+        pr.enabled = false
         if (pendingReverbEnabled && pendingReverbMix > 0) {
           val preset = when {
             pendingRoomSize < 20 -> PresetReverb.PRESET_SMALLROOM

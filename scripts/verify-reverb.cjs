@@ -131,14 +131,15 @@ console.log('\n9. L etat Swift n est pas remplace apres capture');
  * d'échantillonnage réelle est passée à `setParameters`.
  */
 const engineSwift = rd('modules/expo-audio-dsp/ios/AudioDSPEngine.swift');
-check('reverbState est un let, pas un var', /private let reverbState = ReverbState\(\)/.test(engineSwift), 'true');
+const renderUnitSwift = rd('modules/expo-audio-dsp/ios/AudioDSPRenderUnit.swift');
+check('reverbState est un let, pas un var', /let reverb = ReverbState\(\)/.test(renderUnitSwift), 'true');
 check('la frequence passe par setParameters', /setParameters\(sampleRate:/.test(reverbSwift), 'true');
-// On cherche une AFFECTATION, pas la declaration : `let reverbState = ReverbState()`
+// On cherche une AFFECTATION, pas la declaration : `let reverb = ReverbState()`
 // est la seule construction legitime et ne doit pas etre comptee comme un
-// reassignement. Une reconstruction se lirait `reverbState = ReverbState(`.
-const reassignments = (engineSwift.match(/[^t]\sreverbState = ReverbState\(/g) || []).length;
+// reassignement. Une reconstruction se lirait `reverb = ReverbState(`.
+const reassignments = (renderUnitSwift.match(/[^t]\sreverb = ReverbState\(/g) || []).length;
 check('aucune reconstruction apres capture', reassignments, 0);
-check('construite une seule fois', (engineSwift.match(/ReverbState\(/g) || []).length, 1);
+check('construite une seule fois', (renderUnitSwift.match(/ReverbState\(/g) || []).length, 1);
 
 console.log('\n10. Les pastilles TONE et LIMIT ne sont pas des decoratifs');
 
@@ -177,7 +178,7 @@ check('web : TONE pondere les bandes', /const tone = dsp\.toneEnabled === false 
 check('pont : TONE pondere les bandes', /const tone = dsp\.toneEnabled === false \? 0 : 1/.test(bridge), 'true');
 check('web : LIMIT releve le plafond', /dsp\.limitEnabled/.test(web), 'true');
 check('pont : LIMIT est transmis', /dsp\.limitEnabled \?\? true/.test(bridge), 'true');
-check('natif : setEnabled est appele', /limiterState\.setEnabled\(limitEnabled\)/.test(engineSwift), 'true');
+check('natif : setEnabled est appele', /dspRenderState\.limiter\.setEnabled\(limitEnabled\)/.test(engineSwift), 'true');
 check('natif : setEnabled existe', /func setEnabled\(_ enabled: Bool\)/.test(rd('modules/expo-audio-dsp/ios/AudioDSPLimiter.swift')), 'true');
 
 // Le seuil de contournement doit etre le MEME des deux cotes : sinon la meme

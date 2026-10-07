@@ -1,0 +1,1 @@
+-keep class expo.modules.audiodsp.AudioDSPProcessor { public <init>(); }

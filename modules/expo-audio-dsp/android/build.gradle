@@ -11,6 +11,11 @@ android {
   defaultConfig {
     versionCode 1
     versionName '1.0.0'
+    consumerProguardFiles 'consumer-rules.pro'
+  }
+
+  dependencies {
+    implementation 'androidx.media3:media3-common:1.9.0'
   }
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_17

@@ -103,7 +103,7 @@ public class AudioDSPModule: Module {
             self.engine.trackArtist = artist
             self.engine.trackAlbum = album
             self.engine.setArtwork(from: artwork)
-            try self.engine.load(url: targetURL)
+            try await self.engine.load(url: targetURL)
 
             return [
                 "duration": self.engine.duration,

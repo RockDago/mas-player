@@ -370,6 +370,44 @@ final class ReverbState {
         lpR[0] = z1R; lpR[1] = z2R; lpR[2] = z3R; lpR[3] = z4R
     }
 
+    func processMono(samples: UnsafeMutablePointer<Float>, frameCount: Int) {
+        guard frameCount > 0 else { return }
+
+        let snapshot = lock.withLock { state -> Coeffs in state }
+        guard snapshot.configured, snapshot.feedback > 0 else { return }
+
+        let n = capacity
+        let step = snapshot.stepL
+        let b0 = snapshot.b0
+        let b1 = snapshot.b1
+        let b2 = snapshot.b2
+        let a1 = snapshot.a1
+        let a2 = snapshot.a2
+        let loopGain = snapshot.feedback + snapshot.coupling
+        let wet = snapshot.wet
+        let dry = snapshot.dry
+
+        var index = readIndexL
+        var z1 = lpL[0], z2 = lpL[1], z3 = lpL[2], z4 = lpL[3]
+
+        lineL.withUnsafeMutableBufferPointer { line in
+            for i in 0..<frameCount {
+                let input = samples[i]
+                let tap = line[index]
+                let filtered = b0 * tap + b1 * z1 + b2 * z2 + a1 * z3 + a2 * z4
+                z4 = z3; z3 = z2; z2 = z1; z1 = filtered
+                line[index] = input + loopGain * filtered
+                samples[i] = dry * input + wet * filtered
+
+                index += step
+                if index >= n { index -= n }
+            }
+        }
+
+        readIndexL = index
+        lpL[0] = z1; lpL[1] = z2; lpL[2] = z3; lpL[3] = z4
+    }
+
     // MARK: - Diagnostic
 
     /// Paramètres en vigueur, pour le diagnostic JS (`currentCoefficients`).

@@ -7,7 +7,7 @@
  * code réellement livré, pas sur une copie.
  */
 const ts = require('typescript');
-const { copyFileSync, writeFileSync, mkdtempSync, mkdirSync } = require('fs');
+const { copyFileSync, writeFileSync, mkdtempSync, mkdirSync, readFileSync } = require('fs');
 const { join } = require('path');
 const { tmpdir } = require('os');
 
@@ -216,11 +216,34 @@ for (const p of DEFAULT_PRESETS) {
 }
 ok &&= structOk;
 
-// --- 7. Sortie SANS limiteur : le défaut iOS actuel -----------------------
-// Cette section est le rappel du bug qu'elle sert à empêcher : la chaîne native
-// n'a pas de limiteur, donc ce qui compte est pic + préampli, et non la sortie
-// post-limiteur. Un preset « correct » ici peut rester écrêté là-bas.
-console.log('\n7. Sortie REELLE sur iOS (aucun limiteur sur la chaîne native)');
+// --- 7. Le chemin natif iOS applique effectivement le limiteur -------------
+const renderUnit = readFileSync('modules/expo-audio-dsp/ios/AudioDSPRenderUnit.swift', 'utf8');
+const rendererHasLimiter = /limiter\.processChannels\(/.test(renderUnit);
+const spatialIndex = renderUnit.indexOf('spatial.process(');
+const reverbIndex = renderUnit.indexOf('reverb.process(');
+const limiterIndex = renderUnit.indexOf('limiter.processChannels(');
+const rendererOrder =
+  spatialIndex >= 0 && reverbIndex > spatialIndex && limiterIndex > reverbIndex;
+const rendererWired = rendererHasLimiter && rendererOrder;
+ok &&= rendererWired;
+console.log('\n7. Sortie native : limiteur DSP raccordé après la spatialisation et la réverbération');
+console.log(`   ${rendererWired ? 'OK  ' : 'FAIL'} AudioDSPRenderUnit traite effectivement les buffers`);
+const androidProcessor = readFileSync(
+  'modules/expo-audio-dsp/android/src/main/java/expo/modules/audiodsp/AudioDSPProcessor.kt',
+  'utf8'
+);
+const androidStages = [
+  androidProcessor.indexOf('for (band in settings.filters.indices)'),
+  androidProcessor.indexOf('left *= settings.preampGain'),
+  androidProcessor.indexOf('val wideLeft ='),
+  androidProcessor.indexOf('if (reverbActive)'),
+  androidProcessor.indexOf('if (balance > 0f)'),
+  androidProcessor.indexOf('val targetGain =')
+];
+const androidWired = androidStages.every((position) => position >= 0) &&
+  androidStages.every((position, index) => index === 0 || position > androidStages[index - 1]);
+ok &&= androidWired;
+console.log(`   ${androidWired ? 'OK  ' : 'FAIL'} processeur PCM Android : EQ → préampli → spatial → réverb → balance → limiteur`);
 console.log('   preset                    pic   brut   post-lim  +élarg.  verdict');
 let rawOk = true;
 let clippedCount = 0;
@@ -237,11 +260,11 @@ for (const p of DEFAULT_PRESETS) {
   const good = widened <= -0.5;
   rawOk &&= good;
   console.log(`   ${p.id.padEnd(18)} ${peak.toFixed(1).padStart(5)} ${raw.toFixed(1).padStart(6)}   ${limited.toFixed(2).padStart(7)}  ${widened.toFixed(2).padStart(7)}`
-    + `  ${clipsToday ? 'ECRETE AUJOURDHUI' : 'ok'}${good ? '' : '  << DEPASSE APRES CORRECTION'}`);
+    + `  ${clipsToday ? 'limité' : 'ok'}${good ? '' : '  << DEPASSE APRES CORRECTION'}`);
 }
 ok &&= rawOk;
-console.log(`   -> ${clippedCount}/${DEFAULT_PRESETS.length} préréglages écrêtent aujourd'hui sur iOS`
-  + ` (le limiteur natif est l'étape 1 du correctif).`);
+console.log(`   -> ${clippedCount}/${DEFAULT_PRESETS.length} dépasseraient le plafond sans limiteur ;`
+  + ' le limiteur est maintenant raccordé au rendu iOS.');
 
 // --- 8. Le limiteur est-il la fonction qu'on croit ? ----------------------
 // Ce sont les valeurs que le limiteur Swift doit reproduire exactement

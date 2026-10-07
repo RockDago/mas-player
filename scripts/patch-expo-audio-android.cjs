@@ -314,8 +314,60 @@ console.log('[patch-expo-audio-android] AudioMediaSessionCallback.kt updated suc
 
 // ── 3. Patch AudioPlayer.kt and AudioModule.kt to expose audioSessionId ─────────
 const audioPlayerPath = path.join(expoAudioDir, 'AudioPlayer.kt');
+const audioRenderersFactoryPath = path.join(expoAudioDir, 'MASAudioRenderersFactory.kt');
+const audioRenderersFactory = `package expo.modules.audio
+
+import android.content.Context
+import android.util.Log
+import androidx.media3.common.audio.AudioProcessor
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+
+@UnstableApi
+internal class MASAudioRenderersFactory(context: Context) : DefaultRenderersFactory(context) {
+  override fun buildAudioSink(
+    context: Context,
+    enableFloatOutput: Boolean,
+    enableAudioOutputPlaybackParams: Boolean
+  ): AudioSink {
+    val processor = try {
+      Class.forName("expo.modules.audiodsp.AudioDSPProcessor")
+        .getDeclaredConstructor()
+        .newInstance() as AudioProcessor
+    } catch (error: ReflectiveOperationException) {
+      Log.e("MASPlayer.AudioDSP", "Could not load the native PCM processor; using the default audio sink.", error)
+      return super.buildAudioSink(context, enableFloatOutput, enableAudioOutputPlaybackParams)
+    } catch (error: ClassCastException) {
+      Log.e("MASPlayer.AudioDSP", "Native PCM processor does not implement Media3 AudioProcessor; using the default audio sink.", error)
+      return super.buildAudioSink(context, enableFloatOutput, enableAudioOutputPlaybackParams)
+    }
+
+    return DefaultAudioSink.Builder(context)
+      .setAudioProcessors(arrayOf(processor))
+      .setEnableFloatOutput(enableFloatOutput)
+      .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+      .build()
+  }
+}
+`;
+if (!fs.existsSync(audioRenderersFactoryPath) ||
+    fs.readFileSync(audioRenderersFactoryPath, 'utf8') !== audioRenderersFactory) {
+  fs.writeFileSync(audioRenderersFactoryPath, audioRenderersFactory, 'utf8');
+  console.log('[patch-expo-audio-android] MASAudioRenderersFactory.kt created.');
+}
 if (fs.existsSync(audioPlayerPath)) {
   let playerContent = fs.readFileSync(audioPlayerPath, 'utf8');
+  if (!playerContent.includes('MASAudioRenderersFactory(context)')) {
+    playerContent = playerContent.replace(
+      'ExoPlayer.Builder(context).apply {',
+      'ExoPlayer.Builder(context, MASAudioRenderersFactory(context)).apply {'
+    );
+    if (!playerContent.includes('MASAudioRenderersFactory(context)')) {
+      throw new Error('[patch-expo-audio-android] Could not wire MASAudioRenderersFactory into AudioPlayer.kt.');
+    }
+  }
   if (!playerContent.includes('setAudioSessionId')) {
     playerContent = playerContent.replace(
       'player = ExoPlayer.Builder(context)',
