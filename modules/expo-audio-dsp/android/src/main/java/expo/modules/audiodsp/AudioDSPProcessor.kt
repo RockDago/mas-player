@@ -185,6 +185,31 @@ class AudioDSPProcessor : BaseAudioProcessor() {
   private var dampingRight = 0f
   private var limiterEnvelope = 1f
 
+  companion object {
+    /**
+     * Trace de vie du processeur, lue par `AudioDSPModule.getDiagnosticsAsync`.
+     *
+     * Le seul câblage de ce processeur est une réflexion dans le sink Media3
+     * (`MASAudioRenderersFactory`, injecté par un patch `postinstall`). Tout échec
+     * à cet endroit est un `Log.e` que rien ne relit : le module répond alors
+     * `true` à `isNativeEQAvailable()`, les faders bougent, et l'EQ est morte en
+     * silence. Ces compteurs sont ce qui rend ce cas visible depuis l'overlay.
+     */
+    @Volatile
+    @JvmStatic
+    var installed: Boolean = false
+
+    /** Buffers effectivement passés dans les biquads. */
+    @Volatile
+    @JvmStatic
+    var processedBuffers: Long = 0
+
+    /** Dernier `channelCount` accepté — un format stéréo inattendu le trahit. */
+    @Volatile
+    @JvmStatic
+    var lastChannels: Int = 0
+  }
+
   override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
     if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT &&
       inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT
@@ -192,6 +217,8 @@ class AudioDSPProcessor : BaseAudioProcessor() {
       format = AudioProcessor.AudioFormat.NOT_SET
       return AudioProcessor.AudioFormat.NOT_SET
     }
+    installed = true
+    lastChannels = inputAudioFormat.channelCount
     format = inputAudioFormat
     AudioDSPProcessorState.configure(inputAudioFormat.sampleRate)
     val maximumDelay = (inputAudioFormat.sampleRate * MAX_REVERB_DELAY_SECONDS).roundToInt() + 2
@@ -212,6 +239,7 @@ class AudioDSPProcessor : BaseAudioProcessor() {
     }
 
     val settings = AudioDSPProcessorState.current()
+    processedBuffers++
     val bytesPerSample = if (format.encoding == C.ENCODING_PCM_FLOAT) 4 else 2
     val frames = inputBuffer.remaining() / (channels * bytesPerSample)
     val output = replaceOutputBuffer(frames * channels * bytesPerSample)

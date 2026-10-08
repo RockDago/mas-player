@@ -264,6 +264,29 @@ class AudioDSPModule : Module() {
       applyCurrentDSP()
     }
 
+    /**
+     * État de la chaîne DSP, pour l'overlay de diagnostic.
+     *
+     * `processorInstalled` et `processedBuffers` répondent à la seule question
+     * qui compte sur Android : le processeur PCM est-il réellement dans le sink
+     * Media3, et du son le traverse-t-il ? Le module hardware `Equalizer`, lui,
+     * est laissé `enabled = false` en permanence — le DSP passe par le
+     * processeur, pas par lui — donc `hardwareEqEnabled` vaut `false` sur un
+     * appareil sain. Ce n'est pas une panne à elle seule.
+     */
+    AsyncFunction("getDiagnosticsAsync") {
+      mapOf(
+        "sessionId" to activeSessionId,
+        "processorInstalled" to AudioDSPProcessor.installed,
+        "processedBuffers" to AudioDSPProcessor.processedBuffers,
+        "processorChannels" to AudioDSPProcessor.lastChannels,
+        "hardwareEqEnabled" to (equalizer?.enabled ?: false),
+        "hardwareEqBands" to (equalizer?.numberOfBands?.toInt() ?: 0),
+        "pendingBands" to pendingBands,
+        "pendingEnabled" to pendingEnabled
+      )
+    }
+
     AsyncFunction("getSystemVolumeAsync") {
       try {
         val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager

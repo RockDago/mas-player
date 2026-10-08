@@ -1235,9 +1235,53 @@ class UniversalPlayerManager {
     }
     // Moteur natif iOS / Android : sérialisé, sinon un réglage ancien peut atterrir
     // après le dernier geste de fader et rester affiché.
-    if ((Platform.OS === 'ios' || Platform.OS === 'android') && isNativeEQAvailable()) {
+    //
+    // Sur iOS, `nativeEngineActive` n'est pas redondant avec
+    // `isNativeEQAvailable()` : le second dit « le module existe », le premier
+    // dit « c'est CE moteur qui porte le son ». Ils divergent quand
+    // `loadNativeTrack` échoue et que `loadViaNativeEQ` bascule en silence sur
+    // expo-audio — dont le chemin audio ne contient aucun `AVAudioUnitEQ`. Sans
+    // cette garde, l'égaliseur était appliqué au silence : les faders bougeaient,
+    // `setDSPAsync` acceptait les gains, et rien ne s'entendait.
+    //
+    // Android s'en passe volontairement : là, `nativeEngineActive` reste `false`
+    // en permanence (`loadViaNativeEQ` est le seul à le poser, et il est
+    // iOS-seul). Sur Android le son porte toujours par expo-audio, et le
+    // processeur PCM se nourrit d'un état global lu par buffer — il n'a pas
+    // besoin que le player y ait chargé de piste. La session audio, elle, est
+    // déjà synchronisée juste au-dessus.
+    if (
+      (Platform.OS === 'ios' || Platform.OS === 'android') &&
+      isNativeEQAvailable() &&
+      (Platform.OS === 'android' || this.nativeEngineActive)
+    ) {
       void this.enqueueNative(() => applyNativeDSP(dsp));
     }
+  }
+
+  /**
+   * Le moteur DSP natif porte-t-il réellement l'audio en cours ?
+   *
+   * Distinct de `isNativeEQAvailable()`, qui répond à « le module est-il
+   * installé ? ». Exposé pour l'overlay de diagnostic : c'est la seule donnée
+   * qui distingue « les gains partent dans un moteur muet » de « les gains
+   * n'arrivent nulle part ».
+   *
+   * Ne vaut que sur iOS : sur Android le drapeau reste `false` par
+   * construction (cf. la garde de `setDSP`).
+   */
+  isNativeEngineActive(): boolean {
+    return this.nativeEngineActive;
+  }
+
+  /** Session audio Android associée aux effets matériels. 0 = non établie. */
+  getActiveAndroidSessionId(): number {
+    return this.activeAndroidSessionId;
+  }
+
+  /** Dernier état DSP reçu, rejoué dès que le moteur natif devient actif. */
+  getPendingDsp(): DSPState | null {
+    return this.pendingDsp;
   }
 
   async stop() {

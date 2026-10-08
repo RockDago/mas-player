@@ -835,6 +835,34 @@ final class AudioDSPEngine: NSObject {
         ]
     }
 
+    /**
+     * État lu *par le moteur*, pas ce que JS croit avoir envoyé.
+     *
+     * C'est la donnée qui départage les deux pannes les plus fréquentes :
+     *
+     * - `bandGains` reflète les gains que l'overlay affiche dans son payload →
+     *   le pont fonctionne et l'unité reçoit bien ce qu'on lui donne.
+     * - `bandGains` vaut `[0, 0, ...]` pendant que le payload porte des gains →
+     *   quelque chose les a annulées entre le pont et l'unité.
+     *
+     * `engineRunning` et `playerNodeAttached` complètent le tableau : si le graphe
+     * tourne mais qu'aucune piste n'est chargée, les EQ ne peuvent rien produire,
+     * même parfaitement réglés.
+     */
+    func getDiagnostics() -> [String: Any] {
+        return [
+            "engineRunning": engine.isRunning,
+            "playerPlaying": playerNode.isPlaying,
+            "hasTrack": audioFile != nil,
+            "sampleRate": Double(sampleRate),
+            "eqEnabled": eqEnabled,
+            "bandGains": eqUnit.bands.map { Double($0.gain) },
+            "bandBypass": eqUnit.bands.map { $0.bypass },
+            "globalGain": Double(eqUnit.globalGain),
+            "preampLinear": Double(preampNode.outputVolume),
+        ]
+    }
+
     // MARK: - Progression
 
     private var progressTimer: Timer?

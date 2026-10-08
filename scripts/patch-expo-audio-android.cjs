@@ -15,12 +15,22 @@ const controlsServicePath = path.join(expoAudioDir, 'service', 'AudioControlsSer
 const sessionCallbackPath = path.join(expoAudioDir, 'service', 'AudioMediaSessionCallback.kt');
 
 if (!fs.existsSync(controlsServicePath) || !fs.existsSync(sessionCallbackPath)) {
-  console.log('[patch-expo-audio-android] expo-audio service files not found, skipping.');
-  process.exit(0);
+  // Sortir ici supprimait aussi la section 3, qui installe le processeur DSP
+  // dans le sink Media3. Un renommage de ces fichiers côté expo-audio désactivait
+  // donc l'égaliseur Android en entier, avec un code de sortie 0 : le build passait,
+  // `isNativeEQAvailable()` répondait `true`, les faders bougeaient, et aucun son
+  // ne traversait le moindre filtre. La section 3 est désormais exécutée quoi
+  // qu'il arrive, et l'absence des fichiers de service n'arrête plus que les
+  // contrôles de transport.
+  console.warn('[patch-expo-audio-android] expo-audio service files not found — notification controls will be left untouched.');
 }
 
 // ── 1. Patch AudioControlsService.kt ─────────────────────────────────────────
-let controlsService = fs.readFileSync(controlsServicePath, 'utf8');
+// Les sections 1 et 2 ne concernent que les contrôles de notification : elles
+// sont sautées si les fichiers manquent, mais cela ne doit plus empêcher la
+// section 3 (le DSP) de s'appliquer.
+if (fs.existsSync(controlsServicePath)) {
+  let controlsService = fs.readFileSync(controlsServicePath, 'utf8');
 
 // 1a. Constantes d'action
 if (!controlsService.includes('ACTION_NEXT')) {
@@ -195,7 +205,8 @@ if (controlsService.includes('currentPlayer?.assignBasicMediaSession()\n    stop
 }
 
 fs.writeFileSync(controlsServicePath, controlsService, 'utf8');
-console.log('[patch-expo-audio-android] AudioControlsService.kt updated successfully.');
+  console.log('[patch-expo-audio-android] AudioControlsService.kt updated successfully.');
+}
 
 // ── 2. Patch AudioMediaSessionCallback.kt ─────────────────────────────────────
 const newSessionCallbackContent = `package expo.modules.audio.service
@@ -309,8 +320,10 @@ class AudioMediaSessionCallback : MediaSession.Callback {
 }
 `;
 
-fs.writeFileSync(sessionCallbackPath, newSessionCallbackContent, 'utf8');
-console.log('[patch-expo-audio-android] AudioMediaSessionCallback.kt updated successfully.');
+if (fs.existsSync(sessionCallbackPath)) {
+  fs.writeFileSync(sessionCallbackPath, newSessionCallbackContent, 'utf8');
+  console.log('[patch-expo-audio-android] AudioMediaSessionCallback.kt updated successfully.');
+}
 
 // ── 3. Patch AudioPlayer.kt and AudioModule.kt to expose audioSessionId ─────────
 const audioPlayerPath = path.join(expoAudioDir, 'AudioPlayer.kt');
@@ -437,3 +450,31 @@ if (fs.existsSync(audioModulePath)) {
 }
 
 console.log('[patch-expo-audio-android] All Android audio & notification patches applied.');
+
+// ── Assertion finale : le DSP est-il réellement installé ? ────────────────────
+// Tout ce qui précède peut échouer en silence — un fichier déplacé, un motif de
+// remplacement qui ne correspond plus, une réécriture manuelle de node_modules.
+// L.equaliseur resterait alors muet sans qu'aucune erreur ne remonte : le module
+// est bien enregistré, donc `isNativeEQAvailable()` vaut `true`, les faders
+// bougent, et `setDSPAsync` accepte des gains qui ne rejoignent aucun filtre.
+//
+// On vérifie donc l'état réel du disque et on échoue bruyamment si le
+// processeur n'est pas dans le sink. C'est la seule garantie qu'un APK
+// construit depuis cette arborescence a bien une chaîne EQ.
+if (!fs.existsSync(audioPlayerPath)) {
+  throw new Error(
+    '[patch-expo-audio-android] AudioPlayer.kt introuvable : le processeur DSP ne peut pas être câblé, et l\'égaliseur Android resterait muet.'
+  );
+}
+const finalPlayerContent = fs.readFileSync(audioPlayerPath, 'utf8');
+if (!/ExoPlayer\.Builder\(context,\s*MASAudioRenderersFactory\(context\)\)/.test(finalPlayerContent)) {
+  throw new Error(
+    '[patch-expo-audio-android] MASAudioRenderersFactory absent du builder ExoPlayer : le PCM processor n\'est pas dans le sink, l\'égaliseur Android est mort.'
+  );
+}
+if (!fs.existsSync(audioRenderersFactoryPath)) {
+  throw new Error(
+    '[patch-expo-audio-android] MASAudioRenderersFactory.kt n\'a pas été écrit : l\'égaliseur Android est mort.'
+  );
+}
+console.log('[patch-expo-audio-android] DSP processor verified in the Media3 audio sink.');

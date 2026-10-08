@@ -26,10 +26,17 @@ jobs:
       # répartition des bandes — pas les constantes. Le commit `eef2172` a
       # débranché trois étages iOS en laissant `verify:sync` au vert : sans une
       # vérification qui regarde le câblage, cette régression passe inaperçue.
+      #
+      # `verify:bridge` comble le maillon que les deux autres ignorent : le
+      # contenu du payload `setDSPAsync`. Tous les harnais existants sont
+      # textuels ou portent sur les constantes — aucun n'exerce `applyNativeDSP`.
+      # Une régression là (champ renommé, bande perdue, `enabled` écrasé) rendait
+      # l'égaliseur muet avec les quatre harnais au vert.
       - name: 🎛️ Vérifier le câblage DSP natif
         run: |
           npm run verify:native
           npm run verify:sync
+          npm run verify:bridge
 
   build-ipa:
     name: Build Unsigned iOS IPA

@@ -148,6 +148,11 @@ public class AudioDSPModule: Module {
             return AVAudioSession.sharedInstance().outputVolume
         }
 
+        /// État du moteur tel qu'il le vit, pour l'overlay de diagnostic.
+        AsyncFunction("getDiagnosticsAsync") { () -> [String: Any] in
+            return self.engine.getDiagnostics()
+        }
+
         AsyncFunction("clearNowPlayingAsync") { () -> Void in
             self.engine.clearNowPlaying()
         }

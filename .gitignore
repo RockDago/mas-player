@@ -41,3 +41,6 @@ logs_*
 # generated native folders
 /ios
 /android
+
+# editor settings, local to the machine running the editor
+.vscode/

@@ -334,7 +334,7 @@ export async function seekNative(seconds: number): Promise<void> {
 }
 
 /** Les quatorze champs DSP transmis au natif, dans l'ordre de `AudioDSPModule`. */
-interface DSPPayload {
+export interface DSPPayload {
   bands: number[];
   preamp: number;
   balance: number;
@@ -349,6 +349,77 @@ interface DSPPayload {
   reverbWet: number;
   reverbDry: number;
   limitEnabled: boolean;
+}
+
+/* ── Diagnostic de la chaîne DSP ──────────────────────────────────────────── */
+
+/**
+ * Trace du dernier `setDSPAsync` réellement émis, et de ce qu'il a produit.
+ *
+ * Existant parce que la chaîne peut casser *sans lever la moindre exception* :
+ * le module est présent, l'appel part, le natif l'accepte — et le son ne
+ * traverse pas le moteur qui reçoit les gains (cf. la garde de
+ * `playerManager.setDSP`). Sans trace, ce cas est indiscernable d'un EQ
+ * simplement inaudible. `DSPDebugOverlay` lit ce bloc.
+ */
+const dspTrace: {
+  callCount: number;
+  lastPayload: DSPPayload | null;
+  lastError: string | null;
+  lastErrorAt: number | null;
+  lastSuccessAt: number | null;
+} = {
+  callCount: 0,
+  lastPayload: null,
+  lastError: null,
+  lastErrorAt: null,
+  lastSuccessAt: null,
+};
+
+/** État de diagnostic de la chaîne DSP native, à lire depuis l'overlay. */
+export interface NativeDSPDiagnostics {
+  platform: string;
+  /** Le module `AudioDSP` a-t-il été trouvé par le pont ? */
+  moduleFound: boolean;
+  /**
+   * Méthodes réellement présentes sur l'objet natif. Détecte un module
+   * partiellement lié : `requireOptionalNativeModule` renvoie un objet non
+   * nul même quand une `AsyncFunction` n'a pas été compilée dedans, et
+   * l'appel suivant échoue alors au `try/catch`.
+   */
+  methods: string[];
+  callCount: number;
+  lastPayload: DSPPayload | null;
+  lastError: string | null;
+  /** Millisecondes écoulées depuis le dernier appel accepté par le natif. */
+  lastSuccessAgeMs: number | null;
+  lastErrorAgeMs: number | null;
+}
+
+export function getNativeDSPDiagnostics(): NativeDSPDiagnostics {
+  const module = getNativeModule();
+  const methods: string[] = [];
+  if (module) {
+    // Les méthodes d'un module expo sont des accesseurs sur le proxy : les
+    // énumérer via `Object.keys` est le seul moyen de savoir ce qui existe
+    // réellement sans appeler chaque fonction.
+    for (const key of Object.keys(module)) {
+      if (typeof (module as unknown as Record<string, unknown>)[key] === 'function') {
+        methods.push(key);
+      }
+    }
+  }
+  const now = Date.now();
+  return {
+    platform: Platform.OS,
+    moduleFound: module !== null,
+    methods,
+    callCount: dspTrace.callCount,
+    lastPayload: dspTrace.lastPayload,
+    lastError: dspTrace.lastError,
+    lastSuccessAgeMs: dspTrace.lastSuccessAt === null ? null : now - dspTrace.lastSuccessAt,
+    lastErrorAgeMs: dspTrace.lastErrorAt === null ? null : now - dspTrace.lastErrorAt,
+  };
 }
 
 /**
@@ -411,12 +482,14 @@ export async function applyNativeDSP(dsp: DSPState): Promise<void> {
     limitEnabled: dsp.limitEnabled ?? true,
   };
 
+  dspTrace.callCount += 1;
+  dspTrace.lastPayload = payload;
+
   try {
     if (Platform.OS === 'android') {
-      // Le DSL `AsyncFunction` d'expo-modules-core s'arrête à huit paramètres :
-      // impossible de passer quatorze scalaires depuis Kotlin. Android reçoit donc
-      // un seul dictionnaire. iOS garde sa signature positionnelle — Swift n'a pas
-      // ce plafond — et les deux formes portent le même jeu de champs.
+      // Android reçoit un seul dictionnaire, iOS ses quatorze arguments
+      // positionnels. Les deux formes portent le même jeu de champs, et
+      // `verify:dsp-bridge` verrouille leur accord.
       await (module.setDSPAsync as unknown as (p: DSPPayload) => Promise<void>)(payload);
     } else {
       await module.setDSPAsync(
@@ -436,7 +509,10 @@ export async function applyNativeDSP(dsp: DSPState): Promise<void> {
         payload.limitEnabled
       );
     }
+    dspTrace.lastSuccessAt = Date.now();
   } catch (err) {
+    dspTrace.lastError = err instanceof Error ? err.message : String(err);
+    dspTrace.lastErrorAt = Date.now();
     console.warn('Native AudioDSP setDSPAsync error:', err);
   }
 }

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
+  Animated,
   StyleSheet,
   Text,
   View,
@@ -27,7 +28,6 @@ import {
 
 import { Track, DSPState, EqualizerPreset, Playlist } from './src/types/audio';
 import { DEFAULT_PRESETS } from './src/constants/presets';
-import { INITIAL_TRACKS } from './src/data/demoTracks';
 import { formatTime } from './src/services/audioService';
 import { playerManager } from './src/services/playerManager';
 import {
@@ -36,6 +36,7 @@ import {
   DEFAULT_APP_SETTINGS,
 } from './src/services/storageService';
 import { EqualizerView } from './src/components/EqualizerView';
+import DSPDebugOverlay from './src/components/DSPDebugOverlay';
 import { NeonWaveVisualizer } from './src/components/NeonWaveVisualizer';
 import { ProgressBar } from './src/components/ProgressBar';
 import { TrackListModal } from './src/components/TrackListModal';
@@ -97,7 +98,7 @@ function MainApp() {
   // une mesure — voir src/theme/insets.ts.
   const insets = useScreenInsets();
 
-  const [tracks, setTracks] = useState<Track[]>(INITIAL_TRACKS);
+  const [tracks, setTracks] = useState<Track[]>([]);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(0);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -347,19 +348,23 @@ hasTrackRef.current = hasTrack;
       if (Platform.OS === 'web' && currentTrackList.length > 0) {
         currentTrackList = await restoreWebAudioBlobs(currentTrackList);
       }
-      if (currentTrackList.length === 0) {
-        currentTrackList = INITIAL_TRACKS;
-      }
+      // Migration : les pistes de démonstration sont retirées du code, mais une
+      // installation antérieure les a pu PERSISTER dans la bibliothèque (elles
+      // étaient la liste initiale, donc « les morceaux importés » pour le
+      // stockage). Sans ce filtre, l'application continuerait de les afficher
+      // indéfiniment, puisque rien ne les supprime du stockage — la seule
+      // trace qui en reste est l'URI et l'identifiant.
+      currentTrackList = currentTrackList.filter((t) => !t.id.startsWith('demo-'));
       if (currentTrackList.length > 0) {
         setTracks(currentTrackList);
         tracksRef.current = currentTrackList;
       }
 
-      // Les pistes de démonstration ont été retirées de l'application, mais les
-      // playlists et la file d'attente persistées en référencent encore les
-      // identifiants. Sans ce filtre, une install mise à jour afficherait
-      // « 1 morceau » pour une piste qui n'existe plus, et jouer un élément de la
-      // file le ferait disparaître sans rien jouer (`idx === -1`, sans `else`).
+      // Les pistes retirées (démonstration) peuvent encore être référencées par
+      // les playlists et la file d'attente persistées. Sans ce filtre, une
+      // install mise à jour afficherait « 1 morceau » pour une piste qui
+      // n'existe plus, et jouer un élément de la file le ferait disparaître
+      // sans rien jouer (`idx === -1`, sans `else`).
       // On ne garde donc que ce qui résout encore dans la bibliothèque.
       const validIds = new Set(currentTrackList.map((t) => t.id));
       if (savedPlaylists && savedPlaylists.length > 0) {
@@ -1429,7 +1434,7 @@ hasTrackRef.current = hasTrack;
               </View>
 
               {/* Quick Utility Pill Buttons Row: EQ, Timer, Repeat, Shuffle */}
-              <View
+              <Animated.View
                 {...fadePanHandlers}
                 style={[
                   styles.utilityPillsRow,
@@ -1512,10 +1517,10 @@ hasTrackRef.current = hasTrack;
                     />
                   </TouchableOpacity>
                 </View>
-              </View>
+              </Animated.View>
 
               {/* Transport controls — tailles adaptatives selon la hauteur de l'écran */}
-              <View
+              <Animated.View
                 style={[
                   styles.transportRow,
                   { marginVertical: isShortScreen ? 4 : 8 },
@@ -1596,7 +1601,7 @@ hasTrackRef.current = hasTrack;
                 >
                   <Ionicons name="play-forward" size={isShortScreen ? 13 : 15} color={hasTrack ? '#FFFFFF' : '#64748B'} />
                 </TouchableOpacity>
-              </View>
+              </Animated.View>
 
               {/* Barre de progression scrubbable */}
               <ProgressBar
@@ -2191,7 +2196,12 @@ hasTrackRef.current = hasTrack;
 export default function App() {
   return (
     <SafeAreaProvider>
+      {/* L'overlay est monté ici, hors de `MainApp`, pour rester présent sur
+          tous ses retours anticipés — écran de chargement compris. C'est
+          précisément au démarrage que la chaîne DSP se met en place, donc
+          c'est là qu'il faut pouvoir l'observer. */}
       <MainApp />
+      <DSPDebugOverlay />
     </SafeAreaProvider>
   );
 }
@@ -2732,5 +2742,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-
-
