@@ -130,26 +130,18 @@ const DEFAULT_DSP: DSPState = {
   mono: false,
   tempoEnabled: false,
 
-  // Réverbération éteinte par défaut : ajouter une queue à un morceau qui n'en
-  // demande pas est une altération auditive, pas une amélioration. Les deux
-  // valeurs de knob reprennent celles que l'onglet FX affichait déjà avant que
-  // la réverbération n'existe — l'interface ne « bouge » donc pas au premier
-  // démarrage.
+  // Valeurs par défaut conservées pour l'affichage des commandes FX.
   reverbEnabled: false,
   roomSize: 40,
   damping: 50,
   reverbMix: 25,
 
-  // TONE actif, LIMIT actif. `limitEnabled` vaut `true` et non `false` : le
-  // limiteur est la garantie que la chaîne ne dépasse jamais le zéro numérique.
-  // Le laisser éteint par défaut reviendrait à retirer cette garantie à un
-  // utilisateur qui ne l'a pas demandée — et le laisser éteint par erreur
-  // ferait écrêter un préréglage consensuel sur les deux plateformes.
+  // États par défaut conservés pour l'affichage des commandes TONE et LIMIT.
   toneEnabled: true,
   limitEnabled: true,
 };
 
-/** Nombre de bandes attendu par l'UI et par les moteurs DSP. */
+/** Nombre de bandes attendu par l'interface et les préréglages affichés. */
 const DSP_BAND_COUNT = 10;
 
 /**
@@ -188,17 +180,13 @@ function normalizeDSP(raw: unknown): DSPState {
     mono: typeof input.mono === 'boolean' ? input.mono : DEFAULT_DSP.mono,
     tempoEnabled:
       typeof input.tempoEnabled === 'boolean' ? input.tempoEnabled : DEFAULT_DSP.tempoEnabled,
-    // Un état DSP écrit avant l'existence de la réverbération n'a aucun de ces
-    // quatre champs : sans ce repli explicite, `roomSize` vaudrait `undefined`
-    // et le moteur natif recevrait un `NaN` en delay.
+    // Les anciennes sauvegardes peuvent ne pas contenir les réglages FX.
     reverbEnabled:
       typeof input.reverbEnabled === 'boolean' ? input.reverbEnabled : DEFAULT_DSP.reverbEnabled,
     roomSize: num(input.roomSize, DEFAULT_DSP.roomSize),
     damping: num(input.damping, DEFAULT_DSP.damping),
     reverbMix: num(input.reverbMix, DEFAULT_DSP.reverbMix),
-    // Même cas qu'au-dessus : un état écrit avant l'existence de ces deux
-    // pastilles. Le repli doit valoir « actives » — l'état par défaut — et non
-    // le neutre, sinon ouvrir une session ancienne éteindrait le limiteur.
+    // Les anciennes sauvegardes peuvent ne pas contenir ces deux commandes.
     toneEnabled:
       typeof input.toneEnabled === 'boolean' ? input.toneEnabled : DEFAULT_DSP.toneEnabled,
     limitEnabled:

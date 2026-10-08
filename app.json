@@ -59,7 +59,7 @@
             "enableMinifyInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
             "enablePngCrunchInReleaseBuilds": true,
-            "extraProguardRules": "-keep class com.swmansion.reanimated.** { *; }\n-keep class * extends expo.modules.kotlin.modules.Module { *; }\n-keep class expo.modules.audiodsp.** { *; }\n-keep class expo.modules.audio.** { *; }\n-keep class android.media.audiofx.** { *; }\n-keep class com.facebook.hermes.unicode.** { *; }\n-keep class com.facebook.jni.** { *; }",
+            "extraProguardRules": "-keep class com.swmansion.reanimated.** { *; }\n-keep class * extends expo.modules.kotlin.modules.Module { *; }\n-keep class expo.modules.audio.** { *; }\n-keep class com.facebook.hermes.unicode.** { *; }\n-keep class com.facebook.jni.** { *; }",
             "packagingOptions": {
               "exclude": [
                 "lib/armeabi-v7a/**",

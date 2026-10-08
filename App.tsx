@@ -36,7 +36,6 @@ import {
   DEFAULT_APP_SETTINGS,
 } from './src/services/storageService';
 import { EqualizerView } from './src/components/EqualizerView';
-import DSPDebugOverlay from './src/components/DSPDebugOverlay';
 import { NeonWaveVisualizer } from './src/components/NeonWaveVisualizer';
 import { ProgressBar } from './src/components/ProgressBar';
 import { TrackListModal } from './src/components/TrackListModal';
@@ -254,38 +253,6 @@ hasTrackRef.current = hasTrack;
     playerManager.setVolume(dsp.volume ?? 100);
     playerManager.setPlaybackRate(dsp.tempoEnabled ? (dsp.tempo ?? 1.0) : 1.0);
   }, [dsp.volume, dsp.tempo, dsp.tempoEnabled]);
-
-  // Pousse la courbe d'égalisation complète vers le moteur audio.
-  // `bands.join(',')` sert de dépendance : les faders créent un nouveau tableau
-  // à chaque geste, et une comparaison par référenceylation ne se déclencherait
-  // donc pas de façon fiable.
-  useEffect(() => {
-    playerManager.setDSP(dsp);
-  }, [
-    dsp.enabled,
-    dsp.presetId,
-    dsp.bass,
-    dsp.treble,
-    dsp.preamp,
-    dsp.bands.join(','),
-    dsp.balance,
-    dsp.stereoExpansion,
-    dsp.crossfeed,
-    dsp.volume,
-    dsp.mono,
-    // Réverbération : sans ces quatre lignes, tourner un knob de l'onglet FX
-    // ne déclencherait pas cet effet, et l'état resterait correct sans jamais
-    // atteindre les moteurs — le symptôme exact du bug qu'on corrige ici.
-    dsp.reverbEnabled,
-    dsp.roomSize,
-    dsp.damping,
-    dsp.reverbMix,
-    // TONE et LIMIT : même raison. Ces deux pastilles écrivent `DSPState` comme
-    // les quatre lignes ci-dessus ; sans ces dépendances, les poser modifierait
-    // l'état sans rien passer aux moteurs.
-    dsp.toneEnabled,
-    dsp.limitEnabled,
-  ]);
 
   // Auto-play audio & Restore previous session on startup
   useEffect(() => {
@@ -2196,12 +2163,7 @@ hasTrackRef.current = hasTrack;
 export default function App() {
   return (
     <SafeAreaProvider>
-      {/* L'overlay est monté ici, hors de `MainApp`, pour rester présent sur
-          tous ses retours anticipés — écran de chargement compris. C'est
-          précisément au démarrage que la chaîne DSP se met en place, donc
-          c'est là qu'il faut pouvoir l'observer. */}
       <MainApp />
-      <DSPDebugOverlay />
     </SafeAreaProvider>
   );
 }

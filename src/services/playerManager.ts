@@ -5,27 +5,7 @@ import {
   setAudioModeAsync,
   requestNotificationPermissionsAsync,
 } from 'expo-audio';
-import { DSPState } from '../types/audio';
 import { WebAudioEngine } from './webAudioEngine';
-import {
-  applyNativeDSP,
-  setNativeVolume,
-  loadNativeTrack,
-  isNativeEQAvailable,
-  addNativeProgressListener,
-  addNativeRemoteCommandListener,
-  addNativeSystemVolumeListener,
-  getNativeSystemVolume,
-  clearNativeNowPlaying,
-  playNative,
-  pauseNative,
-  stopNative,
-  setNativePlaybackRate,
-  seekNative,
-  getNativeStatus,
-  setNativeAudioSessionId,
-  setNativeAutoResumeOnInterruption,
-} from './nativeAudioDSP';
 import { beatStore } from './beatStore';
 import { getLiveWebTrackUri } from './webAudioStorage';
 
@@ -66,12 +46,14 @@ class UniversalPlayerManager {
   private currentLoadId = 0;
 
   // --- Commandes distantes (écran verrouillé / notification / écouteurs) ---
-  private remoteSub: { remove: () => void } | null = null;
   /**
    * Abonnement aux commandes de notification Android, lié au lecteur courant.
    *
-   * Distinct de `remoteSub`, qui écoute le module natif iOS : Android reçoit
-   * ses commandes par le lecteur, et le lecteur est recréé à chaque piste.
+   * Android reçoit ses commandes par le lecteur (`onRemoteCommand`, événement
+   * ajouté à `expo-audio` par `scripts/patch-expo-audio-android.cjs`), et le
+   * lecteur est recréé à chaque piste. Sur iOS, `expo-audio` câble lui-même
+   * play/pause/seek sur `MPRemoteCommandCenter` et n'émet rien à JS : il n'y a
+   * donc pas d'abonnement à tenir de ce côté.
    */
   private androidRemoteSub: { remove: () => void } | null = null;
   private remoteCommandListeners = new Set<(action: RemoteCommandAction) => void>();
@@ -79,7 +61,7 @@ class UniversalPlayerManager {
   // --- Détection de rythme -----------------------------------------
   /** Abonnement PCM natif, à retirer à chaque changement de piste. */
   private sampleSubscription: { remove: () => void } | null = null;
-  private webBeatBuffer: Float32Array | null = null;
+  private webBeatBuffer: Float32Array<ArrayBuffer> | null = null;
   private webBeatRaf: number | null = null;
   private beatWatchdog: ReturnType<typeof setInterval> | null = null;
 
@@ -101,150 +83,38 @@ class UniversalPlayerManager {
    */
   private isBackgrounded = false;
 
-  /**
-   * Dernier état DSP reçu. Conservé pour que les réglages appliqués avant
-   * l'existence du graphe (au tout premier rendu) ne soient pas perdus :
-   * ils sont rejoués dès que le moteur est construit.
-   */
-  private pendingDsp: DSPState | null = null;
   private currentPlaybackRate = 1.0;
-
-  // --- Moteur DSP natif iOS (AVAudioEngine) -------------------------
-  /**
-   * Vrai tant que le graphe `AudioDSP` porte réellement la lecture.
-   *
-   * `createAudioPlayer` d'expo-audio et l'`AVAudioEngine` du module sont deux
-   * sources audio concurrentes : brancher les deux ferait jouer deux fois la
-   * même piste. Sur iOS natif on utilise donc **uniquement** le moteur du
-   * module (c'est lui qui contient l'EQ), et `expo-audio` ne sert plus que de
-   * secours — quand le module est absent, typiquement sous Expo Go.
-   */
-  private nativeEngineActive = false;
-  /** Abonnement au `onProgress` du module natif, à retirer au relâchement. */
-  private nativeProgressSub: { remove: () => void } | null = null;
+  private currentVolume = 100;
 
   // --- Volume système ------------------------------------------------
   /**
    * Volume de l'appareil en pourcentage, ou `null` quand il est illisible.
    *
-   * Seul iOS sait le lire (`AVAudioSession.outputVolume`, observé par KVO côté
-   * natif). Le web n'a aucune API pour cela : `AudioContext.destination` n'expose
-   * pas de volume, `HTMLMediaElement.volume` est un gain propre à l'élément,
-   * `setSinkId` choisit une sortie et non un niveau, et `navigator.volume`
-   * n'existe pas. Vrai `null`, l'app ne prétend donc pas suivre l'OS : le knob
-   * redevient une attestation app-locale.
+   * Aucun lecteur natif ne l'expose aujourd'hui : `expo-audio` ne publie que le
+   * gain du lecteur (`volume`, 0-1), jamais `AVAudioSession.outputVolume`. Le web
+   * n'a pas davantage d'API : `AudioContext.destination` n'expose pas de volume,
+   * `HTMLMediaElement.volume` est un gain propre à l'élément, `setSinkId` choisit
+   * une sortie et non un niveau, et `navigator.volume` n'existe pas. Vrai `null`,
+   * l'app ne prétend donc pas suivre l'OS : le knob redevient une attestation
+   * app-locale, et l'UI affiche l'aide prévue pour ce cas.
    */
   private systemVolume: number | null = null;
   private systemVolumeListeners = new Set<(volume: number) => void>();
-  private systemVolumeSub: { remove: () => void } | null = null;
-  /**
-   * File d'attente sérialisée des appels au module natif.
-   *
-   * `setDSPAsync` / `setVolumeAsync` sont des `AsyncFunction` : chaque geste de
-   * fader en déclenche une, et rien ne garantit que le pont les exécute dans
-   * l'ordre d'émission. Sans sérialisation, un réglage ancien peut atterrir en
-   * dernier et rester affiché — le « dernier geste gagne » n'est plus vrai.
-   */
-  private nativeChain: Promise<unknown> = Promise.resolve();
-  private activeAndroidSessionId = 0;
 
   /**
-   * Synchronise dynamiquement l'audioSessionId d'ExoPlayer avec AudioDSPModule sur Android.
+   * Expose le volume système — aujourd'hui indéterminable, donc `null`.
    *
-   * ExoPlayer initialise son audioSessionId de façon asynchrone lors de la préparation
-   * ou du démarrage du décodeur (initialement 0 ou C.AUDIO_SESSION_ID_UNSET).
-   * Cette méthode vérifie et attache les effets matériels natifs dès qu'un session ID
-   * réel (> 0) devient disponible.
-   */
-  private syncAndroidAudioSession(player: AudioPlayer | null) {
-    if (Platform.OS !== 'android' || !player || !isNativeEQAvailable()) return;
-    try {
-      const statusObj =
-        typeof (player as any).currentStatus === 'function'
-          ? (player as any).currentStatus()
-          : (player as any).currentStatus;
-
-      const rawId =
-        (typeof (player as any).getAudioSessionId === 'function'
-          ? (player as any).getAudioSessionId()
-          : undefined) ??
-        (player as any).audioSessionId ??
-        statusObj?.audioSessionId;
-
-      const sessionId = typeof rawId === 'number' ? rawId : parseInt(String(rawId), 10);
-      if (
-        typeof sessionId === 'number' &&
-        !isNaN(sessionId) &&
-        sessionId > 0 &&
-        sessionId !== this.activeAndroidSessionId
-      ) {
-        this.activeAndroidSessionId = sessionId;
-        void setNativeAudioSessionId(sessionId).then(() => {
-          if (this.pendingDsp) {
-            void this.enqueueNative(() => applyNativeDSP(this.pendingDsp!));
-          }
-        });
-      }
-    } catch (err) {
-      console.warn('syncAndroidAudioSession warning:', err);
-    }
-  }
-
-  /** Enfile un appel au module natif et attend que les précédents se résolvent. */
-  private enqueueNative<T>(task: () => Promise<T>): Promise<T> {
-    const next = this.nativeChain.then(task, task);
-    // La chaîne ne doit jamais rester rejetée : un échec isolé ne doit pas
-    // empêcher les réglages suivants de partir.
-    this.nativeChain = next.catch(() => {});
-    return next;
-  }
-
-  /**
-   * S'abonne au volume système iOS et expose le dernier relevé.
-   *
-   * Renvoie une fonction de désabonnement. Renvoie `null` immédiatement sur les
-   * plateformes où le volume système est illisible (web, Android) : l'appelant
-   * garde alors son knob en attestation app-locale, sans crash ni faux positif.
+   * Renvoie une fonction de désabonnement. L'appelant garde son knob en
+   * attestation app-locale, sans crash ni faux positif.
    */
   subscribeSystemVolume(listener: (volume: number | null) => void): () => void {
-    if (Platform.OS !== 'ios' && Platform.OS !== 'android') {
-      listener(null);
-      return () => {};
-    }
-    this.systemVolumeListeners.add(listener);
-
-    // Si on a déjà une valeur connue, la transmettre immédiatement
-    if (this.systemVolume !== null) {
-      listener(this.systemVolume);
-    } else {
-      // Sinon interroger la valeur système native de manière asynchrone
-      getNativeSystemVolume().then((vol) => {
-        if (vol !== null) {
-          this.systemVolume = vol;
-          listener(vol);
-        }
-      }).catch(() => {});
-    }
-
-    if (!this.systemVolumeSub) {
-      this.systemVolumeSub = addNativeSystemVolumeListener(({ volume }) => {
-        const percent = Math.max(0, Math.min(100, Math.round(volume * 100)));
-        this.systemVolume = percent;
-        this.systemVolumeListeners.forEach((fn) => {
-          try {
-            fn(percent);
-          } catch (e) {
-            console.warn('Erreur listener volume système:', e);
-          }
-        });
-      });
-      if (!this.systemVolumeSub) {
-        this.systemVolume = null;
-      }
-    }
-    return () => {
-      this.systemVolumeListeners.delete(listener);
-    };
+    // Aucun lecteur natif ne publie `AVAudioSession.outputVolume` : sans
+    // observation KVO, le volume système reste indéterminable partout. On
+    // annonce donc `null` sans condition, et l'appelant garde son knob en
+    // attestation app-locale — c'est le chemin qu'il sait déjà traiter.
+    this.systemVolume = null;
+    listener(null);
+    return () => {};
   }
 
   /** Dernier volume système connu, en pourcentage, ou `null` s'il est illisible. */
@@ -300,9 +170,6 @@ class UniversalPlayerManager {
    * `mixWithOthers`, une alarme ne met pas la musique en pause, donc il n'y a
    * rien à reprendre.
    *
-   * iOS, lui, ne peut pas être piloté de ce côté : `AudioDSPEngine.swift`
-   * reprend sur `AVAudioSession.interruptionNotification` avant que JS ne soit
-   * prévenu. Il lui faut un drapeau natif — voir `setAutoResumeOnInterruption`.
    */
   private interruptionModeForPlatform(): 'doNotMix' | 'mixWithOthers' {
     // Le web n'a pas de session audio : le mode y est ignoré, et en demander un
@@ -329,14 +196,6 @@ class UniversalPlayerManager {
     } catch (err) {
       console.warn('setAudioModeAsync (reprise après interruption) a échoué:', err);
     }
-
-    // iOS lit ce drapeau côté natif : le module Swift reprend avant de prévenir
-    // JS, donc JS ne peut pas annuler la reprise, seulement la dédire au
-    // moment de l'interruption. Sans cet appel, l'option resterait inerte sur
-    // iOS alors qu'elle semble active dans les réglages.
-    if (Platform.OS === 'ios') {
-      await setNativeAutoResumeOnInterruption(enabled);
-    }
   }
 
   async init() {
@@ -355,15 +214,6 @@ class UniversalPlayerManager {
         await requestNotificationPermissionsAsync();
       } catch (err) {
         console.warn('Android notification permission warning:', err);
-      }
-    }
-
-    if (Platform.OS === 'ios' && !this.remoteSub) {
-      const sub = addNativeRemoteCommandListener((payload) => {
-        this.dispatchRemoteCommand(payload.action);
-      });
-      if (sub) {
-        this.remoteSub = sub;
       }
     }
   }
@@ -411,7 +261,7 @@ class UniversalPlayerManager {
 
   /**
    * Arrête immédiatement toute lecture en cours sur l'ensemble des moteurs
-   * (expo-audio, AVAudioEngine natif iOS, HTMLAudio web) et libère les ressources.
+   * (expo-audio ou HTMLAudio web) et libère les ressources.
    * Garantit de façon étanche qu'aucun morceau précédent ne continue à jouer
    * en arrière-plan lorsqu'un nouveau morceau est chargé.
    */
@@ -444,7 +294,7 @@ class UniversalPlayerManager {
     this.stopBeatWatchdog();
     this.stopNativeBeatSampling();
 
-    // 3. Moteur expo-audio (Expo Go / Android / repli iOS)
+    // 3. Moteur expo-audio (Expo Go / Android / iOS)
     if (this.player) {
       // Avant de détacher le lecteur : son abonnement aux commandes de
       // notification lui appartient et ne survit pas à `remove()`.
@@ -460,18 +310,8 @@ class UniversalPlayerManager {
       } catch (_) {}
       this.player = null;
     }
-    this.activeAndroidSessionId = 0;
 
-    // 4. Moteur natif Swift DSP iOS
-    if (this.nativeEngineActive) {
-      try {
-        await this.enqueueNative(() => stopNative());
-        await clearNativeNowPlaying();
-      } catch (_) {}
-      this.nativeEngineActive = false;
-    }
-
-    // 5. Moteur Web
+    // 4. Moteur Web
     if (this.webAudio) {
       try {
         this.webAudio.pause();
@@ -578,12 +418,7 @@ class UniversalPlayerManager {
       if (!this.webEngine && WebAudioEngine.isSupported()) {
         try {
           this.webEngine = new WebAudioEngine(audio);
-          if (this.pendingDsp) {
-            // applyDSP pose déjà la largeur via applyStereo : setMono ne serait
-            // qu'un second propriétaire des mêmes gains, qui l'écraserait.
-            this.webEngine.applyDSP(this.pendingDsp);
-            this.webEngine.setVolume(this.pendingDsp.volume ?? 100);
-          }
+          this.webEngine.setVolume(this.currentVolume);
         } catch (engineErr) {
           console.warn('[WebAudio] Erreur initialisation WebAudioEngine:', engineErr);
           this.webEngine = null;
@@ -600,9 +435,7 @@ class UniversalPlayerManager {
       audio.src = effectiveUri;
       audio.load();
       audio.playbackRate = this.currentPlaybackRate;
-      if (this.pendingDsp?.volume !== undefined) {
-        this.setVolume(this.pendingDsp.volume);
-      }
+      this.setVolume(this.currentVolume);
 
       // Intégration MediaSession pour la lecture arrière-plan / notification sur navigateur / Safari iOS
       if (typeof navigator !== 'undefined' && 'mediaSession' in navigator && meta) {
@@ -669,105 +502,12 @@ class UniversalPlayerManager {
       return;
     }
 
-    // iOS natif avec le module DSP : l'AVAudioEngine du module est le SEUL
-    // lecteur. Brancher aussi expo-audio jouerait la piste deux fois, et
-    // l'égaliseur ne serait de toute façon pas sur le chemin du son.
-    if (Platform.OS === 'ios' && isNativeEQAvailable()) {
-      await this.loadViaNativeEQ(uri, autoPlay, initialPositionSeconds, meta, loadId);
-      return;
-    }
-
-    // Native iOS / Android via expo-audio : aussi le repli quand le module
-    // AudioDSP est absent (Expo Go) ou que son chargement a échoué.
+    // Native iOS / Android via expo-audio : seul chemin mobile.
     await this.loadViaExpoAudio(uri, autoPlay, initialPositionSeconds, meta, loadId);
   }
 
   /**
-   * Charge une piste dans le graphe `AudioDSP` et abonne sa progression.
-   *
-   * Échec → repli silencieux sur `createAudioPlayer` d'expo-audio : mieux vaut
-   * une piste qui joue sans égaliseur qu'une piste muette.
-   */
-  private async loadViaNativeEQ(
-    uri: string,
-    autoPlay: boolean,
-    initialPositionSeconds?: number,
-    meta?: { title?: string; artist?: string; album?: string; artwork?: string },
-    loadId?: number
-  ) {
-    if (loadId !== undefined && this.currentLoadId !== loadId) return;
-
-    // L'historique de rythme de la piste précédente ne doit pas colorer la
-    // nouvelle : on remet l'analyseur à zéro avant le chargement.
-    this.stopNativeBeatSampling();
-    beatStore.reset();
-
-    const loaded = await this.enqueueNative(() =>
-      loadNativeTrack(uri, meta?.title, meta?.artist, meta?.album, meta?.artwork)
-    );
-
-    if (loadId !== undefined && this.currentLoadId !== loadId) {
-      void this.enqueueNative(() => stopNative());
-      return;
-    }
-
-    if (!loaded) {
-      this.nativeEngineActive = false;
-      console.warn('AudioDSP: chargement impossible, repli sur expo-audio');
-      await this.loadViaExpoAudio(uri, autoPlay, initialPositionSeconds, meta, loadId);
-      return;
-    }
-
-    this.nativeEngineActive = true;
-
-    // Rejoue les réglages DSP reçus avant l'existence du graphe.
-    if (this.pendingDsp) {
-      await this.enqueueNative(() => applyNativeDSP(this.pendingDsp!));
-    }
-    // Même règle que dans `setVolume` : si l'OS est l'autorité du volume, le graphe
-    // repart à gain unitaire. Le `?? 75` historique réappliquait par ailleurs la
-    // valeur enregistrée avant que lattenuateur ne soit neutralisé.
-    await this.enqueueNative(() =>
-      setNativeVolume(this.systemVolume !== null ? 100 : this.pendingDsp?.volume ?? 100)
-    );
-    await this.enqueueNative(() => setNativePlaybackRate(this.currentPlaybackRate));
-
-    // Le `Timer` Swift (250 ms) est la seule horloge de lecture : l'UI s'y
-    // abonne au lieu de son propre `setInterval`.
-    if (!this.nativeProgressSub) {
-      const sub = addNativeProgressListener((status) => {
-        beatStore.setPlaying(status.isPlaying);
-        if (this.onStatus) this.onStatus(status);
-      });
-      if (sub) this.nativeProgressSub = sub;
-    }
-
-    // Les échantillons PCM d'expo-audio sont sans objet ici : le tap est posé
-    // sur l'AVPlayer d'expo-audio, qui ne joue plus rien. Le logo retombe donc
-    // en respiration au repos plutôt qu'en faux battement.
-    beatStore.setSource('none');
-
-    if (initialPositionSeconds && initialPositionSeconds > 0) {
-      await this.enqueueNative(() => seekNative(initialPositionSeconds));
-    }
-
-    if (autoPlay) {
-      await this.enqueueNative(() => playNative());
-    }
-
-    // Première notification immédiate : le Timer Swift met jusqu'à 250 ms à
-    // parler, la barre de progression resterait vide jusque-là.
-    this.onStatus?.({
-      currentTime: initialPositionSeconds ?? 0,
-      duration: loaded.duration > 0 ? loaded.duration : 1,
-      isPlaying: autoPlay,
-    });
-  }
-
-  /**
-   * Repli sur le lecteur `expo-audio` (Expo Go, ou échec du module natif).
-   *
-   * Extrait de `loadTrack` pour être appelable depuis `loadViaNativeEQ`.
+   * Charge une piste dans le lecteur `expo-audio`.
    */
   private async loadViaExpoAudio(
     uri: string,
@@ -790,6 +530,7 @@ class UniversalPlayerManager {
         return;
       }
       this.player = p;
+      p.volume = this.currentVolume / 100;
       // Le tempo peut avoir été sélectionné avant la création de ce lecteur.
       // Chaque nouvelle instance expo-audio doit reprendre le réglage courant.
       p.setPlaybackRate(this.currentPlaybackRate);
@@ -820,27 +561,6 @@ class UniversalPlayerManager {
       // file que JS détient.
       if (Platform.OS === 'android') {
         this.subscribeAndroidRemoteCommands(p);
-        this.activeAndroidSessionId = 0;
-        this.syncAndroidAudioSession(p);
-        try {
-          (p as any).addListener?.('playbackStatusUpdate', (status: any) => {
-            if (
-              status?.audioSessionId &&
-              typeof status.audioSessionId === 'number' &&
-              status.audioSessionId > 0 &&
-              status.audioSessionId !== this.activeAndroidSessionId
-            ) {
-              this.activeAndroidSessionId = status.audioSessionId;
-              void setNativeAudioSessionId(status.audioSessionId).then(() => {
-                if (this.pendingDsp) {
-                  void this.enqueueNative(() => applyNativeDSP(this.pendingDsp!));
-                }
-              });
-            } else {
-              this.syncAndroidAudioSession(p);
-            }
-          });
-        } catch (_) {}
       }
 
       // En arrière-plan, aucun flux d'échantillons : `startNativeBeatSampling`
@@ -866,9 +586,6 @@ class UniversalPlayerManager {
 
       this.intervalTimer = setInterval(() => {
         if (!this.player) return;
-        if (Platform.OS === 'android') {
-          this.syncAndroidAudioSession(this.player);
-        }
         const cur = this.player.currentTime || 0;
         const dur = this.player.duration || 0;
         const isPlaying = this.player.playing;
@@ -1079,13 +796,8 @@ class UniversalPlayerManager {
         this.webEngine.resume().catch(() => {});
       }
       this.webAudio.play().catch(() => {});
-    } else if (this.nativeEngineActive) {
-      void this.enqueueNative(() => playNative());
     } else if (this.player) {
       this.player.play();
-      if (Platform.OS === 'android') {
-        this.syncAndroidAudioSession(this.player);
-      }
       // Même raison qu'après un seek : la reprise relance aussi le flux.
       this.resumeBeatSampling();
     } else {
@@ -1099,8 +811,6 @@ class UniversalPlayerManager {
   pause() {
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.pause();
-    } else if (this.nativeEngineActive) {
-      void this.enqueueNative(() => pauseNative());
     } else if (this.player) {
       this.player.pause();
     }
@@ -1110,8 +820,6 @@ class UniversalPlayerManager {
   async seekToSeconds(seconds: number) {
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.currentTime = seconds;
-    } else if (this.nativeEngineActive) {
-      await this.enqueueNative(() => seekNative(seconds));
     } else if (this.player) {
       await this.player.seekTo(seconds);
       // Un seek coupe le flux d'échantillons : sans ce rattrapage, le chien
@@ -1157,15 +865,6 @@ class UniversalPlayerManager {
         duration: this.webAudio.duration || 1,
         isPlaying: !this.webAudio.paused,
       });
-    } else if (this.nativeEngineActive) {
-      const status = await getNativeStatus();
-      if (status && this.onStatus) {
-        this.onStatus({
-          currentTime: status.currentTime,
-          duration: status.duration,
-          isPlaying: status.isPlaying,
-        });
-      }
     } else if (this.player) {
       this.onStatus?.({
         currentTime: this.player.currentTime || 0,
@@ -1177,9 +876,7 @@ class UniversalPlayerManager {
 
   setVolume(volumePercent: number) {
     const clamped = Math.max(0, Math.min(100, volumePercent));
-    if (this.pendingDsp) {
-      this.pendingDsp.volume = clamped;
-    }
+    this.currentVolume = clamped;
 
     if (Platform.OS === 'web' && this.webAudio) {
       if (this.webEngine) {
@@ -1187,8 +884,6 @@ class UniversalPlayerManager {
       } else {
         this.webAudio.volume = clamped / 100;
       }
-    } else if (this.nativeEngineActive) {
-      void this.enqueueNative(() => setNativeVolume(clamped));
     } else if (this.player) {
       this.player.volume = clamped / 100;
     }
@@ -1205,83 +900,9 @@ class UniversalPlayerManager {
     this.currentPlaybackRate = clamped;
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.playbackRate = clamped;
-    } else if (Platform.OS === 'ios' && isNativeEQAvailable()) {
-      void this.enqueueNative(() => setNativePlaybackRate(clamped));
     } else if (this.player) {
       this.player.setPlaybackRate(clamped);
     }
-  }
-
-  /**
-   * Pousse l'état DSP complet vers le moteur audio.
-   *
-   * `bass` et `treble` ne sont pas transmis : ce sont des résumés d'affichage.
-   * La courbe audible est entièrement décrite par `bands` + `preamp`, ce qui
-   * évite de compter deux fois les graves quand le knob bass les décale déjà.
-   *
-   * Sans effet sur les plateformes sans moteur DSP (Expo Go / AVPlayer) : les
-   * réglages restent alors purement visuels.
-   */
-  setDSP(dsp: DSPState) {
-    this.pendingDsp = dsp;
-    if (this.webEngine) {
-      this.webEngine.applyDSP(dsp);
-      if (dsp.volume !== undefined) {
-        this.webEngine.setVolume(dsp.volume);
-      }
-    }
-    if (Platform.OS === 'android' && this.player) {
-      this.syncAndroidAudioSession(this.player);
-    }
-    // Moteur natif iOS / Android : sérialisé, sinon un réglage ancien peut atterrir
-    // après le dernier geste de fader et rester affiché.
-    //
-    // Sur iOS, `nativeEngineActive` n'est pas redondant avec
-    // `isNativeEQAvailable()` : le second dit « le module existe », le premier
-    // dit « c'est CE moteur qui porte le son ». Ils divergent quand
-    // `loadNativeTrack` échoue et que `loadViaNativeEQ` bascule en silence sur
-    // expo-audio — dont le chemin audio ne contient aucun `AVAudioUnitEQ`. Sans
-    // cette garde, l'égaliseur était appliqué au silence : les faders bougeaient,
-    // `setDSPAsync` acceptait les gains, et rien ne s'entendait.
-    //
-    // Android s'en passe volontairement : là, `nativeEngineActive` reste `false`
-    // en permanence (`loadViaNativeEQ` est le seul à le poser, et il est
-    // iOS-seul). Sur Android le son porte toujours par expo-audio, et le
-    // processeur PCM se nourrit d'un état global lu par buffer — il n'a pas
-    // besoin que le player y ait chargé de piste. La session audio, elle, est
-    // déjà synchronisée juste au-dessus.
-    if (
-      (Platform.OS === 'ios' || Platform.OS === 'android') &&
-      isNativeEQAvailable() &&
-      (Platform.OS === 'android' || this.nativeEngineActive)
-    ) {
-      void this.enqueueNative(() => applyNativeDSP(dsp));
-    }
-  }
-
-  /**
-   * Le moteur DSP natif porte-t-il réellement l'audio en cours ?
-   *
-   * Distinct de `isNativeEQAvailable()`, qui répond à « le module est-il
-   * installé ? ». Exposé pour l'overlay de diagnostic : c'est la seule donnée
-   * qui distingue « les gains partent dans un moteur muet » de « les gains
-   * n'arrivent nulle part ».
-   *
-   * Ne vaut que sur iOS : sur Android le drapeau reste `false` par
-   * construction (cf. la garde de `setDSP`).
-   */
-  isNativeEngineActive(): boolean {
-    return this.nativeEngineActive;
-  }
-
-  /** Session audio Android associée aux effets matériels. 0 = non établie. */
-  getActiveAndroidSessionId(): number {
-    return this.activeAndroidSessionId;
-  }
-
-  /** Dernier état DSP reçu, rejoué dès que le moteur natif devient actif. */
-  getPendingDsp(): DSPState | null {
-    return this.pendingDsp;
   }
 
   async stop() {
@@ -1312,36 +933,9 @@ class UniversalPlayerManager {
     beatStore.setPlaying(false);
     beatStore.setSource('none');
     beatStore.reset();
-    // Le Timer Swift tire 4x/s : sans retirer l'abonnement, il continuerait
-    // de pousser `onProgress` vers une UI démontée.
-    if (this.nativeProgressSub) {
-      try {
-        this.nativeProgressSub.remove();
-      } catch {}
-      this.nativeProgressSub = null;
-    }
-    // Même raison pour l'observation KVO du volume : elle continue de pousser
-    // `onSystemVolume` tant qu'elle n'est pas retirée.
-    if (this.systemVolumeSub) {
-      try {
-        this.systemVolumeSub.remove();
-      } catch {}
-      this.systemVolumeSub = null;
-    }
     this.systemVolumeListeners.clear();
     this.systemVolume = null;
-    if (this.remoteSub) {
-      try {
-        this.remoteSub.remove();
-      } catch {}
-      this.remoteSub = null;
-    }
     this.unsubscribeAndroidRemoteCommands();
-    if (this.nativeEngineActive) {
-      void this.enqueueNative(() => stopNative());
-      void clearNativeNowPlaying();
-      this.nativeEngineActive = false;
-    }
     if (this.webAudio) {
       this.webAudio.pause();
       this.webAudio.src = '';

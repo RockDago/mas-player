@@ -27,7 +27,6 @@ import {
 import { storageService } from '../services/storageService';
 import { useScreenInsets, insetPadding } from '../theme/insets';
 import { playerManager } from '../services/playerManager';
-import { isNativeEQAvailable } from '../services/nativeAudioDSP';
 
 interface EqualizerViewProps {
   dsp: DSPState;
@@ -780,11 +779,8 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 
   const [activeTab, setActiveTab] = React.useState<'eq' | 'knobs' | 'fx'>('eq');
 
-  // Ni la réverbération, ni TONE, ni LIMIT n'ont d'état local : leurs six champs
-  // vivent dans `DSPState`, donc dans le préréglage persisté et dans le pont
-  // natif. Avant, `reverbEnabled` / `reverbRoom` / `reverbDamp` et les deux
-  // pastilles étaient cinq `useState` que rien ne lisait — les six contrôles
-  // étaient manœuvrables sans produire le moindre son.
+  // Les réglages restent dans l'état persisté de l'interface; le traitement
+  // audio DSP a été retiré.
 
   // Save Preset Modal states
   const [isSaveModalVisible, setIsSaveModalVisible] = React.useState<boolean>(false);
@@ -818,11 +814,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
   };
 
   /**
-   * Écrit un des trois knobs de réverbération dans `DSPState`.
-   *
-   * Un seul point d'écriture : `onUpdateDSP` remonte au `playerManager`, qui
-   * applique l'état aux DEUX moteurs (Web Audio et natif). C'est ce qui garantit
-   * qu'une même valeur ne peut pas diverger entre plateformes.
+   * Met à jour l'état d'interface des commandes de réverbération.
    */
   const handleSetReverb = (
     field: 'roomSize' | 'damping' | 'reverbMix',
@@ -1086,16 +1078,6 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
           />
         </TouchableOpacity>
       </View>
-
-      {/* Bannière explicative pour l'environnement Expo Go */}
-      {Platform.OS !== 'web' && !isNativeEQAvailable() && (
-        <View style={styles.expoGoBanner}>
-          <Ionicons name="information-circle-outline" size={15} color="#F59E0B" style={{ marginRight: 6 }} />
-          <Text style={styles.expoGoBannerText}>
-            Mode Expo Go : DSP disponible en build APK/Dev Client (100% actif sur le Web)
-          </Text>
-        </View>
-      )}
 
       {/* TAB 1: EQUALIZER WITH SPACED TALL FADERS MATCHING IMAGE 2 */}
       {activeTab === 'eq' && (
@@ -1456,11 +1438,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
             </View>
 
             {/*
-              Crossfeed : mélange croisé L→R / R→L, le geste qui rend l'écoute
-              casque_support naturel. Placé en face de Stereo Expand parce que
-              les deux settings s'annulent partiellement : le moteur Native réduit
-              le crossfeed quand la largeur monte (`1 - width/100`), donc les deux
-              knobs se répondent au lieu de se contredire.
+              Réglage Crossfeed conservé dans l'interface.
             */}
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
@@ -2523,25 +2501,5 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 13,
     fontWeight: '800',
-  },
-  expoGoBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.28)',
-    borderRadius: 8,
-    marginHorizontal: 16,
-    marginTop: 6,
-    marginBottom: 4,
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-  },
-  expoGoBannerText: {
-    color: '#FBBF24',
-    fontSize: 11,
-    fontWeight: '600',
-    flexShrink: 1,
   },
 });

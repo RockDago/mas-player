@@ -7,8 +7,8 @@
  * rendu déréférence (`dsp.bands.join(',')` dans le dep-array de `App.tsx`) —
  * écran blanc au lancement, avant tout affichage.
  *
- * Utilise le compilateur TypeScript déjà présent dans le projet, comme
- * `verify-dsp.cjs` : aucun outil supplémentaire n'est nécessaire.
+ * Utilise le compilateur TypeScript déjà présent dans le projet : aucun outil
+ * supplémentaire n'est nécessaire.
  *
  * Lancer : node scripts/test-dsp-restore.cjs
  */

@@ -5,6 +5,10 @@ const path = require('path');
 /**
  * Patch Android d'expo-audio — contrôles complets (Précédent, Pause/Play, Suivant)
  * dans la notification système et sur l'écran verrouillé pour TOUTES les versions d'Android (8 à 15).
+ *
+ * Ce patch est le SEUL câblage de l'événement `onRemoteCommand` côté Android :
+ * `playerManager.subscribeAndroidRemoteCommands` s'y abonne pour piloter la file.
+ * Il ne touche pas au DSP — celui-ci a été retiré avec le module natif.
  */
 
 console.log('[patch-expo-audio-android] Starting robust patch for Android transport controls...');
@@ -15,13 +19,10 @@ const controlsServicePath = path.join(expoAudioDir, 'service', 'AudioControlsSer
 const sessionCallbackPath = path.join(expoAudioDir, 'service', 'AudioMediaSessionCallback.kt');
 
 if (!fs.existsSync(controlsServicePath) || !fs.existsSync(sessionCallbackPath)) {
-  // Sortir ici supprimait aussi la section 3, qui installe le processeur DSP
-  // dans le sink Media3. Un renommage de ces fichiers côté expo-audio désactivait
-  // donc l'égaliseur Android en entier, avec un code de sortie 0 : le build passait,
-  // `isNativeEQAvailable()` répondait `true`, les faders bougeaient, et aucun son
-  // ne traversait le moindre filtre. La section 3 est désormais exécutée quoi
-  // qu'il arrive, et l'absence des fichiers de service n'arrête plus que les
-  // contrôles de transport.
+  // Un renommage de ces fichiers côté expo-audio désactiverait silencieusement
+  // les contrôles de transport, avec un code de sortie 0 : le build passerait,
+  // la notification s'afficherait, et ses boutons ne commanderaient rien. D'où
+  // l'avertissement — visible dans les logs d'installation — plutôt qu'un silence.
   console.warn('[patch-expo-audio-android] expo-audio service files not found — notification controls will be left untouched.');
 }
 
@@ -325,156 +326,3 @@ if (fs.existsSync(sessionCallbackPath)) {
   console.log('[patch-expo-audio-android] AudioMediaSessionCallback.kt updated successfully.');
 }
 
-// ── 3. Patch AudioPlayer.kt and AudioModule.kt to expose audioSessionId ─────────
-const audioPlayerPath = path.join(expoAudioDir, 'AudioPlayer.kt');
-const audioRenderersFactoryPath = path.join(expoAudioDir, 'MASAudioRenderersFactory.kt');
-const audioRenderersFactory = `package expo.modules.audio
-
-import android.content.Context
-import android.util.Log
-import androidx.media3.common.audio.AudioProcessor
-import androidx.media3.common.util.UnstableApi
-import androidx.media3.exoplayer.DefaultRenderersFactory
-import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.audio.DefaultAudioSink
-
-@UnstableApi
-internal class MASAudioRenderersFactory(context: Context) : DefaultRenderersFactory(context) {
-  override fun buildAudioSink(
-    context: Context,
-    enableFloatOutput: Boolean,
-    enableAudioOutputPlaybackParams: Boolean
-  ): AudioSink {
-    val processor = try {
-      Class.forName("expo.modules.audiodsp.AudioDSPProcessor")
-        .getDeclaredConstructor()
-        .newInstance() as AudioProcessor
-    } catch (error: ReflectiveOperationException) {
-      Log.e("MASPlayer.AudioDSP", "Could not load the native PCM processor; using the default audio sink.", error)
-      return super.buildAudioSink(context, enableFloatOutput, enableAudioOutputPlaybackParams)
-    } catch (error: ClassCastException) {
-      Log.e("MASPlayer.AudioDSP", "Native PCM processor does not implement Media3 AudioProcessor; using the default audio sink.", error)
-      return super.buildAudioSink(context, enableFloatOutput, enableAudioOutputPlaybackParams)
-    }
-
-    return DefaultAudioSink.Builder(context)
-      .setAudioProcessors(arrayOf(processor))
-      .setEnableFloatOutput(enableFloatOutput)
-      .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
-      .build()
-  }
-}
-`;
-if (!fs.existsSync(audioRenderersFactoryPath) ||
-    fs.readFileSync(audioRenderersFactoryPath, 'utf8') !== audioRenderersFactory) {
-  fs.writeFileSync(audioRenderersFactoryPath, audioRenderersFactory, 'utf8');
-  console.log('[patch-expo-audio-android] MASAudioRenderersFactory.kt created.');
-}
-if (fs.existsSync(audioPlayerPath)) {
-  let playerContent = fs.readFileSync(audioPlayerPath, 'utf8');
-  const playerBuilderWithDSP = /player\s*=\s*(?:run\s*\{[\s\S]*?)?ExoPlayer\.Builder\(context,\s*MASAudioRenderersFactory\(context\)\)/;
-  if (!playerBuilderWithDSP.test(playerContent)) {
-    playerContent = playerContent.replace(
-      /player\s*=\s*ExoPlayer\.Builder\(context\)/,
-      'player = ExoPlayer.Builder(context, MASAudioRenderersFactory(context))'
-    );
-    if (!playerBuilderWithDSP.test(playerContent)) {
-      throw new Error('[patch-expo-audio-android] Could not wire MASAudioRenderersFactory into the AudioPlayer ExoPlayer builder.');
-    }
-  }
-  if (!playerContent.includes('setAudioSessionId')) {
-    playerContent = playerContent.replace(
-      /player\s*=\s*ExoPlayer\.Builder\(context(?:,\s*MASAudioRenderersFactory\(context\))?\)/,
-      `player = run {
-    val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
-    val sid = am?.generateAudioSessionId() ?: androidx.media3.common.C.AUDIO_SESSION_ID_UNSET
-    ExoPlayer.Builder(context, MASAudioRenderersFactory(context)).apply {
-      if (sid != androidx.media3.common.C.AUDIO_SESSION_ID_UNSET && sid > 0) {
-        setAudioSessionId(sid)
-      }
-    }
-  }`
-    );
-    console.log('[patch-expo-audio-android] AudioPlayer.kt patched with setAudioSessionId on ExoPlayer.Builder.');
-  }
-  if (!/player\s*=\s*run\s*\{[\s\S]*?ExoPlayer\.Builder\(context,\s*MASAudioRenderersFactory\(context\)\)/.test(playerContent)) {
-    throw new Error('[patch-expo-audio-android] AudioPlayer.kt does not construct ExoPlayer with the DSP renderers factory.');
-  }
-  if (!playerContent.includes('val audioSessionId: Int')) {
-    playerContent = playerContent.replace(
-      'var preservesPitch = true',
-      'var preservesPitch = true\n  val audioSessionId: Int\n    get() = ref.audioSessionId'
-    );
-    playerContent = playerContent.replace(
-      '"id" to id,',
-      '"id" to id,\n      "audioSessionId" to ref.audioSessionId,'
-    );
-  }
-  if (!playerContent.includes('WAKE_MODE_LOCAL')) {
-    playerContent = playerContent.replace(
-      '.setAudioAttributes(AudioAttributes.DEFAULT, false)',
-      `.setWakeMode(androidx.media3.common.C.WAKE_MODE_LOCAL)
-    .setHandleAudioBecomingNoisy(true)
-    .setAudioAttributes(
-      androidx.media3.common.AudioAttributes.Builder()
-        .setContentType(androidx.media3.common.C.AUDIO_CONTENT_TYPE_MUSIC)
-        .setUsage(androidx.media3.common.C.USAGE_MEDIA)
-        .build(),
-      true
-    )`
-    );
-    console.log('[patch-expo-audio-android] AudioPlayer.kt patched with WAKE_MODE_LOCAL & proper AudioAttributes.');
-  }
-  fs.writeFileSync(audioPlayerPath, playerContent, 'utf8');
-  console.log('[patch-expo-audio-android] AudioPlayer.kt patched with audioSessionId.');
-}
-
-const audioModulePath = path.join(expoAudioDir, 'AudioModule.kt');
-if (fs.existsSync(audioModulePath)) {
-  let moduleContent = fs.readFileSync(audioModulePath, 'utf8');
-  if (!moduleContent.includes('Property("audioSessionId")')) {
-    moduleContent = moduleContent.replace(
-      'Property("id") { player ->',
-      'Property("audioSessionId") { player ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }\n\n      Function("getAudioSessionId") { player: AudioPlayer ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }\n\n      Property("id") { player ->'
-    );
-    fs.writeFileSync(audioModulePath, moduleContent, 'utf8');
-    console.log('[patch-expo-audio-android] AudioModule.kt patched with audioSessionId property.');
-  } else if (!moduleContent.includes('Function("getAudioSessionId")')) {
-    moduleContent = moduleContent.replace(
-      'Property("audioSessionId") { player ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }',
-      'Property("audioSessionId") { player ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }\n\n      Function("getAudioSessionId") { player: AudioPlayer ->\n        runOnMain {\n          player.ref.audioSessionId\n        }\n      }'
-    );
-    fs.writeFileSync(audioModulePath, moduleContent, 'utf8');
-    console.log('[patch-expo-audio-android] AudioModule.kt patched with getAudioSessionId function.');
-  }
-}
-
-console.log('[patch-expo-audio-android] All Android audio & notification patches applied.');
-
-// ── Assertion finale : le DSP est-il réellement installé ? ────────────────────
-// Tout ce qui précède peut échouer en silence — un fichier déplacé, un motif de
-// remplacement qui ne correspond plus, une réécriture manuelle de node_modules.
-// L.equaliseur resterait alors muet sans qu'aucune erreur ne remonte : le module
-// est bien enregistré, donc `isNativeEQAvailable()` vaut `true`, les faders
-// bougent, et `setDSPAsync` accepte des gains qui ne rejoignent aucun filtre.
-//
-// On vérifie donc l'état réel du disque et on échoue bruyamment si le
-// processeur n'est pas dans le sink. C'est la seule garantie qu'un APK
-// construit depuis cette arborescence a bien une chaîne EQ.
-if (!fs.existsSync(audioPlayerPath)) {
-  throw new Error(
-    '[patch-expo-audio-android] AudioPlayer.kt introuvable : le processeur DSP ne peut pas être câblé, et l\'égaliseur Android resterait muet.'
-  );
-}
-const finalPlayerContent = fs.readFileSync(audioPlayerPath, 'utf8');
-if (!/ExoPlayer\.Builder\(context,\s*MASAudioRenderersFactory\(context\)\)/.test(finalPlayerContent)) {
-  throw new Error(
-    '[patch-expo-audio-android] MASAudioRenderersFactory absent du builder ExoPlayer : le PCM processor n\'est pas dans le sink, l\'égaliseur Android est mort.'
-  );
-}
-if (!fs.existsSync(audioRenderersFactoryPath)) {
-  throw new Error(
-    '[patch-expo-audio-android] MASAudioRenderersFactory.kt n\'a pas été écrit : l\'égaliseur Android est mort.'
-  );
-}
-console.log('[patch-expo-audio-android] DSP processor verified in the Media3 audio sink.');
