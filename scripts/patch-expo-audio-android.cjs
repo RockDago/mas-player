@@ -359,22 +359,23 @@ if (!fs.existsSync(audioRenderersFactoryPath) ||
 }
 if (fs.existsSync(audioPlayerPath)) {
   let playerContent = fs.readFileSync(audioPlayerPath, 'utf8');
-  if (!playerContent.includes('MASAudioRenderersFactory(context)')) {
+  const playerBuilderWithDSP = /player\s*=\s*(?:run\s*\{[\s\S]*?)?ExoPlayer\.Builder\(context,\s*MASAudioRenderersFactory\(context\)\)/;
+  if (!playerBuilderWithDSP.test(playerContent)) {
     playerContent = playerContent.replace(
-      'ExoPlayer.Builder(context).apply {',
-      'ExoPlayer.Builder(context, MASAudioRenderersFactory(context)).apply {'
+      /player\s*=\s*ExoPlayer\.Builder\(context\)/,
+      'player = ExoPlayer.Builder(context, MASAudioRenderersFactory(context))'
     );
-    if (!playerContent.includes('MASAudioRenderersFactory(context)')) {
-      throw new Error('[patch-expo-audio-android] Could not wire MASAudioRenderersFactory into AudioPlayer.kt.');
+    if (!playerBuilderWithDSP.test(playerContent)) {
+      throw new Error('[patch-expo-audio-android] Could not wire MASAudioRenderersFactory into the AudioPlayer ExoPlayer builder.');
     }
   }
   if (!playerContent.includes('setAudioSessionId')) {
     playerContent = playerContent.replace(
-      'player = ExoPlayer.Builder(context)',
+      /player\s*=\s*ExoPlayer\.Builder\(context(?:,\s*MASAudioRenderersFactory\(context\))?\)/,
       `player = run {
     val am = context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
     val sid = am?.generateAudioSessionId() ?: androidx.media3.common.C.AUDIO_SESSION_ID_UNSET
-    ExoPlayer.Builder(context).apply {
+    ExoPlayer.Builder(context, MASAudioRenderersFactory(context)).apply {
       if (sid != androidx.media3.common.C.AUDIO_SESSION_ID_UNSET && sid > 0) {
         setAudioSessionId(sid)
       }
@@ -382,6 +383,9 @@ if (fs.existsSync(audioPlayerPath)) {
   }`
     );
     console.log('[patch-expo-audio-android] AudioPlayer.kt patched with setAudioSessionId on ExoPlayer.Builder.');
+  }
+  if (!/player\s*=\s*run\s*\{[\s\S]*?ExoPlayer\.Builder\(context,\s*MASAudioRenderersFactory\(context\)\)/.test(playerContent)) {
+    throw new Error('[patch-expo-audio-android] AudioPlayer.kt does not construct ExoPlayer with the DSP renderers factory.');
   }
   if (!playerContent.includes('val audioSessionId: Int')) {
     playerContent = playerContent.replace(

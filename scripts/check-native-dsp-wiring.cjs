@@ -7,6 +7,7 @@
 const { readFileSync } = require('fs');
 
 const swiftEngine = readFileSync('modules/expo-audio-dsp/ios/AudioDSPEngine.swift', 'utf8');
+const swiftRenderUnit = readFileSync('modules/expo-audio-dsp/ios/AudioDSPRenderUnit.swift', 'utf8');
 const kotlin = readFileSync(
   'modules/expo-audio-dsp/android/src/main/java/expo/modules/audiodsp/AudioDSPModule.kt',
   'utf8'
@@ -34,6 +35,12 @@ for (const node of ['playerNode', 'eqUnit', 'preampNode', 'balanceNode']) {
   check(`engine.attach(${node}) présent`, new RegExp(`engine\\.attach\\(${node}\\)`).test(swiftEngine));
 }
 check('AudioDSPRenderUnit attachée au moteur', /engine\.attach\(unit\)/.test(swiftEngine));
+check('le graphe iOS traverse AudioDSPRenderUnit', /engine\.connect\(currentNode, to: dspRenderUnit/.test(swiftEngine));
+check('AudioDSPRenderUnit applique spatial, réverbération et limiteur',
+  /spatial\.process/.test(swiftRenderUnit) &&
+  /reverb\.process/.test(swiftRenderUnit) &&
+  /limiter\.processChannels/.test(swiftRenderUnit)
+);
 
 console.log('2. iOS : le graphe audio est-il raccordé dans le bon ordre ?');
 check('playerNode -> eqUnit', /engine\.connect\(playerNode, to: eqUnit/.test(swiftEngine));
