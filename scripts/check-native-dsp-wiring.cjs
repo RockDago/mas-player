@@ -61,9 +61,27 @@ console.log('4. iOS : conformité AVFoundation & Swift 6');
 check('aucune affectation invalide sur renderBlock (get-only)', !/\.renderBlock\s*=/.test(swiftEngine));
 // kAudioUnitSubType_Generic n'existe pas dans le scope CoreAudio
 check('aucun symbole inexistant kAudioUnitSubType_Generic', !/kAudioUnitSubType_Generic/.test(swiftEngine));
+// AUAudioUnit expose déjà `renderBlock` (readonly, AURenderBlock) : le redéclarer
+// masque la propriété du superclass et casse le build, même en `private`. C'est le
+// bloc d'une sous-classe AUAudioUnit qui s'installe via `internalRenderBlock`.
+check('le render unit n\'override pas renderBlock (propriété du superclass)',
+  !/\bvar\s+renderBlock\b/.test(swiftRenderUnit) && !/\boverride\s+var\s+renderBlock\b/.test(swiftRenderUnit));
+check('le render unit installe son bloc via internalRenderBlock',
+  /\boverride\s+var\s+internalRenderBlock\s*:\s*AUInternalRenderBlock\b/.test(swiftRenderUnit));
+// outputData n'est PAS optionnel dans AUInternalRenderBlock : `guard let outputData`
+// ne compile pas. frameCount est un AUAudioFrameCount (UInt32), comme frameCapacity.
+check('ioData traité comme non-optionnel dans le render block',
+  /guard\s+let\s+pullInputBlock\b/.test(swiftRenderUnit) && !/guard\s+let\s+outputData\b/.test(swiftRenderUnit));
 
 console.log('5. Android : le processeur PCM est-il raccordé au sink Media3 ?');
 check('AudioDSPProcessor implémente BaseAudioProcessor', /class AudioDSPProcessor : BaseAudioProcessor\(\)/.test(androidProcessor));
+// media3 1.9.0 a supprimé `onQueueInput` : le membre abstrait s'appelle désormais
+// `queueInput`. Implémenter le mauvais nom donne « overrides nothing » ET « class is
+// not abstract », et le harnais ci-dessus passait pourtant au vert.
+check('AudioDSPProcessor implémente queueInput (membre abstrait media3)',
+  /override\s+fun\s+queueInput\s*\(inputBuffer:\s*ByteBuffer\)/.test(androidProcessor));
+check('aucun onQueueInput résiduel (API retirée en media3 1.9.0)',
+  !/onQueueInput/.test(androidProcessor));
 check('PCM 16 bits et float acceptés', /ENCODING_PCM_16BIT/.test(androidProcessor) && /ENCODING_PCM_FLOAT/.test(androidProcessor));
 check('10 filtres EQ canoniques compilés', /doubleArrayOf\(250\.0, 125\.0, 250\.0, 500\.0, 1_000\.0, 2_000\.0, 4_000\.0, 6_000\.0, 8_000\.0, 8_000\.0\)/.test(androidProcessor));
 check('égaliseur paramétrique appliqué au PCM', /for \(band in settings\.filters\.indices\)/.test(androidProcessor));

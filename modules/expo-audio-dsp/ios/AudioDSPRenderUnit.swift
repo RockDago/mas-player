@@ -63,7 +63,10 @@ final class AudioDSPRenderUnit: AUAudioUnit {
     private let renderBuffer = RenderBufferHolder()
     private var inputBusArray: AUAudioUnitBusArray!
     private var outputBusArray: AUAudioUnitBusArray!
-    private var renderBlock: AUInternalRenderBlock!
+    // Pas `renderBlock` : `AUAudioUnit` expose déjà une propriété de ce nom
+    // (readonly, `AURenderBlock`). La redéclarer ici — même `private` — la masque
+    // et casse le build. Le bloc s'installe via `internalRenderBlock`.
+    private var masRenderBlock: AUInternalRenderBlock!
 
     override init(
         componentDescription: AudioComponentDescription,
@@ -82,10 +85,13 @@ final class AudioDSPRenderUnit: AUAudioUnit {
 
         let holder = renderBuffer
         let state = AudioDSPRenderState.shared
-        renderBlock = { actionFlags, timestamp, frameCount, _, outputData, _, pullInputBlock in
-            guard let outputData, let pullInputBlock, let buffer = holder.buffer else {
+        masRenderBlock = { actionFlags, timestamp, frameCount, _, outputData, _, pullInputBlock in
+            // `outputData` n'est pas optionnel dans `AUInternalRenderBlock` : seul
+            // `pullInputBlock` (le pull du bus d'entrée) peut manquer.
+            guard let pullInputBlock, let buffer = holder.buffer else {
                 return kAudioUnitErr_NoConnection
             }
+            // `frameCount` est un `AUAudioFrameCount` (UInt32), comme `frameCapacity`.
             guard frameCount <= buffer.frameCapacity else {
                 return kAudioUnitErr_TooManyFramesToProcess
             }
@@ -134,7 +140,7 @@ final class AudioDSPRenderUnit: AUAudioUnit {
     }
 
     override var internalRenderBlock: AUInternalRenderBlock {
-        renderBlock
+        masRenderBlock
     }
 
     override var canProcessInPlace: Bool {

@@ -202,7 +202,7 @@ class AudioDSPProcessor : BaseAudioProcessor() {
     return inputAudioFormat
   }
 
-  override fun onQueueInput(inputBuffer: ByteBuffer) {
+  override fun queueInput(inputBuffer: ByteBuffer) {
     val channels = format.channelCount
     if (channels !in 1..2) {
       val output = replaceOutputBuffer(inputBuffer.remaining())
