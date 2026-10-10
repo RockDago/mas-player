@@ -40,6 +40,10 @@ typedef struct {
   double *buffer;
   int length;
   int index;
+  // `calloc` peut échouer ; sans ce drapeau, `DelayLineProcessComb` déréférence
+  // un NULL sur le thread de rendu — un segment SIGSEGV qui tue le process
+  // entier, sans exception rattrapable.
+  BOOL allocated;
 } DelayLine;
 
 struct MASAudioDSPState {
@@ -76,16 +80,22 @@ struct MASAudioDSPState {
 };
 
 static void DelayLineInit(DelayLine *dl, int length) {
-    dl->length = length;
+    dl->length = length > 0 ? length : 1;
     dl->index = 0;
-    dl->buffer = calloc(length, sizeof(double));
+    dl->buffer = calloc((size_t)dl->length, sizeof(double));
+    dl->allocated = (dl->buffer != NULL);
 }
 
 static void DelayLineFree(DelayLine *dl) {
     if (dl->buffer) free(dl->buffer);
+    dl->buffer = NULL;
+    dl->allocated = NO;
+    dl->length = 0;
+    dl->index = 0;
 }
 
 static double DelayLineProcessComb(DelayLine *dl, double input, double feedback, double damp, double *store) {
+    if (!dl->allocated || dl->length <= 0) return 0.0;
     double output = dl->buffer[dl->index];
     *store = (output * (1.0 - damp)) + (*store * damp);
     dl->buffer[dl->index] = input + (*store * feedback);
@@ -94,6 +104,7 @@ static double DelayLineProcessComb(DelayLine *dl, double input, double feedback,
 }
 
 static double DelayLineProcessAllpass(DelayLine *dl, double input) {
+    if (!dl->allocated || dl->length <= 0) return 0.0;
     double bufout = dl->buffer[dl->index];
     double output = -input + bufout;
     dl->buffer[dl->index] = input + (bufout * 0.5);
@@ -255,8 +266,22 @@ void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, MA
   if (nonInterleaved && bufferList->mNumberBuffers >= 2) {
     float *leftChannel = (float *)bufferList->mBuffers[0].mData;
     float *rightChannel = (float *)bufferList->mBuffers[1].mData;
-    
-    for (ItemCount i = 0; i < frameCount; i++) {
+
+    // Le tap peut rendre une liste vide ou tronquée (début/fin de piste,
+    // reprise apres interruption). Sans ce garde, `leftChannel[i]` dereference
+    // NULL ou sort du tampon — SIGSEGV sur le thread de rendu, qui tue le
+    // process entier. Le nombre de trames est borne par ce que le tampon
+    // contient reellement, pas par ce que le tap annonce.
+    if (leftChannel == NULL || rightChannel == NULL) {
+      os_unfair_lock_unlock(&state->lock);
+      return;
+    }
+    const MASFrameCount maxFrames = (MASFrameCount)MIN(
+        (uint64_t)frameCount,
+        MIN((uint64_t)(bufferList->mBuffers[0].mDataByteSize / sizeof(float)),
+            (uint64_t)(bufferList->mBuffers[1].mDataByteSize / sizeof(float))));
+
+    for (ItemCount i = 0; i < maxFrames; i++) {
       double l = leftChannel[i] * preamp;
       double r = rightChannel[i] * preamp;
 
@@ -311,9 +336,21 @@ void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, MA
   } else if (!nonInterleaved && bufferList->mNumberBuffers == 1) {
     float *data = (float *)bufferList->mBuffers[0].mData;
     NSUInteger channels = bufferList->mBuffers[0].mNumberChannels;
-    
+
+    // Meme garde que dans le cas non entrelace : `data` peut etre NULL, et
+    // `mNumberChannels` peut valoir plus que ce que le tampon contient
+    // effectivement. `mDataByteSize` borne l'ecriture a la zone reellement
+    // allouee.
+    if (data == NULL || channels < 2) {
+      os_unfair_lock_unlock(&state->lock);
+      return;
+    }
+    const MASFrameCount maxFrames = (MASFrameCount)MIN(
+        (uint64_t)frameCount,
+        (uint64_t)(bufferList->mBuffers[0].mDataByteSize / (sizeof(float) * channels)));
+
     if (channels >= 2) {
-      for (ItemCount i = 0; i < frameCount; i++) {
+      for (ItemCount i = 0; i < maxFrames; i++) {
         double l = data[i * channels] * preamp;
         double r = data[i * channels + 1] * preamp;
 

@@ -57,7 +57,22 @@ jobs:
 
           # Reapply the Expo Audio native equalizer patches before generating Xcode.
           node scripts/patch-expo-audio-android.cjs
-          
+
+          # Prove the patch applied, on a pristine tree AND on a second pass.
+          #
+          # `String.replace` fails silently when its anchor moves, so a patch that
+          # no longer matches reports success without having changed anything. That
+          # is not hypothetical: the tap lifecycle fix sat behind an
+          # `if (!includes('_dspState...'))` guard, so on an already-patched
+          # node_modules — the common case — it was skipped in silence while the
+          # script still printed its success line. The IPA then shipped the old,
+          # crashing code.
+          #
+          # Exit 2 = patch correct, installed tree merely stale (`npm install`).
+          # Exit 1 = patch itself is broken: fail here rather than ship an IPA
+          # built from unpatched sources.
+          node scripts/_patchselftest.cjs || [ $? -eq 2 ]
+
           # Drop -quiet so a Swift/C++ failure inside build-xcframework.sh is
           # visible in the job log instead of a bare "did not produce" error.
           find node_modules -name "build-xcframework.sh" -exec sed -i '' 's/-quiet//g' {} +
@@ -139,6 +154,21 @@ jobs:
 
       - name: 📦 Install npm dependencies
         run: npm ci || npm install
+
+      - name: 🩹 Patch ExpoModulesJSI and native equalizer
+        run: |
+          # Meme sequence que le job iOS, et pour la meme raison : le job
+          # Android ne s'appuyait que sur le `postinstall`. Ce hook est un
+          # raccourci, pas une garantie — `npm ci` peut le sauter selon la
+          # config npm, et rien ici ne verifiait que le patch avait abouti.
+          # Un patch rate produit un APK construit sur des sources non corrigees,
+          # sans le moindre signal dans les logs.
+          node scripts/patch-expo-jsi.cjs
+          node scripts/patch-expo-audio-android.cjs
+
+          # Memes codes de sortie que ci-dessus : 2 = arbre installe simplement
+          # anterieur (normal apres `npm ci`), 1 = patch casse, on echoue.
+          node scripts/_patchselftest.cjs || [ $? -eq 2 ]
 
       - name: 📱 Accept Android SDK licenses & ensure Platform 36
         run: |
