@@ -99,7 +99,16 @@ jobs:
           APP_DIR=$(find ./build -name "*.app" -type d | head -n 1)
           echo "Found .app bundle at: $APP_DIR"
           cp -R "$APP_DIR" Payload/
-          zip -r MAS-Player.ipa Payload
+
+          # 1. Signature ad-hoc de chaque framework dynamique imbriqué
+          # Sans cela, les outils de sideload (Sideloadly, AltStore, Scarlet) risquent
+          # de ne pas résigner les frameworks, causant un crash instantané dyld (Code signature invalid).
+          find Payload -name "*.framework" -exec codesign --force --deep --sign - {} + 2>/dev/null || true
+          codesign --force --deep --sign - "Payload/$(basename "$APP_DIR")" 2>/dev/null || true
+
+          # 2. Empaquetage avec préservation stricte des liens symboliques (-y)
+          # 'zip -r' sans '-y' écrase ou brise les symlinks des frameworks, rendant le binaire corrompu.
+          zip -ry MAS-Player.ipa Payload
           mv MAS-Player.ipa ../MAS-Player.ipa
 
       - name: 🚀 Upload IPA Artifact
