@@ -49,11 +49,14 @@ jobs:
       - name: 📦 Install npm dependencies
         run: npm ci || npm install
 
-      - name: 🩹 Patch ExpoModulesJSI for the Swift 6.2 compiler
+      - name: 🩹 Patch ExpoModulesJSI and native equalizer
         run: |
           # Run robust JavaScript/C++ patcher covering all 7 pointer data race sites
           # and RuntimeScheduler.h constructor attributes
           node scripts/patch-expo-jsi.cjs
+
+          # Reapply the Expo Audio native equalizer patches before generating Xcode.
+          node scripts/patch-expo-audio-android.cjs
           
           # Drop -quiet so a Swift/C++ failure inside build-xcframework.sh is
           # visible in the job log instead of a bare "did not produce" error.

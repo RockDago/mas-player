@@ -5,8 +5,8 @@
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
     "@react-native-async-storage/async-storage": "2.2.0",
-    "@react-native-community/slider": "^5.2.1",
-    "expo": "~57.0.26",
+    "@react-native-community/slider": "5.2.0",
+    "expo": "~57.0.27",
     "expo-audio": "^57.0.5",
     "expo-build-properties": "~57.0.22",
     "expo-document-picker": "^57.0.3",
@@ -37,6 +37,7 @@
     "verify:restore": "node scripts/test-dsp-restore.cjs",
     "verify:settings": "node scripts/check-settings-wiring.cjs",
     "verify:merge": "node scripts/verify-trackmerge.cjs",
+    "verify:balance": "node scripts/verify-balance.cjs",
     "postinstall": "node scripts/patch-expo-jsi.cjs && node scripts/patch-expo-audio-android.cjs",
     "build:ios:ipa": "npx eas-cli build -p ios --profile preview",
     "build:ios:prod": "npx eas-cli build -p ios --profile production",
