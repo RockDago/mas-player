@@ -38,6 +38,7 @@
     "verify:settings": "node scripts/check-settings-wiring.cjs",
     "verify:merge": "node scripts/verify-trackmerge.cjs",
     "verify:balance": "node scripts/verify-balance.cjs",
+    "probe:eq": "node scripts/mutation-probe-equalizer.cjs",
     "postinstall": "node scripts/patch-expo-jsi.cjs && node scripts/patch-expo-audio-android.cjs",
     "build:ios:ipa": "npx eas-cli build -p ios --profile preview",
     "build:ios:prod": "npx eas-cli build -p ios --profile production",

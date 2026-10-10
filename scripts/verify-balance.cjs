@@ -1165,6 +1165,62 @@ section('9. Les knobs Bass / Treble survivent au changement de préréglage');
   }
 }
 
+// --- §10 : le DSP est-il réellement poussé vers le moteur ? ------------------
+//
+// L'equaliseur ne modifiait pas le son alors que tout le reste etait en place :
+// le prebuild generait un projet natif correct, `setDSP` existait en Swift et
+// en Kotlin, `playerManager.applyEqualizer` etait cable, et le harnais passait
+// parce que chacun de ces maillons etait verifie separement.
+//
+// Aucun n'etait relie a l'autre. `onUpdateDSP={setDsp}` ne fait que muter l'etat
+// React ; `playerManager.setEqualizer` n'etait appele **depuis nulle part**.
+// Un `useEffect` voisin poussait le volume et le tempo, ce qui explique que le
+// volume marche et pas l'equaliseur : le symptome ne designait pas la panne.
+//
+// Cette section verifie le lien lui-meme, pas ses deux bouts. C'est le seul
+// endroit ou une deconnexion passerait inapercee.
+{
+  const appSrc = readRepoFile('App.tsx');
+  const managerSrc = readRepoFile('src/services/playerManager.ts');
+
+  if (appSrc && managerSrc) {
+    const app = stripComments(appSrc);
+
+    // Le point exact : un appel reellement present dans un effet, et non une
+    // simple mention du symbole.
+    check('App.tsx appelle playerManager.setEqualizer', /playerManager\.setEqualizer\s*\(/.test(app));
+
+    // ...appelé depuis un `useEffect`. Un appel dans un gestionnaire de bouton
+    // ne pousserait l'EQ qu'au clic, pas au glissement d'un fader.
+    check('l\'appel est dans un useEffect', /useEffect\s*\(\s*\(\s*\)\s*=>\s*\{[\s\S]{0,400}?playerManager\.setEqualizer\s*\(/.test(app));
+
+    // Dépendre de l'objet `dsp` entier réenverrait `setDSP` à chaque rendu :
+    // `dsp` est recréé à chaque `setDsp`. Le coût n'est pas visible sans
+    // profiler, mais il est certain — le pont est synchrone sur le thread JS.
+    const effect = app.match(/useEffect\s*\(\s*\(\s*\)\s*=>\s*\{\s*playerManager\.setEqualizer[\s\S]*?\}\s*,\s*\[([\s\S]*?)\]\s*\)/);
+    check('l\'effet liste ses champs en dépendances', Boolean(effect) && !/\bdsp\s*\]/.test(effect[1]),
+      effect ? `dépendances: [${effect[1].replace(/\s+/g, ' ').trim()}]` : 'effet non localisé');
+    check('les dépendances couvrent les bandes', Boolean(effect) && /dsp\.bands/.test(effect[1]));
+    check('les dépendances couvrent l\'activation', Boolean(effect) && /dsp\.enabled/.test(effect[1]));
+
+    // `stereo` n'existe pas dans DSPState : le vrai champ s'appelle
+    // `stereoExpansion`. Une faute ici se compiles (le type est `any` en
+    // lecture via `(this.player as any)`) et coupe la moitié du DSP en silence.
+    check('la dépendance utilise le vrai nom stereoExpansion', Boolean(effect) && /dsp\.stereoExpansion/.test(effect[1]));
+    check('la dépendance n\'invente pas un champ stereo inexistant', Boolean(effect) && !/dsp\.stereo\b(?!Expansion)/.test(effect[1]));
+
+    // Symetrique cote moteur : la methode doit exister et faire quelque chose.
+    check('playerManager.applyEqualizer existe', /private applyEqualizer\s*\(/.test(managerSrc));
+    check('applyEqualizer appelle le pont natif', /setDSP\s*\(/.test(managerSrc));
+
+    // Le pont natif ne doit pas être enveloppé dans une garde qui avale le
+    // silence : `typeof ... !== 'function'` fait echouer l'EQ sans une seule
+    // erreur. Le code actuel teste `=== 'function'` puis appelle — on note la
+    // fragilité sans l'aggraver.
+    check('le pont natif est bien appelé sur iOS/Android', /\(this\.player as any\)\?\.setDSP/.test(managerSrc));
+  }
+}
+
 console.log('');
 if (failures === 0) {
   console.log(`OK — ${checks} vérifications passées.`);

@@ -254,6 +254,36 @@ hasTrackRef.current = hasTrack;
     playerManager.setPlaybackRate(dsp.tempoEnabled ? (dsp.tempo ?? 1.0) : 1.0);
   }, [dsp.volume, dsp.tempo, dsp.tempoEnabled]);
 
+  // Pousse l'egaliseur vers le moteur natif.
+  //
+  // Ce bloc n'existait pas. Le `useEffect` ci-dessus poussait le volume et le
+  // tempo, et rien d'autre : `onUpdateDSP={setDsp}` ne faisait que muter l'etat
+  // React. `playerManager.setEqualizer` n'etait appele depuis nulle part, donc
+  // les dix bandes, le preampli, la balance et le limiteur restaient a leur
+  // valeur par defaut — les faders bougeaient, le son ne bougeait pas. C'est
+  // aussi pourquoi le volume fonctionnait : lui etait cable.
+  //
+  // Depend de chaque champ et non de `dsp` entier : `dsp` est un objet recree a
+  // chaque rendu, donc dependre de l'objet enverrait setDSP a chaque frame
+  // audio et pour chaque reglette de l'interface, pas seulement quand l'EQ
+  // change reellement.
+  useEffect(() => {
+    playerManager.setEqualizer(dsp);
+  }, [
+    dsp.enabled,
+    dsp.bands,
+    dsp.preamp,
+    dsp.bass,
+    dsp.treble,
+    dsp.balance,
+    dsp.stereoExpansion,
+    dsp.limitEnabled,
+    dsp.reverbEnabled,
+    dsp.roomSize,
+    dsp.damping,
+    dsp.reverbMix,
+  ]);
+
   // Auto-play audio & Restore previous session on startup
   useEffect(() => {
     let isMounted = true;
