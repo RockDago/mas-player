@@ -11,9 +11,10 @@ Application de lecture audio audiophile haute fidélité **MAS Player**, dévelo
    - Contrôles de lecture complets : Play/Pause, Morceau Précédent, Suivant, Répétition (Tout / Morceau unique), Aléatoire (Shuffle).
    - Bibliothèque vide au premier lancement : importez votre musique (dossier complet en un clic, ou fichiers individuels).
 
-2. **Interface égaliseur et effets conservée** :
-   - Les faders, boutons, effets et préréglages restent présents dans l'interface.
-   - Le traitement audio DSP a été retiré : ces réglages ne modifient plus le son. Le volume et la vitesse de lecture restent actifs.
+2. **Égaliseur audio 10 bandes** :
+   - Les faders, le préampli, les réglages graves/aigus et les préréglages modifient le son lu sur Android et iOS.
+   - Les versions natives doivent être reconstruites pour intégrer les filtres audio Kotlin/Swift. `npm ci` applique les patches natifs avant le prebuild.
+   - Les commandes d'effets qui ne font pas partie de l'égaliseur restent des réglages d'interface.
 
 3. **Visualiseur audio animé** :
    - L'analyse rythmique et le visualiseur restent actifs pendant la lecture.
