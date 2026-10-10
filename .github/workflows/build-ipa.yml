@@ -121,10 +121,23 @@ jobs:
           cp -R "$APP_DIR" Payload/
 
           # 1. Signature ad-hoc de chaque framework dynamique imbriqué
-          # Sans cela, les outils de sideload (Sideloadly, AltStore, Scarlet) risquent
-          # de ne pas résigner les frameworks, causant un crash instantané dyld (Code signature invalid).
-          find Payload -name "*.framework" -exec codesign --force --deep --sign - {} + 2>/dev/null || true
-          codesign --force --deep --sign - "Payload/$(basename "$APP_DIR")" 2>/dev/null || true
+          #
+          # Le build compile avec CODE_SIGNING_ALLOWED=NO : les frameworks
+          # imbriqués arrivent donc NON signés. Le `--deep` sur le .app ne les
+          # resigne pas de façon fiable, et un seul framework sans signature
+          # valide tue l'app AU LANCEMENT (dyld : Code signature invalid).
+          # Symptôme : l'app s'ouvre et quitte aussitôt, sans crash report.
+          #
+          # ⚠ Ces commandes ne doivent JAMAIS être suivies de `|| true`. Elles
+          # l'étaient, et l'échec était invisible : le job affichait vert et
+          # publiait un IPA mort au lancement. Un build qui ne signe pas est
+          # un build qui ne marche pas ; mieux vaut le voir échouer ici.
+          find Payload -name "*.framework" -exec codesign --force --deep --sign - {} \;
+          codesign --force --deep --sign - "Payload/$(basename "$APP_DIR")"
+
+          # La signature doit être vérifiable, pas seulement exécutée :
+          # `codesign --verify` attrape ce que `--deep` laisse passer.
+          codesign --verify --deep --strict --verbose=2 "Payload/$(basename "$APP_DIR")"
 
           # 2. Empaquetage avec préservation stricte des liens symboliques (-y)
           # 'zip -r' sans '-y' écrase ou brise les symlinks des frameworks, rendant le binaire corrompu.
