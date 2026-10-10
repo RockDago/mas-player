@@ -83,6 +83,17 @@ function patchIos() {
       '#import "AudioTapProcessor.h"\n#import "MASAudioDSP.h"'
     );
   }
+  // `CFRelease` est utilise plus bas pour liberer le tap. Il arrive
+  // aujourd'hui en transitif via Foundation, mais une dependance transitive
+  // n'est pas une garantie : si Expo Audio leve un jour cet import, le
+  // build echoue sur `undeclared function`. CoreFoundation est explicitement
+  // importe plutot que laisse au hasard.
+  if (!tapSource.includes('#import <CoreFoundation/CoreFoundation.h>')) {
+    tapSource = tapSource.replace(
+      '#import <AudioToolbox/AudioToolbox.h>',
+      '#import <AudioToolbox/AudioToolbox.h>\n#import <CoreFoundation/CoreFoundation.h>'
+    );
+  }
   if (!tapSource.includes('_dspState = MASAudioDSPCreate()')) {
     tapSource = tapSource.replace(
       '  _audioProcessingTap = NULL;\n',
@@ -104,15 +115,14 @@ function patchIos() {
   // pendant que le script annoncait quand meme son succes.
   //
   // Le motif est donc borne au corps du dealloc lui-meme : `invalidate` (qui
-  // precede dealloc dans le fichier) contient lui aussi un
-  // `MTAudioProcessingTapDestroy`, et une recherche globale dirait a tort que
-  // dealloc est deja corrige.
+  // precede dealloc dans le fichier) contient lui aussi un `CFRelease`, et une
+  // recherche globale dirait a tort que dealloc est deja corrige.
   const deallocPattern = /- \(void\)dealloc \{[\s\S]*?\n\}/;
   const deallocMatch = tapSource.match(deallocPattern);
   if (!deallocMatch) {
     throw new Error(`[audio-equalizer] Could not find iOS dealloc in ${tapSourcePath}`);
   }
-  if (!deallocMatch[0].includes('MTAudioProcessingTapDestroy(_audioProcessingTap)')) {
+  if (!deallocMatch[0].includes('CFRelease(_audioProcessingTap)')) {
     tapSource = tapSource.replace(
       deallocPattern,
       [
@@ -120,19 +130,30 @@ function patchIos() {
         '  [self invalidate];',
         '',
         '  // Le DSP ne doit pas etre libere tant que le thread de rendu peut',
-        '  // encore l\'atteindre. `invalidate` ne detruit pas le tap :',
-        '  // MTAudioProcessingTapDestroy n\'est appele nulle part, et',
-        '  // `setAudioMix:nil` est asynchrone. Un `tapProcess` deja engage peut',
-        '  // donc parfaitement survivre a la dealloc et appeler',
-        '  // MASAudioDSPProcess sur un etat libere — relecture sur zone liberee',
-        '  // sur le thread de rendu, qui tue le process sans exception.',
+        '  // encore l\'atteindre.',
         '  //',
-        '  // MTAudioProcessingTapCallbacks.destroy bloque jusqu\'a ce que le tap',
-        '  // soit pleinement detruit (donc plus aucun callback), ce qui rend le',
-        '  // `MASAudioDSPDestroy` ci-dessous sur ; c\'est le seul endroit ou',
-        '  // cette attente est legitime — le dealloc n\'est pas un chemin rapide.',
+        '  // `invalidate` libere deja le tap (CFRelease + NULL), donc dans le',
+        '  // cas ordinaire ce bloc ne fait rien et le tap est detruire avant',
+        '  // cette ligne. Il reste necessaire pour les deux cas qu\'il ne',
+        '  // couvre pas : si `_audioProcessingTap` a ete reaffecte entre-temps,',
+        '  // ou si `dealloc` est atteint alors qu\'`invalidate` n\'a pas libere',
+        '  // (tapie pose mais jamais installee). Sans cette garde, un tap encore',
+        '  // vivant pourrait appeler `MASAudioDSPProcess` sur un etat libere —',
+        '  // relecture sur zone liberee sur le thread de rendu, qui tue le',
+        '  // process sans exception.',
+        '  //',
+        '  // Le tap est un objet Core Foundation : `MTAudioProcessingTapCreate`',
+        '  // est sa seule fonction d\'API, et la liberation passe par',
+        '  // `CFRelease` — qui declenche le `finalize` du tap, donc la liberation',
+        '  // de son contexte. Il n\'existe AUCUN `MTAudioProcessingTapDestroy` :',
+        '  // l\'appeler ne compile pas ("call to undeclared function",',
+        '  // run 103089817507). Le CFRelease attend que la reference',
+        '  // commentairee tombe a zero, donc jusqu\'a ce qu\'aucun callback ne',
+        '  // puisse plus courir — ce qui rend le `MASAudioDSPDestroy` ci-dessous',
+        '  // sur. C\'est le seul endroit ou cette attente est legitime : le',
+        '  // dealloc n\'est pas un chemin rapide.',
         '  if (_audioProcessingTap) {',
-        '    MTAudioProcessingTapDestroy(_audioProcessingTap);',
+        '    CFRelease(_audioProcessingTap);',
         '    _audioProcessingTap = NULL;',
         '  }',
         '',
@@ -146,47 +167,61 @@ function patchIos() {
     'context->supportedTapProcessingFormat = true;',
     'context->supportedTapProcessingFormat = processingFormat->mFormatID == kAudioFormatLinearPCM && (processingFormat->mFormatFlags & kAudioFormatFlagIsFloat);'
   );
-  // `invalidate` et `uninstallTap`_remettent le contexte a `isValid = NO` mais
+  // `invalidate` et `uninstallTap` remettent le contexte a `isValid = NO` mais
   // laissaient vivre le tap. Or c'est ce qui rendait la reinstallation
   // instable : `installTap` fait `invalidate()` puis remplace le processeur, dont
   // le `dealloc` libere le DSP, alors que le tap d'avant pouvait encore
-  // appeler `tapProcess`. Detruire le tap ici bloque jusqu'a ce qu'aucun
-  // callback ne puisse plus courir, donc jusqu'a ce que la liberation du DSP
-  // soit sur.
+  // appeler `tapProcess`. Le `CFRelease` ici bloque jusqu'a ce qu'aucun callback
+  // ne puisse plus courir, donc jusqu'a ce que la liberation du DSP soit sur.
   const invalidatePattern = /- \(void\)invalidate \{[\s\S]*?\n\}\n\n- \(void\)dealloc/;
-  if (!invalidatePattern.test(tapSource)) {
+  const invalidateMatch = tapSource.match(invalidatePattern);
+  if (!invalidateMatch) {
     throw new Error(`[audio-equalizer] Could not find iOS tap invalidation function in ${tapSourcePath}`);
   }
-  tapSource = tapSource.replace(
-    invalidatePattern,
-    [
-      '- (void)invalidate {',
-      '  os_unfair_lock_lock(&_lock);',
-      '',
-      '  _isInvalidated = YES;',
-      '  self.sampleBufferCallback = nil;',
-      '',
-      '  if (_isTapInstalled) {',
-      '    [_player.currentItem setAudioMix:nil];',
-      '    _isTapInstalled = NO;',
-      '',
-      '    if (_audioProcessingTap) {',
-      '      AVAudioTapProcessorContext *context = (AVAudioTapProcessorContext *)MTAudioProcessingTapGetStorage(_audioProcessingTap);',
-      '      if (context) {',
-      '        context->isValid = NO;',
-      '        context->self = NULL;',
-      '      }',
-      '      MTAudioProcessingTapDestroy(_audioProcessingTap);',
-      '      _audioProcessingTap = NULL;',
-      '    }',
-      '  }',
-      '',
-      '  os_unfair_lock_unlock(&_lock);',
-      '}',
-      '',
-      '- (void)dealloc'
-    ].join('\n')
-  );
+  // ⚠ Garde INDISPENSABLE, et le meme piege que pour `dealloc` quelques lignes
+  // plus haut.
+  //
+  // Ce remplacement n'etait PAS conditionne. Sur un arbre deja patche, il
+  // reappliquait donc son tableau a chaque execution : chaque passage
+  // reinjectait un `CFRelease` supplementaire dans `invalidate`, qui en
+  // accumulait jusqu'a libere le tap plusieurs fois — un over-release, qui
+  // crash aussitot, sur un chemin different de celui qu'on cherchait a
+  // corriger.
+  //
+  // Detecte via le corps du motif, comme pour `dealloc` : une recherche globale
+  // verrait le `CFRelease` du dealloc et croirait l'invalidate deja corrige.
+  if (!invalidateMatch[0].includes('CFRelease(_audioProcessingTap)')) {
+    tapSource = tapSource.replace(
+      invalidatePattern,
+      [
+        '- (void)invalidate {',
+        '  os_unfair_lock_lock(&_lock);',
+        '',
+        '  _isInvalidated = YES;',
+        '  self.sampleBufferCallback = nil;',
+        '',
+        '  if (_isTapInstalled) {',
+        '    [_player.currentItem setAudioMix:nil];',
+        '    _isTapInstalled = NO;',
+        '',
+        '    if (_audioProcessingTap) {',
+        '      AVAudioTapProcessorContext *context = (AVAudioTapProcessorContext *)MTAudioProcessingTapGetStorage(_audioProcessingTap);',
+        '      if (context) {',
+        '        context->isValid = NO;',
+        '        context->self = NULL;',
+        '      }',
+        '      CFRelease(_audioProcessingTap);',
+        '      _audioProcessingTap = NULL;',
+        '    }',
+        '  }',
+        '',
+        '  os_unfair_lock_unlock(&_lock);',
+        '}',
+        '',
+        '- (void)dealloc'
+      ].join('\n')
+    );
+  }
   const tapPreparePattern = /void tapPrepare\([^\n]*\) \{[\s\S]*?\n\}\n\nvoid tapProcess/;
   if (!tapPreparePattern.test(tapSource)) {
     throw new Error(`[audio-equalizer] Could not find iOS tap preparation function in ${tapSourcePath}`);

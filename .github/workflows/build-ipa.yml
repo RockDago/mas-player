@@ -57,8 +57,13 @@ jobs:
 
           # Reapply the Expo Audio native equalizer patches before generating Xcode.
           node scripts/patch-expo-audio-android.cjs
+          node scripts/patch-expo-audio-equalizer.cjs
 
-          # Prove the patch applied, on a pristine tree AND on a second pass.
+          # Prove the patch applied. Three levels, because each catches a
+          # different silent failure:
+          #   A. the installed tree, patched twice (idempotence)
+          #   B. the pristine npm tarball (do the anchors still match upstream?)
+          #   C. a mutation — the harness must REJECT the pre-fix script
           #
           # `String.replace` fails silently when its anchor moves, so a patch that
           # no longer matches reports success without having changed anything. That
@@ -165,6 +170,7 @@ jobs:
           # sans le moindre signal dans les logs.
           node scripts/patch-expo-jsi.cjs
           node scripts/patch-expo-audio-android.cjs
+          node scripts/patch-expo-audio-equalizer.cjs
 
           # Memes codes de sortie que ci-dessus : 2 = arbre installe simplement
           # anterieur (normal apres `npm ci`), 1 = patch casse, on echoue.
