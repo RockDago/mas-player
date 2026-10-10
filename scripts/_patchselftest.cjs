@@ -117,13 +117,16 @@ function inspect(label, src) {
     "l'API n'existe pas dans MediaToolbox (run 103089817507)"
   );
 
-  // invalidate ET dealloc doivent chacun liberer le tap, une fois exactement.
-  // Une fois : deux CFRelease sur le meme objet = over-release = crash.
+  // invalidate, dealloc ET uninstallTap doivent chacun liberer le tap, une
+  // fois exactement. Une fois : deux CFRelease sur le meme objet = over-release
+  // = crash. Trois fois : chacun est une methode distincte avec son propre
+  // pointeur, donc c'est correct — le liberer dans les trois est ce qui ferme
+  // la fuite d amont (uninstallTap ne faisait qu abandonner la reference).
   const releases = (src.match(/CFRelease\(_audioProcessingTap\);/g) || []).length;
   check(
-    `${label} : libere le tap exactement deux fois (invalidate + dealloc)`,
-    releases === 2,
-    `trouve ${releases} CFRelease(_audioProcessingTap)`
+    `${label} : libere le tap dans invalidate, dealloc ET uninstallTap`,
+    releases === 3,
+    `trouve ${releases} CFRelease(_audioProcessingTap), attendu 3`
   );
 
   check(
@@ -164,6 +167,39 @@ function inspect(label, src) {
   check(
     `${label} : tapPrepare valide le contexte avant usage`,
     /tapPrepare\([\s\S]*?if \(!context\) \{\s*\n\s*return;/.test(src)
+  );
+
+  // ⚠ Le point meme du correctif de crash.
+  //
+  // Le thread de rendu audio ne doit PAS lire une @property ObjC : c'est un
+  // message send a objc_msgSend vers un objet qui peut etre engage dans
+  // `dealloc`. Indetermine, et sur le thread audio ca tue le process sans
+  // exception — c'est ce qui faisait quitter l'app au lancement, des que le
+  // module DSP etait branche.
+  //
+  // On verifie l'absence de la LECTURE, pas l'absence de la chaine : le
+  // patch documente la correction dans un commentaire qui la cite, et une
+  // recherche brute le prendrait pour un bug. D'ou le `\(` : on exige que la
+  // lecture soit appelee, pas seulement nommee.
+  check(
+    `${label} : tapProcess n appelle PAS la propriete dspState`,
+    !/processor\.dspState\s*[,)]/.test(src),
+    'lecture par @property sur le thread de rendu : message send a un objet en dealloc'
+  );
+  check(
+    `${label} : tapProcess passe par l accessor C`,
+    /MASAudioDSPProcess\(\s*MASAudioDSPGetState\(/.test(src),
+    "l'accessor C doit remplacer la lecture de la propriete"
+  );
+  check(
+    `${label} : l accessor C lit l ivar sans message send`,
+    /MASAudioDSPState \*MASAudioDSPGetState\(AudioTapProcessor \*processor\) \{[\s\S]*?return processor->_dspState;/.test(src),
+    "l'accessor doit lire `processor->_dspState`, pas passer par un getter"
+  );
+  check(
+    `${label} : l ivar _dspState est declare explicitement`,
+    src.includes('MASAudioDSPState *_dspState;'),
+    "sans declaration explicite, l'acces depends de la synthese de propriete"
   );
   return failures;
 }

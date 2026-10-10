@@ -71,12 +71,51 @@ function patchIos() {
     );
     header = header.replace(
       '@property (nonatomic, readonly) BOOL isTapInstalled;',
-      '@property (nonatomic, readonly) BOOL isTapInstalled;\n@property (nonatomic, readonly) MASAudioDSPState *dspState;\n- (void)setDSPEnabled:(BOOL)enabled bands:(NSArray<NSNumber *> *)bands preamp:(double)preamp balance:(double)balance stereo:(double)stereo limit:(BOOL)limit reverb:(BOOL)reverb room:(double)room damp:(double)damp mix:(double)mix;\n- (void)setSampleRate:(double)sampleRate;'
+      '@property (nonatomic, readonly) BOOL isTapInstalled;\n' +
+        // ⚠ `dspState` n est PAS une @property, mais un accessor C en lecture seule.\n' +
+        '//\n' +
+        '// Le thread de rendu audio ne peut pas passer par une @property : lire une\n' +
+        '// propriete ObjC est un message send a `objc_msgSend`, donc un envoi de\n' +
+        '// message a un objet engage dans `dealloc` — comportement indefini, et sur\n' +
+        '// le thread audio il tue le process sans exception. Or `dspState` est\n' +
+        '// detruit dans `dealloc` : un `tapProcess` deja engage pouvait lire\n' +
+        '// l accessor apres, ou pendant, la liberation de l objet. L accessor lit\n' +
+        '// l ivar directement : plus de message send, donc plus rien qui passe par\n' +
+        '// l objet.\n' +
+        'MASAudioDSPState *MASAudioDSPGetState(AudioTapProcessor *processor);\n' +
+        '- (void)setDSPEnabled:(BOOL)enabled bands:(NSArray<NSNumber *> *)bands preamp:(double)preamp balance:(double)balance stereo:(double)stereo limit:(BOOL)limit reverb:(BOOL)reverb room:(double)room damp:(double)damp mix:(double)mix;\n- (void)setSampleRate:(double)sampleRate;'
     );
     fs.writeFileSync(tapHeaderPath, header, 'utf8');
   }
 
   let tapSource = fs.readFileSync(tapSourcePath, 'utf8');
+  // L ivar est declare explicitement dans le bloc @implementation : c est lui
+  // que lit `MASAudioDSPGetState`, sur le thread de rendu. Declare en dur, il
+  // ne depend pas du synthese de propriete (qui elle, passe par objc).
+  if (!tapSource.includes('MASAudioDSPState *_dspState;')) {
+    tapSource = tapSource.replace(
+      '  BOOL _isInvalidated;\n}',
+      '  BOOL _isInvalidated;\n  MASAudioDSPState *_dspState;\n}'
+    );
+  }
+  // L accessor C : seul chemin du thread audio vers l etat du DSP. Il ne fait
+  // aucun message send, donc reste valide meme si l objet est en dealloc — il
+  // ne reste alors qu a lire un pointeur que le dealloc vient de remettre a
+  // NULL, et `MASAudioDSPProcess`/tsont deja blindes sur NULL.
+  if (!tapSource.includes('MASAudioDSPState *MASAudioDSPGetState(')) {
+    tapSource = tapSource.replace(
+      '#pragma mark - Audio Sample Buffer Callbacks (MTAudioProcessingTapCallbacks)',
+      [
+        'MASAudioDSPState *MASAudioDSPGetState(AudioTapProcessor *processor) {',
+        '  // Lecture directe de l ivar, sans passer par un getter ObjC : le',
+        '  // thread de rendu ne doit jamais envoyer de message a cet objet.',
+        '  return processor->_dspState;',
+        '}',
+        '',
+        '#pragma mark - Audio Sample Buffer Callbacks (MTAudioProcessingTapCallbacks)'
+      ].join('\n')
+    );
+  }
   if (!tapSource.includes('#import "MASAudioDSP.h"')) {
     tapSource = tapSource.replace(
       '#import "AudioTapProcessor.h"',
@@ -222,6 +261,49 @@ function patchIos() {
       ].join('\n')
     );
   }
+  // `uninstallTap` fait `_audioProcessingTap = NULL` SANS jamais liberer le
+  // tap : la reference part, l objet reste vivant cote CoreMedia. Le
+  // `dealloc` qui suit alors (`installTap` invalide puis remplace le
+  // processeur) detruit le DSP pendant que ce tap peut encore appeler
+  // `tapProcess` — qui passe par `context->self`, un `__bridge` non retenu.
+  // C'est la fuite qui rend le use-after-free possible, et elle vient
+  // d'AMONT, pas du patch.
+  //
+  // Le `CFRelease` attend la chute a zero de la reference : quand il rend la
+  // main, plus aucun callback ne peut courir, donc `MASAudioDSPDestroy` peut
+  // suivre sans risque.
+  const uninstallPattern = /- \(void\)uninstallTap \{[\s\S]*?\n\}/;
+  const uninstallMatch = tapSource.match(uninstallPattern);
+  if (!uninstallMatch) {
+    throw new Error(`[audio-equalizer] Could not find iOS uninstallTap in ${tapSourcePath}`);
+  }
+  if (!uninstallMatch[0].includes('CFRelease(_audioProcessingTap)')) {
+    tapSource = tapSource.replace(
+      uninstallPattern,
+      [
+        '- (void)uninstallTap {',
+        '  os_unfair_lock_lock(&_lock);',
+        '',
+        '  if (_isTapInstalled && !_isInvalidated) {',
+        '    [_player.currentItem setAudioMix:nil];',
+        '    _isTapInstalled = NO;',
+        '',
+        '    if (_audioProcessingTap) {',
+        '      AVAudioTapProcessorContext *context = (AVAudioTapProcessorContext *)MTAudioProcessingTapGetStorage(_audioProcessingTap);',
+        '      if (context) {',
+        '        context->isValid = NO;',
+        '        context->self = NULL;',
+        '      }',
+        '      CFRelease(_audioProcessingTap);',
+        '      _audioProcessingTap = NULL;',
+        '    }',
+        '  }',
+        '',
+        '  os_unfair_lock_unlock(&_lock);',
+        '}'
+      ].join('\n')
+    );
+  }
   const tapPreparePattern = /void tapPrepare\([^\n]*\) \{[\s\S]*?\n\}\n\nvoid tapProcess/;
   if (!tapPreparePattern.test(tapSource)) {
     throw new Error(`[audio-equalizer] Could not find iOS tap preparation function in ${tapSourcePath}`);
@@ -261,7 +343,10 @@ void tapProcess`
 
   AudioTapProcessor *processor = (__bridge AudioTapProcessor *)context->self;
   if (context->supportedTapProcessingFormat) {
-    MASAudioDSPProcess(processor.dspState, bufferListInOut, *numberFramesOut, context->isNonInterleaved);
+    // ⚠ Accesor C, PAS la propriete processor.dspState. Lire la propriete
+    // serait un message send a objc_msgSend vers un objet engage dans
+    // dealloc, ce qui est indefini et tue le process sur le thread de rendu.
+    MASAudioDSPProcess(MASAudioDSPGetState(processor), bufferListInOut, *numberFramesOut, context->isNonInterleaved);
   }
 
   SampleBufferCallback callback = processor.sampleBufferCallback;
