@@ -209,7 +209,7 @@ static double MASAudioDSPFilterSample(MASAudioDSPState *state, NSUInteger channe
 static double dampStateL[4] = {0};
 static double dampStateR[4] = {0};
 
-void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, CMItemCount frameCount, BOOL nonInterleaved) {
+void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, MASFrameCount frameCount, BOOL nonInterleaved) {
   if (!state || !state->hasProcessing) return;
   if (!bufferList || bufferList->mNumberBuffers == 0) return;
 
@@ -256,7 +256,7 @@ void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, CM
     float *leftChannel = (float *)bufferList->mBuffers[0].mData;
     float *rightChannel = (float *)bufferList->mBuffers[1].mData;
     
-    for (CMItemCount i = 0; i < frameCount; i++) {
+    for (ItemCount i = 0; i < frameCount; i++) {
       double l = leftChannel[i] * preamp;
       double r = rightChannel[i] * preamp;
 
@@ -313,7 +313,7 @@ void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, CM
     NSUInteger channels = bufferList->mBuffers[0].mNumberChannels;
     
     if (channels >= 2) {
-      for (CMItemCount i = 0; i < frameCount; i++) {
+      for (ItemCount i = 0; i < frameCount; i++) {
         double l = data[i * channels] * preamp;
         double r = data[i * channels + 1] * preamp;
 
