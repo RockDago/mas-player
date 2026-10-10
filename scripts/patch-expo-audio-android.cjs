@@ -8,7 +8,7 @@ const path = require('path');
  *
  * Ce patch est le SEUL câblage de l'événement `onRemoteCommand` côté Android :
  * `playerManager.subscribeAndroidRemoteCommands` s'y abonne pour piloter la file.
- * Il ne touche pas au DSP — celui-ci a été retiré avec le module natif.
+ * Installe aussi le vrai traitement d'égaliseur PCM natif iOS et Android.
  */
 
 console.log('[patch-expo-audio-android] Starting robust patch for Android transport controls...');
@@ -326,3 +326,4 @@ if (fs.existsSync(sessionCallbackPath)) {
   console.log('[patch-expo-audio-android] AudioMediaSessionCallback.kt updated successfully.');
 }
 
+require('./patch-expo-audio-equalizer.cjs');

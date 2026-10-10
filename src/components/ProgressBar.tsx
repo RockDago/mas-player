@@ -38,8 +38,8 @@ interface ProgressBarProps {
 export const ProgressBar: React.FC<ProgressBarProps> = ({
   positionMillis,
   durationMillis,
-  playedColor = '#38BDF8',
-  unplayedColor = 'rgba(255,255,255,0.18)',
+  playedColor = '#00F0FF',
+  unplayedColor = 'rgba(56, 189, 248, 0.18)',
   onSeekCommit,
   disabled = false,
 }) => {
@@ -201,12 +201,20 @@ const styles = StyleSheet.create({
   rail: {
     height: 4,
     borderRadius: 2,
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+    borderWidth: 0.5,
+    borderColor: 'rgba(0, 212, 255, 0.2)',
     overflow: 'hidden',
     pointerEvents: 'none',
   },
   fill: {
     height: '100%',
     borderRadius: 2,
+    shadowColor: '#00F0FF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+    elevation: 4,
   },
   timeRow: {
     flexDirection: 'row',

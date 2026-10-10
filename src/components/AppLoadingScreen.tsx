@@ -75,8 +75,16 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       ]}
       pointerEvents={visible ? 'auto' : 'none'}
     >
+      {/* Background artwork du Monarque de l'Ombre */}
+      <Image
+        source={require('../../assets/94b2251aac48c727fbc774cd57da9714.jpg')}
+        style={StyleSheet.absoluteFill}
+        resizeMode="cover"
+      />
+      <View style={styles.darkBackdrop} />
+
       <View style={styles.content}>
-        {/* Logo MAS Player rond animé sans ombre bleu ciel */}
+        {/* Blason animé */}
         <Animated.View
           style={[
             styles.logoWrapper,
@@ -92,13 +100,17 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
           />
         </Animated.View>
 
-        {/* Section Chargement : Spinner + Mot "Chargement..." */}
+        {/* Titre animé */}
+        <View style={styles.titleContainer}>
+          <Text style={styles.appTitle}>MAS PLAYER</Text>
+        </View>
+
+        {/* Section Chargement : Spinner néon + Statut */}
         <View style={styles.loadingRow}>
-          <ActivityIndicator size="small" color="#38BDF8" style={styles.spinner} />
+          <ActivityIndicator size="small" color="#00f0ff" style={styles.spinner} />
           <Text style={styles.loadingText}>{statusText}</Text>
         </View>
 
-        <Text style={styles.subtext}>Initialisation du moteur audio & bibliothèque...</Text>
       </View>
     </Animated.View>
   );
@@ -110,11 +122,15 @@ const LOGO_SIZE = Math.min(136, Math.round(SCREEN_WIDTH * 0.34));
 const styles = StyleSheet.create({
   container: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: '#07090E',
+    backgroundColor: '#040711',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 99999,
     elevation: 99999,
+  },
+  darkBackdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(3, 7, 18, 0.78)',
   },
   content: {
     alignItems: 'center',
@@ -126,40 +142,53 @@ const styles = StyleSheet.create({
     height: LOGO_SIZE,
     borderRadius: LOGO_SIZE / 2,
     overflow: 'hidden',
-    borderWidth: 1.5,
-    borderColor: '#1E293B',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.6,
-    shadowRadius: 14,
-    elevation: 8,
-    backgroundColor: '#090B10',
+    backgroundColor: '#050a18',
   },
   logoImage: {
     width: '100%',
     height: '100%',
   },
+  titleContainer: {
+    alignItems: 'center',
+    marginTop: 22,
+  },
+  appTitle: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 3,
+    textShadowColor: 'rgba(0, 212, 255, 0.8)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 12,
+  },
   loadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 36,
+    marginTop: 28,
     gap: 10,
+    backgroundColor: 'rgba(10, 16, 32, 0.75)',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(0, 212, 255, 0.25)',
   },
   spinner: {
     marginRight: 4,
   },
   loadingText: {
-    color: '#F8FAFC',
-    fontSize: 16,
-    fontWeight: '600',
+    color: '#E0F2FE',
+    fontSize: 14.5,
+    fontWeight: '700',
     letterSpacing: 0.8,
   },
   subtext: {
-    color: '#64748B',
-    fontSize: 12,
-    marginTop: 10,
+    color: '#7DD3FC',
+    fontSize: 11.5,
+    marginTop: 14,
     textAlign: 'center',
-    letterSpacing: 0.3,
+    letterSpacing: 0.5,
+    opacity: 0.85,
   },
 });

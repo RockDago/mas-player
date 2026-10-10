@@ -10,6 +10,7 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
@@ -43,8 +44,10 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
       visible={visible}
       animationType="fade"
       transparent
+      statusBarTranslucent={true}
       onRequestClose={onClose}
     >
+      <StatusBar style="light" />
       <View style={styles.overlay}>
         {/* Backdrop to tap to close */}
         <TouchableOpacity
@@ -56,24 +59,18 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
         {/* Drawer sliding in from left */}
         <SafeAreaView
           style={styles.drawerContainer}
-          edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
+          edges={['left', 'right', 'bottom']}
         >
           <View
             style={[
               styles.header,
               {
-                // Marge système mesurée : le tiroir se collait à l'horloge.
-                paddingTop:
-                  Platform.OS === 'android'
-                    ? insetPadding(insets, 'top', 20)
-                    : Platform.OS === 'ios'
-                    ? 12
-                    : 20,
+                paddingTop: insetPadding(insets, 'top', 14),
               },
             ]}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <MaterialCommunityIcons name="clock-outline" size={26} color="#38BDF8" />
+              <MaterialCommunityIcons name="clock-outline" size={26} color="#00F0FF" />
               <View>
                 <Text style={styles.headerTitle}>Lire plus tard</Text>
                 <Text style={styles.headerSub}>File d'attente ({queue.length})</Text>
@@ -224,13 +221,13 @@ const styles = StyleSheet.create({
     width: '84%',
     maxWidth: 380,
     height: '100%',
-    backgroundColor: '#121115',
+    backgroundColor: 'rgba(8, 14, 28, 0.96)',
     borderRightWidth: 1,
-    borderRightColor: '#26252C',
-    shadowColor: '#000000',
+    borderRightColor: 'rgba(0, 212, 255, 0.35)',
+    shadowColor: '#00F0FF',
     shadowOffset: { width: 4, height: 0 },
-    shadowOpacity: 0.6,
-    shadowRadius: 12,
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
     elevation: 20,
   },
   header: {

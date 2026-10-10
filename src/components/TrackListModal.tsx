@@ -10,6 +10,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import { Ionicons } from '@expo/vector-icons';
 import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
@@ -161,11 +162,13 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
       visible={visible}
       animationType="slide"
       presentationStyle="pageSheet"
+      statusBarTranslucent={true}
       onRequestClose={onClose}
     >
+      <StatusBar style="light" />
       <SafeAreaView
         style={styles.container}
-        edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
+        edges={['left', 'right', 'bottom']}
       >
         <View
           style={[
@@ -283,7 +286,7 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: 'rgba(5, 9, 20, 0.96)',
   },
   header: {
     flexDirection: 'row',
@@ -292,7 +295,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#1A1A1A',
+    borderBottomColor: 'rgba(0, 212, 255, 0.25)',
   },
   closeBtn: {
     padding: 4,

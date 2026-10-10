@@ -145,6 +145,28 @@ const DEFAULT_DSP: DSPState = {
 const DSP_BAND_COUNT = 10;
 
 /**
+ * Anciens identifiants de préréglages → identifiants actuels.
+ *
+ * Un preset est persisté *par son id* dans `DSPState.presetId`. Renommer un preset
+ * sans migrer l'id laisse les installations existantes avec un `presetId` qui ne
+ * désigne plus rien : le nom affiché retombe sur l'état courant alors que la
+ * courbe, elle, est toujours chargée depuis les `bands` sauvegardés. L'utilisateur
+ * voit « Flat » avec la courbe de l'ancien preset — incohérence silencieuse.
+ */
+const DSP_PRESET_ID_MIGRATIONS: Record<string, string> = {
+  // 10 octobre 2026 — « Bass Booster » est devenu « Bass Profond ».
+  'bass-booster': 'bass-profond',
+};
+
+/**
+ * Anciennes sauvegardes : le préampli était dérivé de la courbe (−7,8 dB sur
+ * `bass`, −10,2 dB sur l'ancien `bass-booster`). Il est épinglé à 0 dB depuis le
+ * 10 octobre 2026, donc `normalizeDSP` le remet à zéro — sans quoi l'utilisateur
+ * qui met à jour l'application retrouve un morceau inexplicablement étouffé, et
+ * aucun curseur à l'écran pour expliquer d'où vient ce niveau.
+ */
+
+/**
  * Rend un état DSP persisté conforme au type attendu.
  *
  * `JSON.parse` ne valide rien : une écriture tronquée, un schéma d'une version
@@ -165,12 +187,15 @@ function normalizeDSP(raw: unknown): DSPState {
       })
     : new Array(DSP_BAND_COUNT).fill(0);
 
+  const rawPresetId = typeof input.presetId === 'string' ? input.presetId : DEFAULT_DSP.presetId;
+  const presetId = DSP_PRESET_ID_MIGRATIONS[rawPresetId] ?? rawPresetId;
+
   return {
     enabled: typeof input.enabled === 'boolean' ? input.enabled : DEFAULT_DSP.enabled,
-    presetId: typeof input.presetId === 'string' ? input.presetId : DEFAULT_DSP.presetId,
+    presetId,
     bass: num(input.bass, DEFAULT_DSP.bass),
     treble: num(input.treble, DEFAULT_DSP.treble),
-    preamp: num(input.preamp, DEFAULT_DSP.preamp),
+    preamp: 0,
     stereoExpansion: num(input.stereoExpansion, DEFAULT_DSP.stereoExpansion),
     crossfeed: num(input.crossfeed, DEFAULT_DSP.crossfeed),
     tempo: num(input.tempo, DEFAULT_DSP.tempo),

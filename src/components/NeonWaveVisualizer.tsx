@@ -122,8 +122,8 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
       vx: (Math.random() - 0.5) * 0.7,
       vy: (Math.random() - 0.5) * 0.3,
       size: 1.2 + Math.random() * 2.2,
-      color: Math.random() > 0.45 ? '#00f0ff' : '#ec4899',
-      alpha: 0.3 + Math.random() * 0.5,
+      color: Math.random() > 0.6 ? '#00f0ff' : Math.random() > 0.3 ? '#38bdf8' : '#60a5fa',
+      alpha: 0.35 + Math.random() * 0.55,
       phase: Math.random() * Math.PI * 2,
     }));
 
@@ -341,39 +341,39 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
               ctx.restore();
             };
 
-            // Ruban Violet Arrière-plan
+            // Ruban Ombre Arrière-plan (Monarch Void Blue / Indigo)
             drawSilkRibbon(
               2.8,
               1.8,
               phase * 0.6,
               height * 0.16,
               {
-                glowColor: '#8b5cf6',
-                c1: 'rgba(139, 92, 246, A)',
-                c2: 'rgba(99, 102, 241, A)',
-                c3: 'rgba(192, 38, 211, A)',
+                glowColor: '#3b82f6',
+                c1: 'rgba(30, 58, 138, A)',
+                c2: 'rgba(59, 130, 246, A)',
+                c3: 'rgba(99, 102, 241, A)',
               },
               8,
               false
             );
 
-            // Ruban Magenta Médian
+            // Ruban Azur Médian (Shadow Mana Wave)
             drawSilkRibbon(
               1.4,
               2.1,
               phase * 0.85,
               height * 0.19,
               {
-                glowColor: '#ec4899',
-                c1: 'rgba(236, 72, 153, A)',
-                c2: 'rgba(244, 63, 94, A)',
-                c3: 'rgba(217, 70, 239, A)',
+                glowColor: '#0099ff',
+                c1: 'rgba(2, 132, 199, A)',
+                c2: 'rgba(0, 153, 255, A)',
+                c3: 'rgba(56, 189, 248, A)',
               },
               10,
               false
             );
 
-            // Ruban Cyan Avant-plan (suit le rythme avec éclat)
+            // Ruban Cyan Avant-plan (Monarch Soulfire - suit le rythme avec éclat)
             drawSilkRibbon(
               0,
               2.4,
@@ -383,20 +383,20 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
                 glowColor: '#00f0ff',
                 c1: 'rgba(0, 240, 255, A)',
                 c2: 'rgba(56, 189, 248, A)',
-                c3: 'rgba(14, 165, 233, A)',
+                c3: 'rgba(103, 232, 249, A)',
               },
               12,
               true
             );
 
-            // 4. Reflets aquatiques miroir
+            // 4. Reflets aquatiques miroir aux nuances d'ombre et néon cyan
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
             const reflAlpha = (0.35 + smoothedPulse * 0.45).toFixed(3);
             const reflGrad = ctx.createLinearGradient(0, waterLineY, 0, displayHeight);
             reflGrad.addColorStop(0, `rgba(0, 240, 255, ${reflAlpha})`);
-            reflGrad.addColorStop(0.35, `rgba(236, 72, 153, ${(Number(reflAlpha) * 0.7).toFixed(3)})`);
-            reflGrad.addColorStop(0.75, `rgba(139, 92, 246, ${(Number(reflAlpha) * 0.25).toFixed(3)})`);
+            reflGrad.addColorStop(0.35, `rgba(59, 130, 246, ${(Number(reflAlpha) * 0.7).toFixed(3)})`);
+            reflGrad.addColorStop(0.75, `rgba(37, 99, 235, ${(Number(reflAlpha) * 0.25).toFixed(3)})`);
             reflGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
 
             for (let r = 0; r < 4; r++) {
@@ -596,15 +596,15 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
             </LinearGradient>
 
             <LinearGradient id="magentaGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <Stop offset="0%" stopColor="#ec4899" stopOpacity="0.2" />
-              <Stop offset="50%" stopColor="#f43f5e" stopOpacity="0.95" />
-              <Stop offset="80%" stopColor="#d946ef" stopOpacity="0.85" />
-              <Stop offset="100%" stopColor="#a855f7" stopOpacity="0.2" />
+              <Stop offset="0%" stopColor="#0284c7" stopOpacity="0.2" />
+              <Stop offset="50%" stopColor="#0099ff" stopOpacity="0.95" />
+              <Stop offset="80%" stopColor="#38bdf8" stopOpacity="0.85" />
+              <Stop offset="100%" stopColor="#67e8f9" stopOpacity="0.2" />
             </LinearGradient>
 
             <LinearGradient id="violetGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <Stop offset="0%" stopColor="#8b5cf6" stopOpacity="0.1" />
-              <Stop offset="50%" stopColor="#a855f7" stopOpacity="0.8" />
+              <Stop offset="0%" stopColor="#1e3a8a" stopOpacity="0.1" />
+              <Stop offset="50%" stopColor="#3b82f6" stopOpacity="0.8" />
               <Stop offset="100%" stopColor="#6366f1" stopOpacity="0.1" />
             </LinearGradient>
 
@@ -615,14 +615,14 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
             </LinearGradient>
 
             <LinearGradient id="magentaFillGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-              <Stop offset="0%" stopColor="#f43f5e" stopOpacity="0.05" />
-              <Stop offset="50%" stopColor="#ec4899" stopOpacity="0.28" />
-              <Stop offset="100%" stopColor="#d946ef" stopOpacity="0.05" />
+              <Stop offset="0%" stopColor="#0284c7" stopOpacity="0.05" />
+              <Stop offset="50%" stopColor="#0099ff" stopOpacity="0.28" />
+              <Stop offset="100%" stopColor="#38bdf8" stopOpacity="0.05" />
             </LinearGradient>
 
             <LinearGradient id="reflGrad" x1="0%" y1="0%" x2="0%" y2="100%">
               <Stop offset="0%" stopColor="#00f0ff" stopOpacity="0.45" />
-              <Stop offset="50%" stopColor="#ec4899" stopOpacity="0.22" />
+              <Stop offset="50%" stopColor="#3b82f6" stopOpacity="0.22" />
               <Stop offset="100%" stopColor="#000000" stopOpacity="0.0" />
             </LinearGradient>
           </Defs>
@@ -733,7 +733,7 @@ const styles = StyleSheet.create({
     width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: 'transparent',
     position: 'relative',
     overflow: 'hidden',
   },

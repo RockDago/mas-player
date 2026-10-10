@@ -1,13 +1,38 @@
 import { Platform } from 'react-native';
 import {
   createAudioPlayer,
-  AudioPlayer,
   setAudioModeAsync,
   requestNotificationPermissionsAsync,
 } from 'expo-audio';
+import type { AudioPlayer } from 'expo-audio/build/AudioModule.types';
+import { getEffectiveEqualizerBands } from '../constants/presets';
+import { DSPState } from '../types/audio';
 import { WebAudioEngine } from './webAudioEngine';
 import { beatStore } from './beatStore';
 import { getLiveWebTrackUri } from './webAudioStorage';
+
+/**
+ * Résout mono / crossfeed / stereoExpansion en un seul largeur Mid-Side.
+ *
+ * Le DSP natif n'a qu'un paramètre `stereo` : les trois réglages UI s'y
+ * écrivent mutuellement, et la priorité était implicite dans une ternaire
+ * écrite en place dans `applyEqualizer`. Deux conséquences :
+ *   - le knob Crossfeed à 0 n'atteignait jamais le moteur (le `else` envoyait
+ *     `stereoExpansion`) ;
+ *   - basculer MONO effaçait le Stereo Expand.
+ *
+ * La priorité est ici explicite et partagée par le web et le natif, pour que
+ * les deux plateformes ne puissent plus diverger. MONO l'emporte : c'est une
+ * bascule on/off explicite, alors que le crossfeed est continu. Le crossfeed
+ * ensuite, parce qu'il *est* une réduction de largeur. Le Stereo Expand n'est
+ * retenu que si les deux sont neutres.
+ */
+export function resolveStereoWidth(eq: Partial<DSPState>): number {
+  if (eq.mono) return -1.0;
+  const crossfeed = (eq.crossfeed ?? 0) / 100;
+  if (crossfeed > 0) return -crossfeed;
+  return (eq.stereoExpansion ?? 0) / 100;
+}
 
 export type PlaybackCallback = (status: {
   currentTime: number;
@@ -85,6 +110,7 @@ class UniversalPlayerManager {
 
   private currentPlaybackRate = 1.0;
   private currentVolume = 100;
+  private currentEqualizer: Partial<DSPState> = { enabled: true, bands: new Array<number>(10).fill(0), preamp: 0 };
 
   // --- Volume système ------------------------------------------------
   /**
@@ -419,6 +445,7 @@ class UniversalPlayerManager {
         try {
           this.webEngine = new WebAudioEngine(audio);
           this.webEngine.setVolume(this.currentVolume);
+          this.applyEqualizer();
         } catch (engineErr) {
           console.warn('[WebAudio] Erreur initialisation WebAudioEngine:', engineErr);
           this.webEngine = null;
@@ -531,6 +558,7 @@ class UniversalPlayerManager {
       }
       this.player = p;
       p.volume = this.currentVolume / 100;
+      this.applyEqualizer();
       // Le tempo peut avoir été sélectionné avant la création de ce lecteur.
       // Chaque nouvelle instance expo-audio doit reprendre le réglage courant.
       p.setPlaybackRate(this.currentPlaybackRate);
@@ -603,7 +631,7 @@ class UniversalPlayerManager {
         }
       }, 250);
     } catch (error) {
-      console.warn('Erreur chargement audio natif:', error);
+      console.warn('Erreur chargement audio natif:', (error as any)?.stack || error);
     }
   }
 
@@ -886,6 +914,39 @@ class UniversalPlayerManager {
       }
     } else if (this.player) {
       this.player.volume = clamped / 100;
+    }
+  }
+
+  setEqualizer(dsp: DSPState) {
+    const bands = getEffectiveEqualizerBands(dsp.bands, dsp.bass, dsp.treble);
+
+    this.currentEqualizer = { ...dsp, bands };
+    this.applyEqualizer();
+  }
+
+  private applyEqualizer() {
+    const eq = this.currentEqualizer;
+    if (!eq) return;
+    if (Platform.OS === 'web') {
+      this.webEngine?.setEqualizer(eq.enabled ?? false, eq.bands ?? [], eq.preamp ?? 0);
+      // Balance et Mid-Side sont branchés après l'égaliseur dans le graphe et
+      // restent actifs même quand l'EQ est éteint — comme côté natif, où ils
+      // alimentent `hasProcessing` sans dépendre des bandes.
+      this.webEngine?.setBalance(eq.balance ?? 0);
+      this.webEngine?.setStereoWidth(resolveStereoWidth(eq));
+      this.webEngine?.setReverb(
+        eq.reverbEnabled ?? false,
+        eq.roomSize ?? 40,
+        eq.damping ?? 50,
+        eq.reverbMix ?? 25
+      );
+      this.webEngine?.setLimiter(eq.limitEnabled ?? true);
+    } else {
+      if (typeof (this.player as any)?.setDSP === 'function') (this.player as any).setDSP(
+        eq.enabled ?? false, eq.bands ?? [], eq.preamp ?? 0,
+        eq.balance ?? 0, resolveStereoWidth(eq), eq.limitEnabled ?? true,
+        eq.reverbEnabled ?? false, eq.roomSize ?? 40, eq.damping ?? 50, eq.reverbMix ?? 25
+      );
     }
   }
 

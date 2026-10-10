@@ -54,7 +54,7 @@ export interface EqualizerPreset {
 }
 
 export interface DSPState {
-  // État conservé pour l'interface; aucun traitement DSP n'est appliqué à la lecture.
+  // Equalizer settings are applied to playback; other sound controls remain separate.
   enabled: boolean;
   presetId: string;
   bass: number; // -12 to +12 dB

@@ -505,9 +505,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               onPress={() => handleCategoryPress(cat)}
               activeOpacity={0.75}
             >
-              {/* Circular White Badge with Black Icon */}
+              {/* Circular Anime Badge with Cyan Glowing Icon */}
               <View style={styles.iconCircleBadge}>
-                <MaterialCommunityIcons name={cat.icon} size={24} color="#000000" />
+                <MaterialCommunityIcons name={cat.icon} size={24} color="#00F0FF" />
               </View>
 
               {/* Category Name */}
@@ -1252,7 +1252,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: 'transparent',
   },
   header: {
     flexDirection: 'row',
@@ -1267,6 +1267,9 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     letterSpacing: -0.5,
     maxWidth: 240,
+    textShadowColor: 'rgba(0, 212, 255, 0.4)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 8,
   },
   backCategoryBtn: {
     flexDirection: 'row',
@@ -1277,25 +1280,27 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#1E1E22',
+    backgroundColor: 'rgba(10, 16, 32, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 212, 255, 0.35)',
   },
   menuPopup: {
     position: 'absolute',
     top: Platform.OS === 'ios' ? 60 : 70,
     right: 20,
-    backgroundColor: '#18181B',
+    backgroundColor: 'rgba(8, 14, 28, 0.96)',
     borderRadius: 14,
     paddingVertical: 8,
     paddingHorizontal: 6,
     zIndex: 999,
     borderWidth: 1,
-    borderColor: '#27272A',
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5,
-    shadowRadius: 10,
+    borderColor: 'rgba(0, 212, 255, 0.35)',
+    shadowColor: '#00F0FF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
     elevation: 10,
   },
   menuPopupItem: {
@@ -1326,9 +1331,16 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: 'rgba(8, 14, 28, 0.85)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(0, 212, 255, 0.45)',
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#00F0FF',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.6,
+    shadowRadius: 8,
+    elevation: 4,
   },
   categoryNameText: {
     fontSize: 18,

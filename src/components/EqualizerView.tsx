@@ -20,9 +20,8 @@ import {
   MAS_PLAYER_BAND_LABELS,
   EQ_GAIN_MAX,
   EQ_GAIN_MIN,
-  BASS_WEIGHTS,
-  TREBLE_WEIGHTS,
-  reverbDecayMs,
+  getEffectiveEqualizerBands,
+  reverbRt60Seconds,
 } from '../constants/presets';
 import { storageService } from '../services/storageService';
 import { useScreenInsets, insetPadding } from '../theme/insets';
@@ -86,6 +85,19 @@ function describeArc(
     end.y.toFixed(2),
   ].join(' ');
 }
+
+/**
+ * Position neutre des knobs Bass et Treble, en pourcentage.
+ *
+ * Ces deux knobs sont unipolaires (0–100) et convertissent en dB par
+ * `percent / 100 × 2 × EQ_GAIN_MAX − EQ_GAIN_MAX`. Le neutre est donc **50 %**,
+ * pas 0 : 0 % vaut −12 dB, c'est-à-dire une coupure maximale des basses.
+ *
+ * Toute cible de reset doit donc écrire 50, jamais 0. C'était l'inverse : le
+ * double-tap sur le knob et le tap sur le libellé écrivaient 0, donc −12 dB.
+ * Le geste « revenir au neutre » supprimait le bas du spectre.
+ */
+const BASS_TREBLE_NEUTRAL_PERCENT = 50;
 
 /**
  * Rendu de couleur unifié de niveau mastering professionnel :
@@ -512,7 +524,6 @@ interface FaderSliderProps {
   min: number;
   max: number;
   height: number;
-  isPreamp?: boolean;
   frequencyLabel?: string;
   onChange: (val: number) => void;
 }
@@ -522,7 +533,6 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
   min,
   max,
   height,
-  isPreamp = false,
   frequencyLabel,
   onChange,
 }) => {
@@ -685,7 +695,6 @@ export const FaderSlider: React.FC<FaderSliderProps> = ({
     <View
       style={[
         styles.faderTrackWrapper,
-        isPreamp && styles.preampCapsule,
         Platform.OS === 'web' &&
           ({
             cursor: 'ns-resize',
@@ -779,8 +788,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 
   const [activeTab, setActiveTab] = React.useState<'eq' | 'knobs' | 'fx'>('eq');
 
-  // Les réglages restent dans l'état persisté de l'interface; le traitement
-  // audio DSP a été retiré.
+  // Equalizer settings are persisted and applied by the active audio engine.
 
   // Save Preset Modal states
   const [isSaveModalVisible, setIsSaveModalVisible] = React.useState<boolean>(false);
@@ -827,6 +835,17 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
     });
   };
 
+  const handleResetReverb = () => {
+    triggerHaptic();
+    onUpdateDSP({
+      ...dsp,
+      roomSize: 40,
+      damping: 50,
+      reverbMix: 25,
+      reverbEnabled: false,
+    });
+  };
+
   const handleResetEQ = () => {
     triggerHaptic();
     const flat = DEFAULT_PRESETS.find((p) => p.id === 'flat')!;
@@ -855,28 +874,42 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
     });
   };
 
-  // Bass & treble are stored in dB but driven as a 0–100% boost: the knob runs
-  // 0% (silent, -135°) → 50% (0 dB, top) → 100% (+12 dB, +135°). No negative
-  // cut on these two knobs; the bass/treble cut role belongs to the 10-band
-  // faders and to presets such as "Vocal Boost", which drive `bands` directly.
-  const bassPercent = Math.round((dsp.bass / EQ_GAIN_MAX) * 100);
-  const treblePercent = Math.round((dsp.treble / EQ_GAIN_MAX) * 100);
-  const bassDb = Number(((bassPercent / 100) * EQ_GAIN_MAX).toFixed(1));
-  const trebleDb = Number(((treblePercent / 100) * EQ_GAIN_MAX).toFixed(1));
+  // Bass & treble are stored in dB and driven as a BIPOLAR knob: the sweep runs
+  // 0% (−12 dB, −135°) → 50% (0 dB, top) → 100% (+12 dB, +135°).
+  //
+  // Le mapping était unipolaire (`bass / EQ_GAIN_MAX × 100`) : à bass = 0, le
+  // défaut, l'indicateur pointait à fond-gauche avec un arc vide — on lisait
+  // « boost à fond » pour une valeur nulle, et « aucun boost » était
+  // impossible à distinguer d'un boost partiel. La course bipolaire remet le
+  // neutre au sommet, comme le Balance, et rend enfin l'état par défaut lisible.
+  //
+  // La coupe negative est donc désormais possible sur ces deux knobs. Les
+  // préréglages qui coupent (Vocal Boost, Nuit Calme) le font déjà via `bands` ;
+  // ce knob s'ajoute à eux, il ne les remplace pas.
+  const bassPercent = Math.round(((dsp.bass + EQ_GAIN_MAX) / (EQ_GAIN_MAX * 2)) * 100);
+  const treblePercent = Math.round(
+    ((dsp.treble + EQ_GAIN_MAX) / (EQ_GAIN_MAX * 2)) * 100
+  );
+  const bassDb = Number(
+    (((bassPercent / 100) * EQ_GAIN_MAX * 2 - EQ_GAIN_MAX).toFixed(1))
+  );
+  const trebleDb = Number(
+    (((treblePercent / 100) * EQ_GAIN_MAX * 2 - EQ_GAIN_MAX).toFixed(1))
+  );
 
-  // Independent Bass boost on top of selected preset, driven in percent
+  // Independent Bass boost/cut on top of selected preset, driven in percent
   const handleBassPercentChange = (percent: number) => {
     onUpdateDSP({
       ...dsp,
-      bass: Number(((percent / 100) * EQ_GAIN_MAX).toFixed(2)),
+      bass: Number(((percent / 100) * EQ_GAIN_MAX * 2 - EQ_GAIN_MAX).toFixed(2)),
     });
   };
 
-  // Independent Treble boost on top of selected preset, driven in percent
+  // Independent Treble boost/cut on top of selected preset, driven in percent
   const handleTreblePercentChange = (percent: number) => {
     onUpdateDSP({
       ...dsp,
-      treble: Number(((percent / 100) * EQ_GAIN_MAX).toFixed(2)),
+      treble: Number(((percent / 100) * EQ_GAIN_MAX * 2 - EQ_GAIN_MAX).toFixed(2)),
     });
   };
 
@@ -916,7 +949,9 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
           description: 'Préréglage utilisateur personnalisé',
           bass: dsp.bass,
           treble: dsp.treble,
-          preamp: dsp.preamp,
+          // Épinglé à 0 comme tous les autres presets — une sauvegarde ne doit
+          // pas pouvoir réintroduire un préampli dérivé d'une curve ancienne.
+          preamp: 0,
           bands: [...dsp.bands],
         };
         const updated = [newPreset, ...currentCustoms];
@@ -949,16 +984,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
   const spectrumWidth = Math.min(screenWidth - 28, 440);
 
   const effectiveBands = useMemo(() => {
-    const bass = dsp.bass ?? 0;
-    const treble = dsp.treble ?? 0;
-    const bassWeights = BASS_WEIGHTS;
-    const trebleWeights = TREBLE_WEIGHTS;
-    return dsp.bands.map((band, idx) => {
-      let g = band ?? 0;
-      if (idx < 4) g += bass * (bassWeights[idx] ?? 0);
-      else if (idx >= 6) g += treble * (trebleWeights[idx] ?? 0);
-      return Math.max(EQ_GAIN_MIN, Math.min(EQ_GAIN_MAX, g));
-    });
+    return getEffectiveEqualizerBands(dsp.bands, dsp.bass, dsp.treble);
   }, [dsp.bands, dsp.bass, dsp.treble]);
 
   const curveSvgPath = useMemo(() => {
@@ -966,10 +992,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
     const points: { x: number; y: number }[] = [];
     const bands = effectiveBands;
     const count = bands.length;
-    // `?? 0` comme dans la boucle ci-dessous : `bands` vient d'un `.map` sur le
-    // tableau DSP, et un tableau plus court que la grille de labels y laisse des
-    // trous. `undefined / 12` donnerait NaN, et le chemin SVG « M 0 NaN » fait
-    // jeter react-native-svg au parsing de l'attribut `d` côté natif.
+    // Defend the SVG path against malformed persisted values.
     const firstGain = bands[0] ?? 0;
     const lastGain = bands[count - 1] ?? 0;
 
@@ -1084,29 +1107,20 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
         <View style={styles.tab1Body}>
           {/* Main Faders Area: Preamp Column (Left) + Scrollable / Spaced 10 Bands (Right) */}
           <View style={[styles.fadersContainer, { height: fadersHeight + 42 }]}>
-            {/* Preamp Column */}
+            {/* Preamp Column — figée à 0 dB (décision du 10 octobre 2026).
+
+                Le fader a été retiré et remplacé par une pastille informative :
+                le préampli n'est plus une commande, donc l'afficher comme tel
+                invitait à le bouger sans que rien ne soit écouté. La pastille
+                conserve la lecture de la valeur au même endroit, ce qui évite la
+                bascule de layout du reste de la rangée. */}
             <View style={styles.preampOuterColumn}>
-              <View style={{ height: fadersHeight }}>
-                <FaderSlider
-                  value={dsp.preamp}
-                  min={-6}
-                  max={6}
-                  height={fadersHeight}
-                  isPreamp
-                  onChange={(val) => onUpdateDSP({ ...dsp, preamp: val })}
-                />
+              <View style={[styles.preampReadout, { height: fadersHeight }]}>
+                <Text style={styles.preampReadoutValue}>0.0</Text>
+                <Text style={styles.preampReadoutUnit}>dB</Text>
               </View>
               <Text style={styles.preampLabel}>Preamp</Text>
-              <Text
-                style={[
-                  styles.faderGainLabel,
-                  { color: (dsp.preamp ?? 0) === 0 ? '#64748B' : '#38BDF8' },
-                ]}
-              >
-                {((dsp.preamp ?? 0) > 0
-                  ? `+${(dsp.preamp ?? 0).toFixed(1)}`
-                  : (dsp.preamp ?? 0).toFixed(1))}
-              </Text>
+              <Text style={[styles.faderGainLabel, { color: '#64748B' }]}>0.0</Text>
             </View>
 
             {/* Separator Line */}
@@ -1300,7 +1314,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                 {/* Bass Knob — half circle with unified gradient */}
                 <View style={styles.knobWithStackedTextRow}>
                   <TouchableOpacity
-                    onPress={() => handleBassPercentChange(0)}
+                    onPress={() => handleBassPercentChange(BASS_TREBLE_NEUTRAL_PERCENT)}
                     style={styles.knobLabelColumn}
                     activeOpacity={0.7}
                   >
@@ -1308,7 +1322,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     <Text
                       style={[
                         styles.knobSidePercent,
-                        { color: bassPercent === 0 ? '#64748B' : '#38BDF8' },
+                        { color: bassPercent === BASS_TREBLE_NEUTRAL_PERCENT ? '#64748B' : '#38BDF8' },
                       ]}
                     >
                       {bassPercent}%
@@ -1328,10 +1342,10 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     max={100}
                     step={1}
                     size={knobSizeBassTreble}
-                    defaultValue={0}
+                    defaultValue={BASS_TREBLE_NEUTRAL_PERCENT}
                     isSemiCircle
                     topIndicator
-                    arcColor={bassPercent === 0 ? '#64748B' : '#38BDF8'}
+                    arcColor={bassPercent === BASS_TREBLE_NEUTRAL_PERCENT ? '#64748B' : '#38BDF8'}
                     onChange={handleBassPercentChange}
                   />
                 </View>
@@ -1339,7 +1353,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                 {/* Treble Knob — half circle with unified gradient */}
                 <View style={styles.knobWithStackedTextRow}>
                   <TouchableOpacity
-                    onPress={() => handleTreblePercentChange(0)}
+                    onPress={() => handleTreblePercentChange(BASS_TREBLE_NEUTRAL_PERCENT)}
                     style={styles.knobLabelColumn}
                     activeOpacity={0.7}
                   >
@@ -1347,7 +1361,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     <Text
                       style={[
                         styles.knobSidePercent,
-                        { color: treblePercent === 0 ? '#64748B' : '#38BDF8' },
+                        { color: treblePercent === BASS_TREBLE_NEUTRAL_PERCENT ? '#64748B' : '#38BDF8' },
                       ]}
                     >
                       {treblePercent}%
@@ -1367,10 +1381,10 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
                     max={100}
                     step={1}
                     size={knobSizeBassTreble}
-                    defaultValue={0}
+                    defaultValue={BASS_TREBLE_NEUTRAL_PERCENT}
                     isSemiCircle
                     topIndicator
-                    arcColor={treblePercent === 0 ? '#64748B' : '#38BDF8'}
+                    arcColor={treblePercent === BASS_TREBLE_NEUTRAL_PERCENT ? '#64748B' : '#38BDF8'}
                     onChange={handleTreblePercentChange}
                   />
                 </View>
@@ -1645,35 +1659,35 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
           <View style={styles.tab2TopRow}>
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
-                value={dsp.roomSize}
+                value={dsp.roomSize ?? 40}
                 min={0}
                 max={100}
                 step={5}
                 size={knobSizeTab2Top}
                 defaultValue={40}
-                arcColor="#38BDF8"
+                arcColor={dsp.reverbEnabled ? '#38BDF8' : '#64748B'}
                 onChange={(val) => handleSetReverb('roomSize', val)}
               />
               <Text style={styles.tab2KnobTitle}>Room Size</Text>
-              <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
-                {dsp.roomSize}%
+              <Text style={[styles.tab2KnobValue, { color: dsp.reverbEnabled ? '#38BDF8' : '#64748B' }]}>
+                {dsp.roomSize ?? 40}%
               </Text>
             </View>
 
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
-                value={dsp.damping}
+                value={dsp.damping ?? 50}
                 min={0}
                 max={100}
                 step={5}
                 size={knobSizeTab2Top}
                 defaultValue={50}
-                arcColor="#38BDF8"
+                arcColor={dsp.reverbEnabled ? '#38BDF8' : '#64748B'}
                 onChange={(val) => handleSetReverb('damping', val)}
               />
               <Text style={styles.tab2KnobTitle}>Damping</Text>
-              <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
-                {dsp.damping}%
+              <Text style={[styles.tab2KnobValue, { color: dsp.reverbEnabled ? '#38BDF8' : '#64748B' }]}>
+                {dsp.damping ?? 50}%
               </Text>
             </View>
           </View>
@@ -1681,34 +1695,48 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
           <View style={styles.tab2TopRow}>
             <View style={styles.tab2KnobItem}>
               <RotaryKnob
-                value={dsp.reverbMix}
+                value={dsp.reverbMix ?? 25}
                 min={0}
                 max={100}
                 step={5}
                 size={knobSizeTab2Top}
                 defaultValue={25}
-                arcColor="#38BDF8"
+                arcColor={dsp.reverbEnabled ? '#38BDF8' : '#64748B'}
                 onChange={(val) => handleSetReverb('reverbMix', val)}
               />
               <Text style={styles.tab2KnobTitle}>Reverb Mix</Text>
-              <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
-                {dsp.reverbMix}%
+              <Text style={[styles.tab2KnobValue, { color: dsp.reverbEnabled ? '#38BDF8' : '#64748B' }]}>
+                {dsp.reverbMix ?? 25}%
               </Text>
             </View>
 
-            {/*
-              La décroissance affichée est calculée ici, et non affichée en dur.
-              C'est la seule information qui dit ce que fait réellement le knob
-              « Room Size » : la taille perçue d'une pièce, c'est la longueur de
-              sa queue, pas son retard brut. `-1/ln(0.52) ≈ 1.53` vient de la
-              normalisation des gains de boucle (voir `presets.ts`).
-            */}
             <View style={styles.tab2KnobItem}>
               <Text style={styles.tab2KnobTitle}>Decay</Text>
-              <Text style={[styles.tab2KnobValue, { color: '#38BDF8' }]}>
-                {Math.round(reverbDecayMs(dsp.roomSize))} ms
+              <Text style={[styles.tab2KnobValue, { color: dsp.reverbEnabled ? '#38BDF8' : '#64748B' }]}>
+                {reverbRt60Seconds(dsp.roomSize ?? 40).toFixed(2)} s
               </Text>
             </View>
+          </View>
+
+          {/* Bottom Bar: BYPASS / RESET REVERB */}
+          <View style={styles.tab2MonoResetRow}>
+            <TouchableOpacity
+              onPress={handleToggleReverb}
+              style={[styles.monoPillBtn, dsp.reverbEnabled && styles.monoPillBtnActive]}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.monoPillText, dsp.reverbEnabled && styles.monoPillTextActive]}>
+                {dsp.reverbEnabled ? 'BYPASS REVERB' : 'ACTIVER REVERB'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={handleResetReverb}
+              style={styles.monoPillBtn}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.monoPillText}>RÉINITIALISER</Text>
+            </TouchableOpacity>
           </View>
 
           <View style={styles.hiResPillRow}>
@@ -1760,9 +1788,7 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
               </View>
               <View style={styles.summaryBadge}>
                 <Text style={styles.summaryBadgeLabel}>PREAMP</Text>
-                <Text style={styles.summaryBadgeVal}>
-                  {dsp.preamp > 0 ? `+${dsp.preamp}` : dsp.preamp} dB
-                </Text>
+                <Text style={styles.summaryBadgeVal}>0.0 dB</Text>
               </View>
             </View>
 
@@ -1828,19 +1854,19 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: 'transparent',
     justifyContent: 'space-between',
   },
   topTabBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    backgroundColor: '#121417',
+    backgroundColor: 'rgba(10, 16, 32, 0.85)',
     marginHorizontal: 12,
     borderRadius: 10,
     paddingVertical: 5,
     borderWidth: 1,
-    borderColor: '#1C1F24',
+    borderColor: 'rgba(0, 212, 255, 0.3)',
     marginBottom: 4,
   },
   topTabBtn: {
@@ -1849,7 +1875,9 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   topTabBtnActive: {
-    backgroundColor: '#1F242C',
+    backgroundColor: 'rgba(0, 212, 255, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(0, 212, 255, 0.45)',
   },
   tab1Body: {
     flex: 1,
@@ -1867,11 +1895,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 6,
   },
-  preampCapsule: {
+  /* Préampli figé à 0 dB : reprend le gabarit du fader qu'il remplace
+   (`faderTrackWrapper`), centré verticalement, pour que la rangée de bandes ne
+   bouge pas. */
+  preampReadout: {
+    width: 32,
     backgroundColor: '#0E1014',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#1C222B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  preampReadoutValue: {
+    color: '#64748B',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  preampReadoutUnit: {
+    color: '#4A5462',
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 1,
   },
   preampSeparator: {
     width: 1,

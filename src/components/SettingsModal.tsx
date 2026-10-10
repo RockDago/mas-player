@@ -13,6 +13,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
 import * as Haptics from 'expo-haptics';
@@ -1013,25 +1014,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     <Modal
       visible={visible}
       animationType="slide"
-      transparent={false}
+      transparent={true}
+      statusBarTranslucent={true}
       onRequestClose={onClose}
     >
+      <StatusBar style="light" />
       <SafeAreaView
         style={styles.safeContainer}
-        edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
+        edges={['left', 'right', 'bottom']}
       >
         {/* Header */}
         <View
           style={[
             styles.header,
             {
-              // Marge système mesurée : l'en-tête se collait à l'horloge.
-              paddingTop:
-                Platform.OS === 'android'
-                  ? insetPadding(insets, 'top', 20)
-                  : Platform.OS === 'ios'
-                  ? 12
-                  : 20,
+              // Marge système mesurée : protège sous la barre d'état (notch/Dynamic Island/punch-hole)
+              // sur iOS et Android et préserve 14 px d'aération esthétique.
+              paddingTop: insetPadding(insets, 'top', 14),
             },
           ]}
         >
@@ -1165,6 +1164,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             visible={!!selectedSetting}
             animationType="fade"
             transparent
+            statusBarTranslucent={true}
             onRequestClose={() => setSelectedSetting(null)}
           >
             <View
@@ -1231,7 +1231,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: '#131215',
+    backgroundColor: 'rgba(5, 9, 20, 0.96)',
   },
   header: {
     flexDirection: 'row',
@@ -1239,7 +1239,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#201E24',
+    borderBottomColor: 'rgba(0, 212, 255, 0.25)',
   },
   headerIconBtn: {
     padding: 6,
@@ -1365,7 +1365,17 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   subModalScroll: {
-    maxHeight: 460,
+    // Cette zone ne doit pas avoir de hauteur en dur. La boîte qui la contient est
+    // plafonnée à 88 % de l'écran, et 460 px fixes la dépassaient sur les écrans
+    // bas : le ScrollView ne se réduisait pas (flexShrink vaut 0 par défaut dans
+    // React Native), donc le bouton « Fermer » débordait sous la boîte — c'est-à-
+    // dire sous la barre de navigation du téléphone, où il était rogné. En
+    // paysage le panneau entier était tronqué.
+    //
+    // `flexShrink: 1` laisse le défilement absorber exactement l'espace restant
+    // après l'en-tête et le bouton : court contenu → panneau compact, contenu
+    // long → le panneau plafonne et défile, et le bouton reste toujours visible.
+    flexShrink: 1,
   },
   subModalScrollContent: {
     paddingBottom: 12,
