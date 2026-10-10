@@ -176,6 +176,38 @@ export function getEffectiveEqualizerBands(
 }
 
 /**
+ * Résumé lisible de la forme d'une courbe, en une ligne.
+ *
+ * Utilisé par la liste des préréglages perso, qui affichait auparavant
+ * « Bass: … • Treble: … » — deux valeurs que le préréglage ne contient plus
+ * depuis le 10 octobre 2026 (les knobs Bass et Treble sont des réglages
+ * d'écoute indépendants, jamais la propriété d'une courbe). La moyenne basse
+ * et la moyenne haute disent ce que l'utilisateur veut savoir en un coup
+ * d'œil : « cette courbe creuse les basses », « celle-ci les pousse ».
+ *
+ * Les gains sont moyennés **en décibels**, pas en amplitude : la moyenne
+ * linéaire d'un creux à −6 et d'un pic à +6 vaut −6, ce qui décrit bien une
+ * courbe en V, alors qu'une moyenne d'amplitude donnerait 0 dB — « neutre »,
+ * ce qui est précisément le mot que la moyenne des gains ne devrait pas
+ * pouvoir produire par hasard.
+ */
+export function describePresetCurve(bands: number[]): string {
+  const at = (indexes: number[]): number => {
+    const values = indexes
+      .map((index) => (Number.isFinite(bands?.[index]) ? (bands?.[index] as number) : 0));
+    if (!values.length) return 0;
+    return values.reduce((sum, value) => sum + value, 0) / values.length;
+  };
+
+  const low = at([0, 1, 2, 3]);
+  const high = at([6, 7, 8, 9]);
+  const shape = (value: number): string =>
+    value >= 1.5 ? `+${value.toFixed(1)}` : value <= -1.5 ? value.toFixed(1) : '±0';
+
+  return `Basses ${shape(low)} dB • Aigus ${shape(high)} dB`;
+}
+
+/**
  * Durée de décroissance (RT60) visée pour le knob « Room Size », en secondes.
  *
  * ⚠ Cette loi remplace une version antérieure où la durée était calculée par
@@ -314,8 +346,6 @@ export const DEFAULT_PRESETS: EqualizerPreset[] = [
     id: 'flat',
     name: 'Flat (Neutre Studio)',
     description: 'Réponse linéaire sans coloration, fidélité mastering originale.',
-    bass: 0,
-    treble: 0,
     bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
   }),
 
@@ -350,64 +380,48 @@ export const DEFAULT_PRESETS: EqualizerPreset[] = [
     id: 'bass',
     name: 'Bass',
     description: 'Profondeur perçue sur le grave audible (100–250 Hz), sans effort dans le sous-grave.',
-    bass: 0,
-    treble: 0,
     bands: [-1, 3.5, 6.5, 3, -1, 0, 0, 0.5, 1, 1],
   }),
   makePreset({
     id: 'bass-profond',
     name: 'Bass Profond',
     description: 'Sub et grave audible poussés ensemble, sous-grave borné pour ménager le haut-parleur.',
-    bass: 0,
-    treble: 0,
     bands: [4.5, 6, 8, 4, -2, 0, 0.5, 1.5, 2, 2],
   }),
   makePreset({
     id: 'rock',
     name: 'Rock & Metal',
     description: 'Courbe en V : basses percutantes, médiums creusés, cymbales précises.',
-    bass: 0,
-    treble: 0,
     bands: [6, 4, 2, -1, -2, 0, 2, 4, 5, 5],
   }),
   makePreset({
     id: 'pop',
     name: 'Pop / Modern Hits',
     description: 'Clarté dynamique des voix avec des basses rondes et chaleureuses.',
-    bass: 0,
-    treble: 0,
     bands: [4, 3, 1, 1, 3, 2, 2, 3, 4, 4],
   }),
   makePreset({
     id: 'electro',
     name: 'Electro / EDM / Club',
     description: 'Grave profonde et brillance des synthés sans distorsion.',
-    bass: 0,
-    treble: 0,
     bands: [8, 6, 4, 1, -1, 1, 3, 5, 6, 7],
   }),
   makePreset({
     id: 'jazz',
     name: 'Jazz & Blues',
     description: 'Chaleur des contrebasses, richesse des médiums et cuivres soyeux.',
-    bass: 0,
-    treble: 0,
     bands: [3, 3, 1, 2, -1, 0, 1, 2, 2, 2],
   }),
   makePreset({
     id: 'vocal',
     name: 'Vocal Boost / Clarté',
     description: 'Attenue les grondements et met en avant la présence des voix.',
-    bass: 0,
-    treble: 0,
     bands: [-3, -3, -1, 2, 5, 4, 3, 3, 4, 5],
   }),
   makePreset({
     id: 'acoustic',
     name: 'Acoustique & Classique',
     description: 'Transparence naturelle, cordes cristallines et aération sonore.',
-    bass: 0,
-    treble: 0,
     bands: [2, 1, 1, 0, 1, 2, 3, 4, 4, 4],
   }),
 
@@ -416,40 +430,30 @@ export const DEFAULT_PRESETS: EqualizerPreset[] = [
     id: 'studio-master',
     name: 'Studio Mastering',
     description: 'Courbe de référence neutre en loudness, transparence maximale.',
-    bass: 0,
-    treble: 0,
     bands: [-1.5, -1, 0, 0.5, 0.5, 0.5, 0.5, 1, 1.5, 2],
   }),
   makePreset({
     id: 'warm-vintage',
     name: 'Chaud / Vintage',
     description: 'Graves pleines et chaudes, médiums adoucis, sans agressivité.',
-    bass: 0,
-    treble: 0,
     bands: [1.5, 1, 0.5, 0, -0.5, -1, -1.5, -1, -0.5, 0],
   }),
   makePreset({
     id: 'clear-airy',
     name: 'Clair / Aéré',
     description: 'Présence des voix et aération haute fréquence, sans sibilance.',
-    bass: 0,
-    treble: 0,
     bands: [-0.5, -0.5, -0.5, 0, 0.5, 1, 1, 0.5, 0.5, 3],
   }),
   makePreset({
     id: 'rnv-latenight',
     name: 'Nuit Calme',
     description: 'Écoute de nuit à faible volume : graves et aigus atténués.',
-    bass: 0,
-    treble: 0,
     bands: [-4, -3, -2, -1, 0, 0.5, 1, 1, 0.5, 0],
   }),
   makePreset({
     id: 'wide-cinematic',
     name: 'Large / Cinématique',
     description: 'Image stéréo élargie, présence nette, graves discrets.',
-    bass: 0,
-    treble: 0,
     bands: [0, 0, 0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1],
   }),
 ];

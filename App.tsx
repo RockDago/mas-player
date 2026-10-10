@@ -27,7 +27,7 @@ import {
 } from '@expo/vector-icons';
 
 import { Track, DSPState, EqualizerPreset, Playlist } from './src/types/audio';
-import { DEFAULT_PRESETS } from './src/constants/presets';
+import { DEFAULT_PRESETS, describePresetCurve } from './src/constants/presets';
 import { formatTime } from './src/services/audioService';
 import { playerManager } from './src/services/playerManager';
 import {
@@ -876,11 +876,20 @@ hasTrackRef.current = hasTrack;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
+    // `bass` and `treble` are deliberately ABSENT here, and that is the whole
+    // point: picking a preset must not touch the knobs. They used to live in
+    // the preset (`bass: preset.bass ?? 0`), while all 14 factory presets
+    // declare `bass: 0, treble: 0` -- so **selecting any curve zeroed both
+    // knobs**, including the one just tuned. The knob moved, the preset
+    // changed, and the user's setting vanished with nothing on screen to
+    // justify it: the worst kind of bug, because the loss only shows up on the
+    // *next* preset change.
+    //
+    // The two knobs are independent axes: the preset gives the curve, the knobs
+    // give the tint on top of it (see `BASS_WEIGHTS`).
     setDsp((prev) => ({
       ...prev,
       presetId: preset.id,
-      bass: preset.bass ?? 0,
-      treble: preset.treble ?? 0,
       preamp: preset.preamp ?? 0,
       bands: [...preset.bands],
     }));
@@ -893,8 +902,10 @@ hasTrackRef.current = hasTrack;
       id: `custom-${Date.now()}`,
       name: finalName,
       description: 'Préréglage utilisateur personnalisé',
-      bass: dsp.bass,
-      treble: dsp.treble,
+      // Neither `bass` nor `treble`: a preset records the curve alone. The
+      // knobs are a listening setting, not a property of the curve -- storing
+      // them would freeze the knob positions at SAVE time, and the summary line
+      // in the list would become a lie as soon as the user moved them after.
       preamp: dsp.preamp,
       bands: [...dsp.bands],
     };
@@ -1858,11 +1869,11 @@ hasTrackRef.current = hasTrack;
                                 {item.name}
                               </Text>
                               <Text style={styles.presetItemDesc}>
-                                {`Bass: ${item.bass > 0 ? '+' : ''}${item.bass}dB • Treble: ${
-                                  item.treble > 0 ? '+' : ''
-                                }${item.treble}dB • Preamp: ${
-                                  item.preamp > 0 ? '+' : ''
-                                }${item.preamp}dB`}
+                                {/* The knobs are no longer stored in a preset (Oct 10 2026), so this line
+                                    rendered "Bass: undefineddB" for every recent save.
+                                    It now describes the curve itself, which is the
+                                    only thing a preset actually contains. */}
+                                {describePresetCurve(item.bands)}
                               </Text>
                             </TouchableOpacity>
 

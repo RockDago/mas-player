@@ -849,11 +849,14 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
   const handleResetEQ = () => {
     triggerHaptic();
     const flat = DEFAULT_PRESETS.find((p) => p.id === 'flat')!;
+    // RESET ne remet que la **courbe** à plat. Les knobs Bass et Treble n'en
+    // font pas partie : les laisser ici rendait le bouton destructif au-delà de
+    // ce qu'il annonce, en effaçant deux réglages que rien à l'écran ne mentionne.
+    // Le bouton RESET du bloc KNOBS reste le lieu unique où l'on remet ces deux
+    // réglages — c'est là que l'utilisateur les voit.
     onUpdateDSP({
       ...dsp,
       presetId: 'flat',
-      bass: 0,
-      treble: 0,
       preamp: 0,
       bands: [...flat.bands],
     });
@@ -947,8 +950,8 @@ export const EqualizerView: React.FC<EqualizerViewProps> = ({
           id: `custom-${Date.now()}`,
           name: finalName,
           description: 'Préréglage utilisateur personnalisé',
-          bass: dsp.bass,
-          treble: dsp.treble,
+          // Ni `bass` ni `treble`, comme les préréglages d'usine : la sauvegarde
+          // capture la courbe, pas la position des knobs.
           // Épinglé à 0 comme tous les autres presets — une sauvegarde ne doit
           // pas pouvoir réintroduire un préampli dérivé d'une curve ancienne.
           preamp: 0,

@@ -47,8 +47,20 @@ export interface EqualizerPreset {
   id: string;
   name: string;
   description: string;
-  bass: number; // -12 to +12 dB
-  treble: number; // -12 to +12 dB
+  /**
+   * ⚠ Les knobs Bass et Treble **n'appartiennent pas** au préréglage. Les deux
+   * champs sont facultatifs et ignorés à la sélection depuis le 10 octobre 2026 :
+   * un préréglage décrit une courbe de bandes, pas la position de deux boutons.
+   *
+   * Ils restent dans le type parce que les sauvegardes utilisateur d'avant
+   * cette décision les portent encore — lire `preset.bass` reste compilé, mais
+   * plus aucun chemin d'écriture ne s'appuie dessus.
+   *
+   * Voir `handleSelectPreset` dans `App.tsx` et `handleResetEQ` dans
+   * `EqualizerView.tsx`.
+   */
+  bass?: number; // -12 to +12 dB — ignoré à la sélection, conservé pour migration
+  treble?: number; // -12 to +12 dB — ignoré à la sélection, conservé pour migration
   preamp: number; // -6 to +6 dB
   bands: number[]; // 10 bands gains in dB
 }
