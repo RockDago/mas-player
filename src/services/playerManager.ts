@@ -942,11 +942,17 @@ class UniversalPlayerManager {
       );
       this.webEngine?.setLimiter(eq.limitEnabled ?? true);
     } else {
-      if (typeof (this.player as any)?.setDSP === 'function') (this.player as any).setDSP(
-        eq.enabled ?? false, eq.bands ?? [], eq.preamp ?? 0,
-        eq.balance ?? 0, resolveStereoWidth(eq), eq.limitEnabled ?? true,
-        eq.reverbEnabled ?? false, eq.roomSize ?? 40, eq.damping ?? 50, eq.reverbMix ?? 25
-      );
+      if (typeof (this.player as any)?.setDSP === 'function') {
+        try {
+          (this.player as any).setDSP(
+            eq.enabled ?? false, eq.bands ?? [], eq.preamp ?? 0,
+            eq.balance ?? 0, resolveStereoWidth(eq), eq.limitEnabled ?? true,
+            eq.reverbEnabled ?? false, eq.roomSize ?? 40, eq.damping ?? 50, eq.reverbMix ?? 25
+          );
+        } catch (dspErr) {
+          console.warn('[PlayerManager] Erreur setDSP natif:', dspErr);
+        }
+      }
     }
   }
 

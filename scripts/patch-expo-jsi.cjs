@@ -90,4 +90,41 @@ if (fs.existsSync(jsRuntimePath)) {
   console.log('[patch-expo-jsi] JavaScriptRuntime.swift not found, skipping.');
 }
 
+// 3. Patch Conversions.swift (extends tuple argument conversion limit from 10 to 16)
+const conversionsPath = path.resolve(__dirname, '../node_modules/expo-modules-core/ios/Core/Conversions.swift');
+if (fs.existsSync(conversionsPath)) {
+  let content = fs.readFileSync(conversionsPath, 'utf8');
+  if (content.includes('limit: 10')) {
+    const oldCase10 = `    case 10:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9]) as? Args
+    default:
+      throw TooManyArgumentsException((count: array.count, limit: 10))`;
+
+    const newCases = `    case 10:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9]) as? Args
+    case 11:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9], array[10]) as? Args
+    case 12:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9], array[10], array[11]) as? Args
+    case 13:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9], array[10], array[11], array[12]) as? Args
+    case 14:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9], array[10], array[11], array[12], array[13]) as? Args
+    case 15:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9], array[10], array[11], array[12], array[13], array[14]) as? Args
+    case 16:
+      return (array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7], array[8], array[9], array[10], array[11], array[12], array[13], array[14], array[15]) as? Args
+    default:
+      throw TooManyArgumentsException((count: array.count, limit: 16))`;
+
+    content = content.replace(oldCase10, newCases);
+    fs.writeFileSync(conversionsPath, content, 'utf8');
+    console.log('[patch-expo-jsi] Successfully patched Conversions.swift (tuple limit extended to 16)');
+  } else {
+    console.log('[patch-expo-jsi] Conversions.swift already patched.');
+  }
+} else {
+  console.log('[patch-expo-jsi] Conversions.swift not found, skipping.');
+}
+
 console.log('[patch-expo-jsi] Finished patching.');
