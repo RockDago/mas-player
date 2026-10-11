@@ -2201,10 +2201,68 @@ hasTrackRef.current = hasTrack;
   );
 }
 
+interface ErrorBoundaryState {
+  hasError: boolean;
+  error: Error | null;
+}
+
+class RootErrorBoundary extends React.Component<React.PropsWithChildren<{}>, ErrorBoundaryState> {
+  constructor(props: React.PropsWithChildren<{}>) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error('Fatal App Root Error:', error, errorInfo);
+  }
+
+  handleRestart = () => {
+    this.setState({ hasError: false, error: null });
+  };
+
+  handleResetSession = async () => {
+    try {
+      await storageService.clearAllSessionData();
+    } catch {}
+    this.setState({ hasError: false, error: null });
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={styles.errorContainer}>
+          <Ionicons name="warning-outline" size={48} color="#EF4444" style={{ marginBottom: 16 }} />
+          <Text style={styles.errorTitle}>Erreur au démarrage</Text>
+          <Text style={styles.errorMessage}>
+            {this.state.error?.message || 'Une exception non gérée est survenue lors de l initialisation.'}
+          </Text>
+          <TouchableOpacity style={styles.errorBtn} onPress={this.handleRestart} activeOpacity={0.7}>
+            <Text style={styles.errorBtnText}>Réessayer</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.errorBtn, styles.errorBtnSecondary]}
+            onPress={this.handleResetSession}
+            activeOpacity={0.7}
+          >
+            <Text style={[styles.errorBtnText, { color: '#EF4444' }]}>Réinitialiser la session</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   return (
     <SafeAreaProvider>
-      <MainApp />
+      <RootErrorBoundary>
+        <MainApp />
+      </RootErrorBoundary>
     </SafeAreaProvider>
   );
 }
@@ -2743,5 +2801,44 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '600',
+  },
+  errorContainer: {
+    flex: 1,
+    backgroundColor: '#080B10',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  errorTitle: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+    marginBottom: 8,
+  },
+  errorMessage: {
+    color: '#94A3B8',
+    fontSize: 13,
+    textAlign: 'center',
+    marginBottom: 24,
+    lineHeight: 18,
+  },
+  errorBtn: {
+    backgroundColor: '#38BDF8',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+    width: '80%',
+    alignItems: 'center',
+  },
+  errorBtnSecondary: {
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+  },
+  errorBtnText: {
+    color: '#080B10',
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

@@ -132,6 +132,7 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
     let smoothedEnergy = 0;
     let currentAmp = 0;
     let lastTime = performance.now();
+    let wasFlat = false;
 
     const stopLoop = () => {
       if (animId !== null) {
@@ -460,19 +461,23 @@ export const NeonWaveVisualizer: React.FC<NeonWaveVisualizerProps> = ({
         const xStep = width / (steps - 1);
 
         if (isCompletelyFlat) {
-          const flatD = `M 0 ${baselineY.toFixed(1)} L ${width.toFixed(1)} ${baselineY.toFixed(1)}`;
-          setSvgPaths({
-            cyanRibbon: '',
-            magentaRibbon: '',
-            violetRibbon: flatD,
-            cyanGlow: flatD,
-            magentaGlow: '',
-            reflCyan: '',
-            reflMagenta: '',
-            pulseGlow: 0.2,
-            isFlat: true,
-          });
+          if (!wasFlat) {
+            wasFlat = true;
+            const flatD = `M 0 ${baselineY.toFixed(1)} L ${width.toFixed(1)} ${baselineY.toFixed(1)}`;
+            setSvgPaths({
+              cyanRibbon: '',
+              magentaRibbon: '',
+              violetRibbon: flatD,
+              cyanGlow: flatD,
+              magentaGlow: '',
+              reflCyan: '',
+              reflMagenta: '',
+              pulseGlow: 0.2,
+              isFlat: true,
+            });
+          }
         } else {
+          wasFlat = false;
           const buildPath = (offset: number, freq: number, hPhase: number) => {
             let d = '';
             for (let i = 0; i < steps; i++) {
