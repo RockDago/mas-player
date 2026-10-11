@@ -368,7 +368,8 @@ void tapProcess`
   );
   fs.writeFileSync(tapSourcePath, tapSource, 'utf8');
 
-    const newSetDSPFunc = '  func setDSP(enabled: Bool, bands: [Double], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: [Double]) {\n' +
+  let player = fs.readFileSync(playerPath, 'utf8');
+  const newSetDSPFunc = '  func setDSP(enabled: Bool, bands: [Double], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: [Double]) {\n' +
       '    equalizerEnabled = enabled\n' +
       '    equalizerBands = (0..<10).map { index in\n' +
       '      guard index < bands.count, bands[index].isFinite else { return 0 }\n' +
