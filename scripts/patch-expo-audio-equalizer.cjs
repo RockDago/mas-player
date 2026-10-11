@@ -41,16 +41,24 @@ function patchAndroid() {
     /\n[ \t]*Function\("setEqualizer"\) \{[^\n]*\n[\s\S]*?\n[ \t]*\}/g,
     ''
   );
+  moduleContent = moduleContent.replace(
+    /\n[ \t]*Function\("setDSP"\) \{[^\n]*\n[\s\S]*?\n[ \t]*\}/g,
+    ''
+  );
   const samplingAnchor = '      Function("setAudioSamplingEnabled")';
   if (!moduleContent.includes(samplingAnchor)) {
     throw new Error(`[audio-equalizer] Could not find Android AudioPlayer API insertion point in ${modulePath}`);
   }
-  if (!moduleContent.includes('Function("setDSP")')) {
-    moduleContent = moduleContent.replace(
-      samplingAnchor,
-      '      Function("setDSP") { _: AudioPlayer, enabled: Boolean, bands: List<Double>, preamp: Double, balance: Double, stereo: Double, limit: Boolean, reverb: Boolean, room: Double, damp: Double, mix: Double ->\n        expo.modules.audiodsp.AudioDSPProcessor.update(enabled, bands, preamp, balance, stereo, limit, reverb, room, damp, mix)\n      }\n\n' + samplingAnchor
-    );
-  }
+  moduleContent = moduleContent.replace(
+    samplingAnchor,
+    '      Function("setDSP") { _: AudioPlayer, enabled: Boolean, bands: List<Double>, preamp: Double, balance: Double, stereo: Double, limit: Boolean, reverb: List<Double> ->\n' +
+    '        val revEnabled = reverb.isNotEmpty() && reverb[0] > 0.5\n' +
+    '        val room = if (reverb.size > 1) reverb[1] else 40.0\n' +
+    '        val damp = if (reverb.size > 2) reverb[2] else 50.0\n' +
+    '        val mix = if (reverb.size > 3) reverb[3] else 25.0\n' +
+    '        expo.modules.audiodsp.AudioDSPProcessor.update(enabled, bands, preamp, balance, stereo, limit, revEnabled, room, damp, mix)\n' +
+    '      }\n\n' + samplingAnchor
+  );
   fs.writeFileSync(modulePath, moduleContent, 'utf8');
 }
 
@@ -360,16 +368,52 @@ void tapProcess`
   );
   fs.writeFileSync(tapSourcePath, tapSource, 'utf8');
 
-  let player = fs.readFileSync(playerPath, 'utf8');
-  if (!player.includes('func setDSP(enabled: Bool')) {
-    player = player.replace(
-      '  var samplingEnabled = false\n',
-      '  var samplingEnabled = false\n  private var equalizerEnabled = false\n  private var equalizerBands = [Double](repeating: 0, count: 10)\n  private var equalizerPreamp = 0.0\n  private var dspBalance = 0.0\n  private var dspStereo = 0.0\n  private var dspLimit = false\n  private var dspReverb = false\n  private var dspRoom = 0.0\n  private var dspDamp = 0.0\n  private var dspMix = 0.0\n'
-    );
-    player = player.replace(
-      /  func setSamplingEnabled\(enabled: Bool\) \{[\s\S]*?\n  \}/,
-      '  func setSamplingEnabled(enabled: Bool) {\n    guard samplingEnabled != enabled else { return }\n    samplingEnabled = enabled\n    updateAudioTap()\n  }\n\n  func setDSP(enabled: Bool, bands: [Double], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: Bool, room: Double, damp: Double, mix: Double) {\n    equalizerEnabled = enabled\n    equalizerBands = (0..<10).map { index in\n      guard index < bands.count, bands[index].isFinite else { return 0 }\n      return max(-12, min(12, bands[index]))\n    }\n    equalizerPreamp = preamp.isFinite ? max(-6, min(6, preamp)) : 0\n    dspBalance = balance\n    dspStereo = stereo\n    dspLimit = limit\n    dspReverb = reverb\n    dspRoom = room\n    dspDamp = damp\n    dspMix = mix\n    audioProcessor?.setDSPEnabled(equalizerEnabled, bands: equalizerBands.map { NSNumber(value: $0) }, preamp: equalizerPreamp, balance: dspBalance, stereo: dspStereo, limit: dspLimit, reverb: dspReverb, room: dspRoom, damp: dspDamp, mix: dspMix)\n    updateAudioTap()\n  }\n\n  private func updateAudioTap() {\n    let hasDsp = equalizerEnabled || dspBalance != 0.0 || dspStereo != 0.0 || dspLimit || dspReverb\n    guard hasDsp || samplingEnabled else {\n      shouldInstallAudioTap = false\n      uninstallTap()\n      return\n    }\n    if isLoaded {\n      installTap()\n    } else {\n      shouldInstallAudioTap = true\n    }\n  }'
-    );
+    const newSetDSPFunc = '  func setDSP(enabled: Bool, bands: [Double], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: [Double]) {\n' +
+      '    equalizerEnabled = enabled\n' +
+      '    equalizerBands = (0..<10).map { index in\n' +
+      '      guard index < bands.count, bands[index].isFinite else { return 0 }\n' +
+      '      return max(-12, min(12, bands[index]))\n' +
+      '    }\n' +
+      '    equalizerPreamp = preamp.isFinite ? max(-6, min(6, preamp)) : 0\n' +
+      '    dspBalance = balance\n' +
+      '    dspStereo = stereo\n' +
+      '    dspLimit = limit\n' +
+      '    let revEnabled = reverb.count > 0 && reverb[0] > 0.5\n' +
+      '    dspReverb = revEnabled\n' +
+      '    dspRoom = reverb.count > 1 ? reverb[1] : 40.0\n' +
+      '    dspDamp = reverb.count > 2 ? reverb[2] : 50.0\n' +
+      '    dspMix = reverb.count > 3 ? reverb[3] : 25.0\n' +
+      '    audioProcessor?.setDSPEnabled(equalizerEnabled, bands: equalizerBands.map { NSNumber(value: $0) }, preamp: equalizerPreamp, balance: dspBalance, stereo: dspStereo, limit: dspLimit, reverb: dspReverb, room: dspRoom, damp: dspDamp, mix: dspMix)\n' +
+      '    updateAudioTap()\n' +
+      '  }\n\n' +
+      '  private func updateAudioTap() {\n' +
+      '    let hasDsp = equalizerEnabled || dspBalance != 0.0 || dspStereo != 0.0 || dspLimit || dspReverb\n' +
+      '    guard hasDsp || samplingEnabled else {\n' +
+      '      shouldInstallAudioTap = false\n' +
+      '      uninstallTap()\n' +
+      '      return\n' +
+      '    }\n' +
+      '    if isLoaded {\n' +
+      '      installTap()\n' +
+      '    } else {\n' +
+      '      shouldInstallAudioTap = true\n' +
+      '    }\n' +
+      '  }';
+
+    const oldSetDSPPattern = /  func setDSP\(enabled: Bool, bands: \[Double\], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: Bool, room: Double, damp: Double, mix: Double\) \{[\s\S]*?\n  private func updateAudioTap\(\) \{[\s\S]*?\n  \}/;
+
+    if (oldSetDSPPattern.test(player)) {
+      player = player.replace(oldSetDSPPattern, newSetDSPFunc);
+    } else if (!player.includes('func setDSP(enabled: Bool, bands: [Double], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: [Double])')) {
+      player = player.replace(
+        '  var samplingEnabled = false\n',
+        '  var samplingEnabled = false\n  private var equalizerEnabled = false\n  private var equalizerBands = [Double](repeating: 0, count: 10)\n  private var equalizerPreamp = 0.0\n  private var dspBalance = 0.0\n  private var dspStereo = 0.0\n  private var dspLimit = false\n  private var dspReverb = false\n  private var dspRoom = 0.0\n  private var dspDamp = 0.0\n  private var dspMix = 0.0\n'
+      );
+      player = player.replace(
+        /  func setSamplingEnabled\(enabled: Bool\) \{[\s\S]*?\n  \}/,
+        '  func setSamplingEnabled(enabled: Bool) {\n    guard samplingEnabled != enabled else { return }\n    samplingEnabled = enabled\n    updateAudioTap()\n  }\n\n' + newSetDSPFunc
+      );
+    }
     player = player.replace(
       'if shouldInstallAudioTap || samplingEnabled {',
       'if shouldInstallAudioTap || samplingEnabled || equalizerEnabled {'
@@ -398,34 +442,35 @@ void tapProcess`
     if (!player.includes('func setDSP(enabled: Bool') ||
       !player.includes('audioProcessor?.setDSPEnabled(equalizerEnabled, bands: equalizerBands.map { NSNumber(value: $0) }, preamp: equalizerPreamp, balance: dspBalance, stereo: dspStereo, limit: dspLimit, reverb: dspReverb, room: dspRoom, damp: dspDamp, mix: dspMix)')) {
       throw new Error(`[audio-equalizer] Could not patch iOS AudioPlayer in ${playerPath}`);
-  }
-}
-player = player.replace(
-  /if samplingEnabled \{\n\s*uninstallTap\(\)/g,
-  'if (samplingEnabled || equalizerEnabled) {\n      uninstallTap()'
-);
-player = player.replace(
-  /let wasSamplingEnabled = samplingEnabled(?: \|\| equalizerEnabled)*/g,
-  'let wasSamplingEnabled = samplingEnabled || equalizerEnabled'
-);
-fs.writeFileSync(playerPath, player, 'utf8');
+    }
+  player = player.replace(
+    /if samplingEnabled \{\n\s*uninstallTap\(\)/g,
+    'if (samplingEnabled || equalizerEnabled) {\n      uninstallTap()'
+  );
+  player = player.replace(
+    /let wasSamplingEnabled = samplingEnabled(?: \|\| equalizerEnabled)*/g,
+    'let wasSamplingEnabled = samplingEnabled || equalizerEnabled'
+  );
+  fs.writeFileSync(playerPath, player, 'utf8');
 
-let moduleContent = fs.readFileSync(modulePath, 'utf8');
-moduleContent = moduleContent.replace(
-  /\n[ \t]*Function\("setEqualizer"\) \{[^\n]*\n[\s\S]*?\n[ \t]*\}/g,
-  ''
-);
-const samplingAnchor = '      Function("setAudioSamplingEnabled")';
-if (!moduleContent.includes(samplingAnchor)) {
-  throw new Error(`[audio-equalizer] Could not find iOS AudioPlayer API insertion point in ${modulePath}`);
-}
-if (!moduleContent.includes('Function("setDSP")')) {
+  let moduleContent = fs.readFileSync(modulePath, 'utf8');
+  moduleContent = moduleContent.replace(
+    /\n[ \t]*Function\("setEqualizer"\) \{[^\n]*\n[\s\S]*?\n[ \t]*\}/g,
+    ''
+  );
+  moduleContent = moduleContent.replace(
+    /\n[ \t]*Function\("setDSP"\) \{[^\n]*\n[\s\S]*?\n[ \t]*\}/g,
+    ''
+  );
+  const samplingAnchor = '      Function("setAudioSamplingEnabled")';
+  if (!moduleContent.includes(samplingAnchor)) {
+    throw new Error(`[audio-equalizer] Could not find iOS AudioPlayer API insertion point in ${modulePath}`);
+  }
   moduleContent = moduleContent.replace(
     samplingAnchor,
-    '      Function("setDSP") { (player: AudioPlayer, enabled: Bool, bands: [Double], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: Bool, room: Double, damp: Double, mix: Double) in\n        player.setDSP(enabled: enabled, bands: bands, preamp: preamp, balance: balance, stereo: stereo, limit: limit, reverb: reverb, room: room, damp: damp, mix: mix)\n      }\n\n' + samplingAnchor
+    '      Function("setDSP") { (player: AudioPlayer, enabled: Bool, bands: [Double], preamp: Double, balance: Double, stereo: Double, limit: Bool, reverb: [Double]) in\n        player.setDSP(enabled: enabled, bands: bands, preamp: preamp, balance: balance, stereo: stereo, limit: limit, reverb: reverb)\n      }\n\n' + samplingAnchor
   );
-}
-fs.writeFileSync(modulePath, moduleContent, 'utf8');
+  fs.writeFileSync(modulePath, moduleContent, 'utf8');
 }
 
 if (!fs.existsSync(androidRoot) || !fs.existsSync(iosRoot)) {
