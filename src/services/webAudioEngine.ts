@@ -545,9 +545,6 @@ export class WebAudioEngine {
     if (this.ctx?.state === 'suspended') {
       await this.ctx.resume();
     }
-    if (this.element?.paused) {
-      await this.element.play();
-    }
   }
 
   getContextState(): string {

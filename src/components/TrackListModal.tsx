@@ -16,6 +16,8 @@ import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
 import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
 import { pickAudioFolder, pickAudioFiles, isIOSDevice } from '../services/filePickerService';
+import { AnimeBackground } from './AnimeBackground';
+import { LanguageCode, getTranslation } from '../i18n/translations';
 
 interface TrackListModalProps {
   visible: boolean;
@@ -25,6 +27,7 @@ interface TrackListModalProps {
   onSelectTrack: (track: Track) => void;
   onAddTracks: (newTracks: Track[]) => void;
   onTrackAction?: (track: Track) => void;
+  language?: LanguageCode;
 }
 
 export const TrackListModal: React.FC<TrackListModalProps> = ({
@@ -35,7 +38,11 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
   onSelectTrack,
   onAddTracks,
   onTrackAction,
+  language = 'fr',
 }) => {
+  const lang = language || 'fr';
+  const t = (k: string, fb?: string, params?: Record<string, string | number>) =>
+    getTranslation(lang, k, fb, params);
   // Marge système mesurée, lue par contexte : la modale est montée hors de
   // l'écran et n'en hérite pas. Voir src/theme/insets.ts.
   const insets = useScreenInsets();
@@ -170,6 +177,11 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
         style={styles.container}
         edges={['left', 'right', 'bottom']}
       >
+        <AnimeBackground
+          overlayOpacity={0.65}
+          minOpacity={0.36}
+          maxOpacity={0.54}
+        />
         <View
           style={[
             styles.header,
@@ -181,7 +193,9 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
             <Ionicons name="close" size={26} color="#FFFFFF" />
           </TouchableOpacity>
 
-          <Text style={styles.headerTitle}>DOSSIERS & MUSIQUES</Text>
+          <Text style={styles.headerTitle}>
+            {t('cat_folders', 'DOSSIERS').toUpperCase()} & {t('cat_all_songs', 'MUSIQUES').toUpperCase()}
+          </Text>
 
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <TouchableOpacity
@@ -190,7 +204,7 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
               activeOpacity={0.7}
             >
               <Ionicons name="folder" size={16} color="#10B981" />
-              <Text style={styles.addFolderBtnText}>+ Dossier</Text>
+              <Text style={styles.addFolderBtnText}>+ {t('cat_folders', 'Dossier')}</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -198,8 +212,8 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
               style={styles.addBtn}
               activeOpacity={0.7}
             >
-              <Ionicons name="musical-notes" size={16} color="#38BDF8" />
-              <Text style={styles.addBtnText}>+ Fichiers</Text>
+              <Ionicons name="musical-notes" size={16} color="#FFFFFF" />
+              <Text style={styles.addBtnText}>+ {t('importFilesTitle', 'Fichiers')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -259,20 +273,20 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <Ionicons name="musical-notes-outline" size={48} color="#333333" />
-              <Text style={styles.emptyText}>Aucun morceau audio chargé</Text>
+              <Text style={styles.emptyText}>{t('noTracksFound', 'Aucun morceau audio chargé')}</Text>
               <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
                 <TouchableOpacity
                   style={styles.emptyImportFolderBtn}
                   onPress={handlePickFolder}
                 >
                   <Ionicons name="folder-open" size={18} color="#10B981" />
-                  <Text style={styles.emptyImportFolderText}>Importer un dossier (1 clic)</Text>
+                  <Text style={styles.emptyImportFolderText}>{t('importFolderTitle', 'Importer un dossier')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.emptyImportBtn}
                   onPress={handlePickFiles}
                 >
-                  <Text style={styles.emptyImportText}>Fichiers</Text>
+                  <Text style={styles.emptyImportText}>{t('importFilesTitle', 'Fichiers')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -286,7 +300,7 @@ export const TrackListModal: React.FC<TrackListModalProps> = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'rgba(5, 9, 20, 0.96)',
+    backgroundColor: '#000000',
   },
   header: {
     flexDirection: 'row',
@@ -295,7 +309,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0, 212, 255, 0.25)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.2)',
   },
   closeBtn: {
     padding: 4,
@@ -385,10 +399,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#0284C7',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   iosTipMiniText: {
-    color: '#7DD3FC',
+    color: '#E4E4E7',
     fontSize: 11.5,
     flex: 1,
     lineHeight: 15,
@@ -408,8 +422,8 @@ const styles = StyleSheet.create({
     borderColor: '#191C24',
   },
   trackItemActive: {
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-    borderColor: '#38BDF8',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    borderColor: '#FFFFFF',
   },
   artworkPlaceholder: {
     width: 42,
@@ -430,7 +444,7 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   trackTitleActive: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
     fontWeight: '800',
   },
   trackArtist: {

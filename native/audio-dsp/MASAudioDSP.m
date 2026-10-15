@@ -216,6 +216,15 @@ static double MASAudioDSPFilterSample(MASAudioDSPState *state, NSUInteger channe
   return output;
 }
 
+static inline double MASAudioDSPSoftLimit(double sample) {
+  const double threshold = 0.85;
+  const double absX = fabs(sample);
+  if (absX <= threshold) return sample;
+  const double margin = 1.0 - threshold;
+  const double compressed = threshold + margin * tanh((absX - threshold) / margin);
+  return sample < 0.0 ? -compressed : compressed;
+}
+
 // Global damp states for reverb
 static double dampStateL[4] = {0};
 static double dampStateR[4] = {0};
@@ -326,7 +335,10 @@ void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, MA
 
       // Limiter (Soft clip)
       if (limit) {
-          l = l > 1.0 ? 1.0 : (l < -1.0 ? -1.0 : l); // Hard clip as fallback
+          l = MASAudioDSPSoftLimit(l);
+          r = MASAudioDSPSoftLimit(r);
+      } else {
+          l = l > 1.0 ? 1.0 : (l < -1.0 ? -1.0 : l);
           r = r > 1.0 ? 1.0 : (r < -1.0 ? -1.0 : r);
       }
 
@@ -387,6 +399,9 @@ void MASAudioDSPProcess(MASAudioDSPState *state, AudioBufferList *bufferList, MA
         }
 
         if (limit) {
+            l = MASAudioDSPSoftLimit(l);
+            r = MASAudioDSPSoftLimit(r);
+        } else {
             l = l > 1.0 ? 1.0 : (l < -1.0 ? -1.0 : l);
             r = r > 1.0 ? 1.0 : (r < -1.0 ? -1.0 : r);
         }

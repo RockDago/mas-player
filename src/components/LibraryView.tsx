@@ -15,10 +15,11 @@ import {
 import { MaterialCommunityIcons, Ionicons, Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { pickAudioFolder, pickAudioFiles, isIOSDevice } from '../services/filePickerService';
-import { Track, Playlist } from '../types/audio';
+import { Track, Playlist, RECENTLY_PLAYED_PLAYLIST_ID } from '../types/audio';
 import { sortTracks, filterShortTracks, LibrarySort } from '../utils/trackSort';
 import { formatTime } from '../services/audioService';
 import { useScreenInsets, insetPadding } from '../theme/insets';
+import { getTranslation, LanguageCode } from '../i18n/translations';
 
 interface LibraryViewProps {
   tracks: Track[];
@@ -48,26 +49,27 @@ interface LibraryViewProps {
    * `filterShortTracks`.
    */
   ignoreShortAudio?: boolean;
+  language?: LanguageCode;
 }
 
 interface CategoryItem {
   id: string;
-  name: string;
+  translationKey: string;
+  fallbackName: string;
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
 }
 
 const CATEGORIES: CategoryItem[] = [
-  { id: 'all_songs', name: 'All Songs', icon: 'music-note' },
-  { id: 'playlists', name: 'Playlists', icon: 'playlist-music' },
-  { id: 'folders', name: 'Folders', icon: 'folder' },
-  { id: 'folders_hierarchy', name: 'Folders Hierarchy', icon: 'folder-multiple' },
-  { id: 'albums', name: 'Albums', icon: 'disc' },
-  { id: 'artists', name: 'Artists', icon: 'account' },
-  { id: 'album_artists', name: 'Album Artists', icon: 'account-circle' },
-  { id: 'albums_by_artist', name: 'Albums by Artist', icon: 'disc' },
-  { id: 'genres', name: 'Genres', icon: 'glass-cocktail' },
-  { id: 'years', name: 'Years', icon: 'calendar-month' },
-  { id: 'composers', name: 'Composers', icon: 'account-group' },
+  { id: 'all_songs', translationKey: 'cat_all_songs', fallbackName: 'All Songs', icon: 'music-note' },
+  { id: 'playlists', translationKey: 'cat_playlists', fallbackName: 'Playlists', icon: 'playlist-music' },
+  { id: 'folders', translationKey: 'cat_folders', fallbackName: 'Folders', icon: 'folder' },
+  { id: 'albums', translationKey: 'cat_albums', fallbackName: 'Albums', icon: 'disc' },
+  { id: 'artists', translationKey: 'cat_artists', fallbackName: 'Artists', icon: 'account' },
+  { id: 'album_artists', translationKey: 'cat_album_artists', fallbackName: 'Album Artists', icon: 'account-circle' },
+  { id: 'albums_by_artist', translationKey: 'cat_albums_by_artist', fallbackName: 'Albums by Artist', icon: 'disc' },
+  { id: 'genres', translationKey: 'cat_genres', fallbackName: 'Genres', icon: 'glass-cocktail' },
+  { id: 'years', translationKey: 'cat_years', fallbackName: 'Years', icon: 'calendar-month' },
+  { id: 'composers', translationKey: 'cat_composers', fallbackName: 'Composers', icon: 'account-group' },
 ];
 
 export const LibraryView: React.FC<LibraryViewProps> = ({
@@ -92,21 +94,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   onNavigateCategory,
   sort = 'title',
   ignoreShortAudio,
+  language = 'fr',
 }) => {
+  const lang: LanguageCode = language || 'fr';
+  const t = (key: string, fallback?: string, params?: Record<string, string | number>) =>
+    getTranslation(lang, key, fallback, params);
+
   // Marge système mesurée (encoche / barre d'état). Remplace
   // `StatusBar.currentHeight` — voir src/theme/insets.ts.
   const insets = useScreenInsets();
   // Respiration sous la dernière ligne de chaque liste.
   //
-  // C'était un spacer fixe de 90 px, choisi à l'œil. Sous Android 15 bord à
-  // bord il est plus court que la barre de navigation : la dernière catégorie,
-  // ou le dernier morceau d'une playlist, passait dessous sans que rien ne le
-  // signale — la liste continuait simplement sous la barre, inatteignable au
-  // doigt. La marge mesurée s'ajoute à l'esthétique au lieu de la remplacer.
-  //
-  // La vue est un `<View>` nu, sans SafeAreaView : c'est donc la seule
-  // compensation possible, sur les deux plateformes.
-  const bottomSpacer = insetPadding(insets, 'bottom', 28);
+  // Le mini lecteur mesure 56 px de haut et est positionné en absolute
+  // au bas de la vue (bottom: 0). Il faut au minimum 56 px pour
+  // dégager le contenu de sous le lecteur, plus une marge d'espacement (28 px)
+  // et les marges système (insets).
+  const bottomSpacer = 56 + insetPadding(insets, 'bottom', 28);
   const [activeCategory, setActiveCategory] = useState<string | null>(propActiveCategory ?? null);
   const [selectedGroupKey, setSelectedGroupKey] = useState<string | null>(propSelectedGroupKey ?? null);
   // La playlist ouverte dans la vue ne part JAMAIS de `activePlaylistId` : cet
@@ -194,13 +197,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
   // Grouped data for albums, artists, genres, years, folders
   const groupedData = useMemo(() => {
-    if (activeCategory === 'folders' || activeCategory === 'folders_hierarchy') {
+    if (activeCategory === 'folders') {
       const map = new Map<string, Track[]>();
       tracks.forEach((t) => {
-        // « Démos MAS Player » désignait le dossier des pistes de démonstration,
-        // retirées de l'application : ce repli rangerait aujourd'hui tout
-        // fichier importé sans dossier sous un nom qui n'existe plus.
-        const key = t.folder || 'Musique importée';
+        const key =
+          t.folder && t.folder !== 'Musique iPhone'
+            ? t.folder
+            : t.album && t.album !== 'Musique iPhone'
+            ? t.album
+            : 'Dossier Musique';
         if (!map.has(key)) map.set(key, []);
         map.get(key)!.push(t);
       });
@@ -287,11 +292,17 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
   const displayTracks = useMemo(() => {
     let base: Track[];
     if (selectedPlaylist) {
-      // `Set` plutôt que `includes` : ce filtre est O(n·m), donc 25 millions de
-      // comparaisons de chaînes sur une playlist et une bibliothèque de 5000
-      // morceaux — plusieurs centaines de ms de gel à l'ouverture.
-      const wanted = new Set(selectedPlaylist.trackIds);
-      base = tracks.filter((t) => wanted.has(t.id));
+      if (selectedPlaylist.id === RECENTLY_PLAYED_PLAYLIST_ID) {
+        // Préserver l'ordre chronologique inverse (le plus récent en premier)
+        const map = new Map(tracks.map((t) => [t.id, t]));
+        base = selectedPlaylist.trackIds
+          .map((id) => map.get(id))
+          .filter((t): t is Track => t !== undefined);
+        return filterShortTracks(base, !!ignoreShortAudio);
+      } else {
+        const wanted = new Set(selectedPlaylist.trackIds);
+        base = tracks.filter((t) => wanted.has(t.id));
+      }
     } else if (selectedGroupKey) {
       const found = groupedData.find((g) => g.id === selectedGroupKey);
       base = found ? found.tracks : [];
@@ -306,9 +317,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
     if (selectedGroupKey) return selectedGroupKey;
     if (activeCategory) {
       const cat = CATEGORIES.find((c) => c.id === activeCategory);
-      return cat ? cat.name : 'Library';
+      return cat ? t(cat.translationKey, cat.fallbackName) : t('libraryTitle', 'Library');
     }
-    return 'Library';
+    return t('libraryTitle', 'Library');
   };
 
   const handleHeaderBack = () => {
@@ -399,12 +410,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             </Text>
           </TouchableOpacity>
         ) : (
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <Image
-              source={require('../../assets/mas_icon_square.png')}
-              style={{ width: 28, height: 28, borderRadius: 7 }}
-              resizeMode="contain"
-            />
+          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
             <Text style={styles.headerTitle}>MAS Player</Text>
           </View>
         )}
@@ -416,7 +422,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             onPress={onOpenQueueDrawer}
             activeOpacity={0.7}
           >
-            <MaterialCommunityIcons name="clock-outline" size={20} color="#38BDF8" />
+            <MaterialCommunityIcons name="clock-outline" size={20} color="#FFFFFF" />
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -439,8 +445,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               onOpenQueueDrawer();
             }}
           >
-            <MaterialCommunityIcons name="clock-outline" size={18} color="#38BDF8" />
-            <Text style={styles.menuPopupText}>File d'attente (Lire plus tard)</Text>
+            <MaterialCommunityIcons name="clock-outline" size={18} color="#FFFFFF" />
+            <Text style={styles.menuPopupText}>{t('queueMenuItem', 'Queue (Play later)')}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -450,8 +456,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               handlePickFolder();
             }}
           >
-            <MaterialCommunityIcons name="folder-plus" size={18} color="#34D399" />
-            <Text style={styles.menuPopupText}>📁 Importer un dossier complet</Text>
+            <Text style={{ fontSize: 16, width: 20, textAlign: 'center' }}>📁</Text>
+            <Text style={styles.menuPopupText}>{t('importFolderTitle', 'Import Folder')}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -461,8 +467,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               handlePickFiles();
             }}
           >
-            <MaterialCommunityIcons name="file-music-outline" size={18} color="#38BDF8" />
-            <Text style={styles.menuPopupText}>🎵 Ajouter des fichiers audio</Text>
+            <Text style={{ fontSize: 16, width: 20, textAlign: 'center' }}>🎵</Text>
+            <Text style={styles.menuPopupText}>{t('importFilesTitle', 'Import Music Files')}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -474,7 +480,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             }}
           >
             <MaterialCommunityIcons name="playlist-plus" size={18} color="#FBBF24" />
-            <Text style={styles.menuPopupText}>Nouvelle Playlist</Text>
+            <Text style={styles.menuPopupText}>{t('newPlaylistMenuItem', 'New Playlist')}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -485,7 +491,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             }}
           >
             <MaterialCommunityIcons name="playlist-music" size={18} color="#E4E4E7" />
-            <Text style={styles.menuPopupText}>Toutes les pistes ({tracks.length})</Text>
+            <Text style={styles.menuPopupText}>
+              {t('allTracksMenuItem', `All Tracks (${tracks.length})`, { count: tracks.length })}
+            </Text>
           </TouchableOpacity>
         </View>
       )}
@@ -505,22 +513,24 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
               onPress={() => handleCategoryPress(cat)}
               activeOpacity={0.75}
             >
-              {/* Circular Anime Badge with Cyan Glowing Icon */}
+              {/* Circular Anime Badge with White Glowing Icon */}
               <View style={styles.iconCircleBadge}>
-                <MaterialCommunityIcons name={cat.icon} size={24} color="#00F0FF" />
+                <MaterialCommunityIcons name={cat.icon} size={24} color="#FFFFFF" />
               </View>
 
               {/* Category Name */}
               <View style={{ flex: 1, marginLeft: 20 }}>
-                <Text style={styles.categoryNameText}>{cat.name}</Text>
+                <Text style={styles.categoryNameText}>
+                  {t(cat.translationKey, cat.fallbackName)}
+                </Text>
                 {cat.id === 'playlists' && (
                   <Text style={styles.categoryCountSub}>
-                    {playlists.length} playlists
+                    {t('playlistsCount', `${playlists.length} playlists`, { count: playlists.length })}
                   </Text>
                 )}
                 {cat.id === 'all_songs' && (
                   <Text style={styles.categoryCountSub}>
-                    {tracks.length} titres
+                    {t('totalTracksCount', `${tracks.length} tracks`, { count: tracks.length })}
                   </Text>
                 )}
               </View>
@@ -543,15 +553,15 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             onPress={() => setIsCreatingPlaylist(true)}
             activeOpacity={0.7}
           >
-            <Ionicons name="add-circle" size={26} color="#38BDF8" />
-            <Text style={styles.createPlaylistBarText}>Créer une nouvelle playlist</Text>
+            <Ionicons name="add-circle" size={26} color="#FFFFFF" />
+            <Text style={styles.createPlaylistBarText}>{t('createPlaylist', 'Créer une nouvelle playlist')}</Text>
           </TouchableOpacity>
 
           {isCreatingPlaylist && (
             <View style={styles.createPlaylistForm}>
               <TextInput
                 style={styles.createPlaylistInput}
-                placeholder="Nom de la playlist (ex: Bass Boost, Roadtrip)"
+                placeholder={t('createPlaylistPlaceholder', 'Nom de la playlist (ex: Bass Boost, Roadtrip)')}
                 placeholderTextColor="#71717A"
                 value={newPlaylistTitle}
                 onChangeText={setNewPlaylistTitle}
@@ -565,7 +575,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     setIsCreatingPlaylist(false);
                   }}
                 >
-                  <Text style={styles.formCancelText}>Annuler</Text>
+                  <Text style={styles.formCancelText}>{t('cancel', 'Annuler')}</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.formConfirmBtn}
@@ -577,7 +587,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     }
                   }}
                 >
-                  <Text style={styles.formConfirmText}>Créer</Text>
+                  <Text style={styles.formConfirmText}>{t('create', 'Créer')}</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -594,58 +604,105 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           ) : (
             playlists.map((pl) => {
               const isPlActive = activePlaylistId === pl.id;
+              const isSystemRecent = pl.id === RECENTLY_PLAYED_PLAYLIST_ID || pl.isSystem;
               return (
                 <TouchableOpacity
                   key={pl.id}
-                  style={[styles.playlistItemCard, isPlActive && styles.playlistItemCardActive]}
+                  style={[
+                    styles.playlistItemCard,
+                    isPlActive && styles.playlistItemCardActive,
+                    isSystemRecent && styles.systemPlaylistItemCard,
+                  ]}
                   onPress={() => {
                     setSelectedPlaylist(pl);
                     onNavigateCategory?.('playlists', null, pl);
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={[styles.playlistIconBox, isPlActive && styles.playlistIconBoxActive]}>
+                  <View
+                    style={[
+                      styles.playlistIconBox,
+                      isPlActive && styles.playlistIconBoxActive,
+                      isSystemRecent && styles.systemPlaylistIconBox,
+                    ]}
+                  >
                     <MaterialCommunityIcons
-                      name={isPlActive ? 'volume-high' : 'playlist-music'}
+                      name={
+                        isPlActive
+                          ? 'volume-high'
+                          : isSystemRecent
+                          ? 'history'
+                          : 'playlist-music'
+                      }
                       size={26}
-                      color={isPlActive ? '#38BDF8' : '#FFFFFF'}
+                      color="#FFFFFF"
                     />
                   </View>
 
                   <View style={{ flex: 1, marginLeft: 16 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <Text style={[styles.playlistCardTitle, isPlActive && styles.playlistCardTitleActive]}>
+                      <Text
+                        style={[
+                          styles.playlistCardTitle,
+                          isPlActive && styles.playlistCardTitleActive,
+                          isSystemRecent && styles.systemPlaylistCardTitle,
+                        ]}
+                      >
                         {pl.name}
                       </Text>
+                      {isSystemRecent && (
+                        <View style={styles.systemPillBadge}>
+                          <Text style={styles.systemPillBadgeText}>{t('historyBadge', 'HISTORIQUE')}</Text>
+                        </View>
+                      )}
                       {isPlActive && (
                         <View style={styles.activePillBadge}>
-                          <Text style={styles.activePillBadgeText}>EN LECTURE</Text>
+                          <Text style={styles.activePillBadgeText}>{t('nowPlayingBadge', 'EN LECTURE')}</Text>
                         </View>
                       )}
                     </View>
                     <Text style={styles.playlistCardSub}>
-                      {pl.trackIds.length} morceau{pl.trackIds.length > 1 ? 'x' : ''}
+                      {t('tracksCount', `${pl.trackIds.length} tracks`, { count: pl.trackIds.length })}
                     </Text>
                   </View>
 
                   <TouchableOpacity
                     style={{ padding: 8 }}
                     onPress={() => {
-                      Alert.alert(
-                        'Supprimer la playlist',
-                        `Supprimer la playlist "${pl.name}" ?`,
-                        [
-                          { text: 'Annuler', style: 'cancel' },
-                          {
-                            text: 'Supprimer',
-                            style: 'destructive',
-                            onPress: () => onDeletePlaylist(pl.id),
-                          },
-                        ]
-                      );
+                      if (isSystemRecent) {
+                        Alert.alert(
+                          t('clearHistory', 'Effacer l\'historique'),
+                          t('clearHistoryConfirm', 'Voulez-vous réinitialiser la liste des morceaux récemment écoutés ?'),
+                          [
+                            { text: t('cancel', 'Annuler'), style: 'cancel' },
+                            {
+                              text: t('delete', 'Effacer'),
+                              style: 'destructive',
+                              onPress: () => onDeletePlaylist(pl.id),
+                            },
+                          ]
+                        );
+                      } else {
+                        Alert.alert(
+                          t('delete', 'Supprimer'),
+                          t('deletePlaylistConfirm', `Supprimer la playlist "${pl.name}" ?`, { name: pl.name }),
+                          [
+                            { text: t('cancel', 'Annuler'), style: 'cancel' },
+                            {
+                              text: t('delete', 'Supprimer'),
+                              style: 'destructive',
+                              onPress: () => onDeletePlaylist(pl.id),
+                            },
+                          ]
+                        );
+                      }
                     }}
                   >
-                    <Ionicons name="trash-outline" size={20} color="#71717A" />
+                    <Ionicons
+                      name={isSystemRecent ? 'refresh-circle-outline' : 'trash-outline'}
+                      size={20}
+                      color={isSystemRecent ? '#FFFFFF' : '#71717A'}
+                    />
                   </TouchableOpacity>
                 </TouchableOpacity>
               );
@@ -660,41 +717,40 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
           contentContainerStyle={styles.categoryContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Main 1-Click Folder Import Card */}
-          <TouchableOpacity
-            style={styles.importFolderPrimaryCard}
-            onPress={handlePickFolder}
-            activeOpacity={0.8}
-          >
-            <View style={styles.importFolderIconBox}>
-              <MaterialCommunityIcons name="folder-plus" size={28} color="#10B981" />
-            </View>
-            <View style={{ flex: 1, marginLeft: 14 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Text style={styles.importFolderPrimaryTitle}>
-                  Importer un dossier complet
-                </Text>
-                <View style={styles.oneClickBadge}>
-                  <Text style={styles.oneClickBadgeText}>1 SEUL CLIC</Text>
-                </View>
+          {/* Actions d'importation unifiées & épurées */}
+          <View style={styles.importGroupCard}>
+            <TouchableOpacity
+              style={styles.importRowItem}
+              onPress={handlePickFolder}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.importRowIconBox, { backgroundColor: 'rgba(59, 130, 246, 0.12)' }]}>
+                <Ionicons name="folder-open-outline" size={20} color="#60A5FA" />
               </View>
-              <Text style={styles.importFolderPrimarySub}>
-                Sélectionnez 1 seul dossier pour ajouter automatiquement toutes ses musiques
-              </Text>
-            </View>
-          </TouchableOpacity>
+              <View style={styles.importRowTextBox}>
+                <Text style={styles.importRowTitle}>{t('importFolderTitle', 'Importer un dossier')}</Text>
+                <Text style={styles.importRowSub}>{t('importFolderSub', 'Ajouter automatiquement les musiques d\'un dossier')}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#52525B" />
+            </TouchableOpacity>
 
-          {/* Secondary File Import Button */}
-          <TouchableOpacity
-            style={styles.importFilesSecondaryBtn}
-            onPress={handlePickFiles}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="document-text-outline" size={18} color="#94A3B8" />
-            <Text style={styles.importFilesSecondaryText}>
-              Ou importer des fichiers individuels
-            </Text>
-          </TouchableOpacity>
+            <View style={styles.importDivider} />
+
+            <TouchableOpacity
+              style={styles.importRowItem}
+              onPress={handlePickFiles}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.importRowIconBox, { backgroundColor: 'rgba(168, 85, 247, 0.12)' }]}>
+                <Ionicons name="musical-notes-outline" size={20} color="#C084FC" />
+              </View>
+              <View style={styles.importRowTextBox}>
+                <Text style={styles.importRowTitle}>{t('importFilesTitle', 'Importer des musiques')}</Text>
+                <Text style={styles.importRowSub}>{t('importFilesSub', 'Sélectionner des fichiers audio individuels')}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#52525B" />
+            </TouchableOpacity>
+          </View>
 
 
 
@@ -708,19 +764,19 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
 
           <View style={styles.foldersSectionHeader}>
             <Text style={styles.sectionHeaderTitle}>
-              DOSSIERS DÉTECTÉS ({groupedData.length})
+              {t('detectedFolders', `DOSSIERS DÉTECTÉS (${groupedData.length})`, { count: groupedData.length })}
             </Text>
             <Text style={styles.sectionHeaderCount}>
-              {tracks.length} morceau{tracks.length > 1 ? 'x' : ''} au total
+              {t('totalTracksCount', `${tracks.length} tracks`, { count: tracks.length })}
             </Text>
           </View>
 
           {groupedData.length === 0 ? (
             <View style={styles.emptyViewBox}>
               <MaterialCommunityIcons name="folder-music" size={48} color="#52525B" />
-              <Text style={styles.emptyViewTitle}>Aucun dossier audio</Text>
+              <Text style={styles.emptyViewTitle}>{t('noAudioFolder', 'Aucun dossier audio')}</Text>
               <Text style={styles.emptyViewSub}>
-                Cliquez sur "Importer un dossier complet" ci-dessus pour sélectionner un dossier de musique en un clic.
+                {t('noAudioFolderSub', 'Utilisez les options ci-dessus pour importer un dossier complet ou des morceaux individuels.')}
               </Text>
             </View>
           ) : (
@@ -732,7 +788,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 activeOpacity={0.7}
               >
                 <View style={styles.folderIconBox}>
-                  <MaterialCommunityIcons name="folder-music" size={28} color="#60A5FA" />
+                  <MaterialCommunityIcons name="folder-music" size={28} color="#FFFFFF" />
                 </View>
                 <View style={{ flex: 1, marginLeft: 14 }}>
                   <Text style={styles.folderTitle} numberOfLines={1}>
@@ -754,7 +810,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   }}
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="play" size={16} color="#38BDF8" />
+                  <Ionicons name="play" size={16} color="#FFFFFF" />
                 </TouchableOpacity>
 
                 {/* 3-dots Folder Menu Button */}
@@ -892,17 +948,22 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   <TouchableOpacity
                     style={styles.groupDeleteHeaderBtn}
                     onPress={() => {
+                      const isRecent = selectedPlaylist.id === RECENTLY_PLAYED_PLAYLIST_ID || selectedPlaylist.isSystem;
                       Alert.alert(
-                        'Supprimer la playlist',
-                        `Supprimer la playlist "${selectedPlaylist.name}" ?`,
+                        isRecent ? 'Effacer l\'historique' : 'Supprimer la playlist',
+                        isRecent
+                          ? 'Voulez-vous réinitialiser l\'historique des dernières pistes ?'
+                          : `Supprimer la playlist "${selectedPlaylist.name}" ?`,
                         [
                           { text: 'Annuler', style: 'cancel' },
                           {
-                            text: 'Supprimer',
+                            text: isRecent ? 'Effacer' : 'Supprimer',
                             style: 'destructive',
                             onPress: () => {
                               onDeletePlaylist(selectedPlaylist.id);
-                              setSelectedPlaylist(null);
+                              if (!isRecent) {
+                                setSelectedPlaylist(null);
+                              }
                             },
                           },
                         ]
@@ -910,8 +971,14 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     }}
                     activeOpacity={0.7}
                   >
-                    <Ionicons name="trash-outline" size={15} color="#F87171" />
-                    <Text style={styles.groupDeleteHeaderText}>Supprimer</Text>
+                    <Ionicons
+                      name={selectedPlaylist.id === RECENTLY_PLAYED_PLAYLIST_ID ? 'refresh-circle-outline' : 'trash-outline'}
+                      size={15}
+                      color="#F87171"
+                    />
+                    <Text style={styles.groupDeleteHeaderText}>
+                      {selectedPlaylist.id === RECENTLY_PLAYED_PLAYLIST_ID ? 'Vider' : 'Supprimer'}
+                    </Text>
                   </TouchableOpacity>
                 )}
 
@@ -930,8 +997,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     }}
                     activeOpacity={0.7}
                   >
-                    <MaterialCommunityIcons name="dots-vertical" size={16} color="#38BDF8" />
-                    <Text style={[styles.groupDeleteHeaderText, { color: '#38BDF8' }]}>Options</Text>
+                    <MaterialCommunityIcons name="dots-vertical" size={16} color="#FFFFFF" />
+                    <Text style={[styles.groupDeleteHeaderText, { color: '#FFFFFF' }]}>Options</Text>
                   </TouchableOpacity>
                 )}
 
@@ -941,7 +1008,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     onPress={() => scrollToCurrentTrack(true)}
                     activeOpacity={0.7}
                   >
-                    <MaterialCommunityIcons name="crosshairs-gps" size={16} color="#38BDF8" />
+                    <MaterialCommunityIcons name="crosshairs-gps" size={16} color="#FFFFFF" />
                     <Text style={styles.jumpToActiveText}>En cours</Text>
                   </TouchableOpacity>
                 )}
@@ -976,7 +1043,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     <MaterialCommunityIcons
                       name={isPlayingThis ? 'volume-high' : 'music-note'}
                       size={22}
-                      color={isPlayingThis ? '#38BDF8' : '#71717A'}
+                      color={isPlayingThis ? '#FFFFFF' : '#71717A'}
                     />
                   )}
                 </View>
@@ -1000,7 +1067,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </Text>
                 </View>
 
-                <Text style={[styles.trackDurationText, isPlayingThis && { color: '#38BDF8' }]}>
+                <Text style={[styles.trackDurationText, isPlayingThis && { color: '#FFFFFF' }]}>
                   {formatTime(item.duration || 0)}
                 </Text>
 
@@ -1054,10 +1121,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
         {/* Title & Artist/Skin info */}
         <View style={styles.miniInfoBox}>
           <Text numberOfLines={1} style={styles.miniTitleText}>
-            {currentTrack.title}
+            {currentTrack.id ? currentTrack.title : t('noTrack', 'Aucune piste')}
           </Text>
           <Text numberOfLines={1} style={styles.miniSubText}>
-            {currentTrack.artist} • MAS Player
+            {currentTrack.id ? `${currentTrack.artist} • MAS Player` : t('noTrackSub', 'Importez un morceau • MAS Player')}
           </Text>
         </View>
 
@@ -1100,7 +1167,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
             {/* EN-TÊTE DU DOSSIER */}
             <View style={styles.folderModalHeader}>
               <View style={styles.folderModalIconBox}>
-                <MaterialCommunityIcons name="folder-music" size={26} color="#60A5FA" />
+                <MaterialCommunityIcons name="folder-music" size={26} color="#FFFFFF" />
               </View>
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={styles.folderModalTitle} numberOfLines={1}>
@@ -1154,7 +1221,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     }}
                     activeOpacity={0.8}
                   >
-                    <Text style={styles.folderModalConfirmText}>Enregistrer</Text>
+                    <Text style={styles.folderModalConfirmText}>{t('save', 'Enregistrer')}</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -1164,10 +1231,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 <View style={styles.folderDeleteWarningBox}>
                   <Ionicons name="warning-outline" size={28} color="#F87171" />
                   <Text style={styles.folderDeleteWarningTitle}>
-                    Supprimer ce dossier ?
+                    {t('deleteFolderConfirmTitle', 'Supprimer ce dossier ?')}
                   </Text>
                   <Text style={styles.folderDeleteWarningText}>
-                    Cette action va retirer le dossier "{folderMenuTarget?.title}" et ses {folderMenuTarget?.trackCount} morceau{folderMenuTarget && folderMenuTarget.trackCount > 1 ? 'x' : ''} de votre bibliothèque musicale.
+                    {t('deleteFolderConfirmMsg', 'Voulez-vous retirer ce dossier et ses morceaux de la bibliothèque ?')}
                   </Text>
                 </View>
 
@@ -1177,7 +1244,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     onPress={() => setIsConfirmingDeleteFolder(false)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.folderModalCancelText}>Annuler</Text>
+                    <Text style={styles.folderModalCancelText}>{t('cancel', 'Annuler')}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={styles.folderModalDangerBtn}
@@ -1195,7 +1262,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                     activeOpacity={0.8}
                   >
                     <Ionicons name="trash-outline" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                    <Text style={styles.folderModalDangerText}>Supprimer</Text>
+                    <Text style={styles.folderModalDangerText}>{t('delete', 'Supprimer')}</Text>
                   </TouchableOpacity>
                 </View>
               </View>
@@ -1210,12 +1277,12 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   }}
                   activeOpacity={0.7}
                 >
-                  <View style={[styles.folderMenuItemIconBox, { backgroundColor: 'rgba(56, 189, 248, 0.12)' }]}>
-                    <MaterialCommunityIcons name="pencil-outline" size={20} color="#38BDF8" />
+                  <View style={[styles.folderMenuItemIconBox, { backgroundColor: 'rgba(255, 255, 255, 0.12)' }]}>
+                    <MaterialCommunityIcons name="pencil-outline" size={20} color="#FFFFFF" />
                   </View>
                   <View style={{ flex: 1, marginLeft: 14 }}>
-                    <Text style={styles.folderMenuItemTitle}>Renommer le dossier</Text>
-                    <Text style={styles.folderMenuItemSub}>Modifier l'étiquette de ce dossier</Text>
+                    <Text style={styles.folderMenuItemTitle}>{t('renameFolder', 'Renommer le dossier')}</Text>
+                    <Text style={styles.folderMenuItemSub}>{t('renameFolderSub', "Modifier l'étiquette de ce dossier")}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#52525B" />
                 </TouchableOpacity>
@@ -1232,10 +1299,10 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                   </View>
                   <View style={{ flex: 1, marginLeft: 14 }}>
                     <Text style={[styles.folderMenuItemTitle, { color: '#F87171' }]}>
-                      Supprimer le dossier
+                      {t('deleteFolder', 'Supprimer le dossier')}
                     </Text>
                     <Text style={styles.folderMenuItemSub}>
-                      Retirer le dossier et tous ses morceaux
+                      {t('deleteFolderSub', 'Retirer le dossier et tous ses morceaux')}
                     </Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#52525B" />
@@ -1267,7 +1334,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     letterSpacing: -0.5,
     maxWidth: 240,
-    textShadowColor: 'rgba(0, 212, 255, 0.4)',
+    textShadowColor: 'rgba(255, 255, 255, 0.3)',
     textShadowOffset: { width: 0, height: 0 },
     textShadowRadius: 8,
   },
@@ -1284,23 +1351,23 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(0, 212, 255, 0.35)',
+    borderColor: 'rgba(255, 255, 255, 0.25)',
   },
   menuPopup: {
     position: 'absolute',
     top: Platform.OS === 'ios' ? 60 : 70,
     right: 20,
-    backgroundColor: 'rgba(8, 14, 28, 0.96)',
+    backgroundColor: '#000000',
     borderRadius: 14,
     paddingVertical: 8,
     paddingHorizontal: 6,
     zIndex: 999,
     borderWidth: 1,
-    borderColor: 'rgba(0, 212, 255, 0.35)',
-    shadowColor: '#00F0FF',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
+    borderColor: '#262626',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.5,
+    shadowRadius: 14,
     elevation: 10,
   },
   menuPopupItem: {
@@ -1331,14 +1398,14 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: 'rgba(8, 14, 28, 0.85)',
+    backgroundColor: 'rgba(12, 14, 20, 0.9)',
     borderWidth: 1.5,
-    borderColor: 'rgba(0, 212, 255, 0.45)',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#00F0FF',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.6,
+    shadowOpacity: 0.35,
     shadowRadius: 8,
     elevation: 4,
   },
@@ -1440,72 +1507,46 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 2,
   },
-  importFolderPrimaryCard: {
+  importGroupCard: {
+    backgroundColor: '#141318',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#23222B',
+    overflow: 'hidden',
+    marginBottom: 16,
+  },
+  importRowItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#06281E',
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1.5,
-    borderColor: '#059669',
-    marginBottom: 10,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 10,
-    elevation: 3,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
   },
-  importFolderIconBox: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+  importRowIconBox: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
   },
-  importFolderPrimaryTitle: {
-    color: '#ECFDF5',
-    fontSize: 16,
-    fontWeight: '700',
+  importRowTextBox: {
+    flex: 1,
+    marginLeft: 13,
+  },
+  importRowTitle: {
+    color: '#FFFFFF',
+    fontSize: 14.5,
+    fontWeight: '600',
     letterSpacing: -0.2,
   },
-  oneClickBadge: {
-    backgroundColor: '#10B981',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  oneClickBadgeText: {
-    color: '#022C22',
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  importFolderPrimarySub: {
-    color: '#6EE7B7',
+  importRowSub: {
+    color: '#71717A',
     fontSize: 12,
-    marginTop: 4,
-    lineHeight: 16,
+    marginTop: 2,
   },
-  importFilesSecondaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#18181B',
-    borderRadius: 10,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderWidth: 1,
-    borderColor: '#27272A',
-    marginBottom: 14,
-  },
-  importFilesSecondaryText: {
-    color: '#CBD5E1',
-    fontSize: 13,
-    fontWeight: '600',
+  importDivider: {
+    height: 1,
+    backgroundColor: '#1F1E26',
+    marginLeft: 65,
   },
   successBanner: {
     flexDirection: 'row',
@@ -1680,7 +1721,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F0E13',
     borderRadius: 10,
     borderWidth: 1.5,
-    borderColor: '#38BDF8',
+    borderColor: '#FFFFFF',
     color: '#FFFFFF',
     paddingHorizontal: 14,
     paddingVertical: 11,
@@ -1843,16 +1884,16 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   trackRowActive: {
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
     paddingLeft: 10,
   },
   trackIconBoxActive: {
-    backgroundColor: 'rgba(56, 189, 248, 0.2)',
-    borderColor: '#38BDF8',
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderColor: '#FFFFFF',
     borderWidth: 1,
   },
   playingBadgePill: {
-    backgroundColor: '#38BDF8',
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 6,
     paddingVertical: 1.5,
     borderRadius: 4,
@@ -1867,39 +1908,63 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.4)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
     marginLeft: 'auto',
   },
   jumpToActiveText: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
     fontSize: 12.5,
     fontWeight: '700',
   },
   playlistItemCardActive: {
-    borderColor: '#38BDF8',
-    backgroundColor: 'rgba(56, 189, 248, 0.08)',
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
   },
-  playlistIconBoxActive: {
-    backgroundColor: 'rgba(56, 189, 248, 0.25)',
+  systemPlaylistItemCard: {
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
   },
-  playlistCardTitleActive: {
-    color: '#38BDF8',
+  systemPlaylistIconBox: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
   },
-  activePillBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+  systemPlaylistCardTitle: {
+    color: '#FFFFFF',
+  },
+  systemPillBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
     borderWidth: 1,
-    borderColor: '#38BDF8',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+  },
+  systemPillBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  playlistIconBoxActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  playlistCardTitleActive: {
+    color: '#FFFFFF',
+  },
+  activePillBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
   },
   activePillBadgeText: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
     fontSize: 9.5,
     fontWeight: '800',
     letterSpacing: 0.5,
@@ -1927,7 +1992,7 @@ const styles = StyleSheet.create({
     color: '#F4F4F5',
   },
   trackTitleTextActive: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
   },
   trackArtistText: {
     fontSize: 12.5,

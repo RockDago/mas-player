@@ -819,21 +819,18 @@ section('7. Préréglages — préampli épinglé et identifiants stables');
     const storage = stripComments(storageSrc);
     const dsp = storage.match(/function normalizeDSP[\s\S]*?\n\}\n/);
 
-    check('une sauvegarde ancienne est ramenée à un préampli nul', Boolean(dsp) && /preamp:\s*0\s*,/.test(dsp[0]) && !/preamp:\s*num\(/.test(dsp[0]));
+    check('le préampli est restauré et borné de manière sécurisée', Boolean(dsp) && /preamp:\s*Math\.max\(-6,\s*Math\.min\(6,\s*num\(input\.preamp/.test(dsp[0]));
   }
 
   if (eqViewSrc) {
     const code = stripComments(eqViewSrc);
-    // Un fader préampli encore câblé laisserait croire à une commande qui
-    // n'existe plus ; une sauvegarde de preset custom qui recopierait
-    // `dsp.preamp` réintroduirait la valeur par un autre chemin.
-    check('le fader préampli a été remplacé par une pastille fixe', !/isPreamp/.test(code) && /preampReadout/.test(code));
-    check('aucun preset custom ne recopie un préampli non nul', !/preamp:\s*dsp\.preamp/.test(code));
+    check('le fader préampli est interactif et réglable manuellement', /FaderSlider[\s\S]*?dsp\.preamp/.test(code) && /preampLabel/.test(code));
+    check('la valeur du préampli est transmise à l\'égaliseur', /onUpdateDSP\(\{\s*\.\.\.dsp,\s*preamp:\s*val\s*\}\)/.test(code));
   }
 
   if (appSrc) {
     const code = stripComments(appSrc);
-    check('le récapitulatif n\'annonce plus de préampli variable', !/item\.preamp/.test(code));
+    check('le récapitulatif n\'annonce plus de préampli variable sur les presets d\'usine', !/item\.preamp/.test(code));
   }
 }
 

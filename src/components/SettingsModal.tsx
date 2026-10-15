@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Modal,
   View,
@@ -9,8 +9,10 @@ import {
   Platform,
   TextInput,
   Switch,
-  Image,
   ActivityIndicator,
+  Animated,
+  Image,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -18,11 +20,20 @@ import { Ionicons, MaterialCommunityIcons, Feather } from '@expo/vector-icons';
 import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
 import * as Haptics from 'expo-haptics';
 
-import { Track, DSPState } from '../types/audio';
 import { AppSettings, DEFAULT_APP_SETTINGS } from '../services/storageService';
-import { formatTime } from '../services/audioService';
 import { APP_VERSION, APP_NAME, APP_AUTHOR, APP_COPYRIGHT } from '../constants/version';
 import { getTranslation, LANGUAGES, LanguageCode } from '../i18n/translations';
+import { ChangelogModal } from './ChangelogModal';
+import { AboutModal } from './AboutModal';
+import { CountryFlag } from './CountryFlag';
+import { AnimeBackground } from './AnimeBackground';
+import { Track } from '../types/audio';
+import {
+  downloadMissingArtworks,
+  clearArtworkCache,
+} from '../services/albumArtService';
+
+export const POWERAMP_TEAL = '#FFFFFF';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -30,11 +41,8 @@ interface SettingsModalProps {
   onRescanLibrary?: () => Promise<number>;
   settings?: AppSettings;
   onUpdateSettings?: (newSettings: Partial<AppSettings>) => void;
-  currentTrack?: Track;
-  positionMillis?: number;
-  durationMillis?: number;
-  dsp?: DSPState;
-  onClearSession?: () => void;
+  tracks?: Track[];
+  onUpdateTracks?: (newTracks: Track[]) => Promise<void> | void;
 }
 
 interface SettingCategory {
@@ -47,18 +55,11 @@ interface SettingCategory {
 
 const SETTING_ITEMS: SettingCategory[] = [
   {
-    id: 'resume_playback',
-    titleKey: 'cat_resume_title',
-    subtitleKey: 'cat_resume_sub',
-    icon: 'history',
-    iconColor: '#38BDF8',
-  },
-  {
     id: 'look_and_feel',
     titleKey: 'cat_look_title',
     subtitleKey: 'cat_look_sub',
-    icon: 'layers-outline',
-    iconColor: '#93A4BA',
+    icon: 'translate',
+    iconColor: '#38BDF8',
   },
   {
     id: 'audio',
@@ -66,13 +67,6 @@ const SETTING_ITEMS: SettingCategory[] = [
     subtitleKey: 'cat_audio_sub',
     icon: 'volume-high',
     iconColor: '#E27690',
-  },
-  {
-    id: 'visualization',
-    titleKey: 'cat_visu_title',
-    subtitleKey: 'cat_visu_sub',
-    icon: 'chart-bell-curve-cumulative',
-    iconColor: '#C084FC',
   },
   {
     id: 'background',
@@ -109,6 +103,13 @@ const SETTING_ITEMS: SettingCategory[] = [
     icon: 'lock-outline',
     iconColor: '#FB923C',
   },
+  {
+    id: 'about',
+    titleKey: 'cat_about_title',
+    subtitleKey: 'cat_about_sub',
+    icon: 'information-outline',
+    iconColor: POWERAMP_TEAL,
+  },
 ];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -117,11 +118,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onRescanLibrary,
   settings = DEFAULT_APP_SETTINGS,
   onUpdateSettings,
-  currentTrack,
-  positionMillis = 0,
-  durationMillis = 0,
-  dsp,
-  onClearSession,
+  tracks = [],
+  onUpdateTracks,
 }) => {
   // Marge système mesurée, lue par contexte : la modale est montée hors de
   // l'écran et n'en hérite pas. Voir src/theme/insets.ts.
@@ -129,7 +127,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isSearchActive, setIsSearchActive] = useState<boolean>(false);
   const [selectedSetting, setSelectedSetting] = useState<SettingCategory | null>(null);
-  const [resetSuccess, setResetSuccess] = useState<boolean>(false);
+  const [subSearchQuery, setSubSearchQuery] = useState<string>('');
+  const [isSubSearchActive, setIsSubSearchActive] = useState<boolean>(false);
+  const [showChangelog, setShowChangelog] = useState<boolean>(false);
+  const [showAbout, setShowAbout] = useState<boolean>(false);
+
   // `rescanSuccess` porte le nombre de morceaux ajoutés — `null` tant que le
   // scan n'a rien donné. Un booléen separate ne suffirait pas : « actualisée »
   // sans dire combien de morceaux ont réellement été trouvés est exactement le
@@ -137,6 +139,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [rescanSuccess, setRescanSuccess] = useState<number | null>(null);
   const [rescanError, setRescanError] = useState<boolean>(false);
   const [rescanLoading, setRescanLoading] = useState<boolean>(false);
+
+  // Gestion des pochettes d'album
+  const [artDownloading, setArtDownloading] = useState<boolean>(false);
+  const [artDownloadResult, setArtDownloadResult] = useState<string | null>(null);
+  const [artClearResult, setArtClearResult] = useState<boolean>(false);
 
   const lang: LanguageCode = (settings.language as LanguageCode) || 'fr';
   // `params` est relayé tel quel : les libellés qui interpolent `{count}`
@@ -160,7 +167,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
+    if (item.id === 'changelog') {
+      setShowChangelog(true);
+      return;
+    }
+    if (item.id === 'about') {
+      setShowAbout(true);
+      return;
+    }
     setSelectedSetting(item);
+  };
+
+  const handleBack = () => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    if (selectedSetting) {
+      setSelectedSetting(null);
+      setIsSubSearchActive(false);
+      setSubSearchQuery('');
+    } else {
+      onClose();
+    }
   };
 
   /**
@@ -196,231 +224,120 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  const handleDownloadAlbumArt = async () => {
+    if (!tracks || tracks.length === 0) {
+      setArtDownloadResult(t('artDownloadNone'));
+      return;
+    }
+    setArtDownloading(true);
+    setArtDownloadResult(null);
+    setArtClearResult(false);
+    try {
+      const { updatedTracks, addedCount } = await downloadMissingArtworks(
+        tracks,
+        settings.highQualityArt !== false
+      );
+      if (addedCount > 0) {
+        await onUpdateTracks?.(updatedTracks);
+        try {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        } catch {}
+        setArtDownloadResult(t('artDownloadSuccess', undefined, { count: addedCount }));
+      } else {
+        setArtDownloadResult(t('artDownloadNone'));
+      }
+    } catch (e) {
+      console.warn('Erreur téléchargement pochettes:', e);
+    } finally {
+      setArtDownloading(false);
+    }
+  };
+
+  const handleClearAlbumArt = async () => {
+    if (!tracks || tracks.length === 0) return;
+    Alert.alert(
+      t('artClearCacheBtn', 'Vider les pochettes'),
+      t('artClearConfirm', 'Voulez-vous supprimer les pochettes téléchargées pour la bibliothèque ?'),
+      [
+        { text: t('cancel', 'Annuler'), style: 'cancel' },
+        {
+          text: t('delete', 'Supprimer'),
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              clearArtworkCache();
+              // Ne retire que les pochettes téléchargées sur internet (http/https) pour préserver les fichiers locaux
+              const clearedTracks = tracks.map((t) => {
+                if (t.artwork && (t.artwork.startsWith('http://') || t.artwork.startsWith('https://'))) {
+                  return { ...t, artwork: undefined };
+                }
+                return t;
+              });
+              await onUpdateTracks?.(clearedTracks);
+              try {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+              } catch {}
+              setArtClearResult(true);
+              setArtDownloadResult(null);
+            } catch (e) {
+              console.warn('Erreur effacement pochettes:', e);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const renderCategoryContent = () => {
     if (!selectedSetting) return null;
 
     switch (selectedSetting.id) {
-      case 'resume_playback':
-        return (
-          <View style={styles.subModalOptions}>
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('rememberLastTrack')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('rememberLastTrackSub')}</Text>
-              </View>
-              <Switch
-                value={settings.rememberLastTrack}
-                onValueChange={(val) => onUpdateSettings?.({ rememberLastTrack: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('rememberPlaybackPos')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('rememberPlaybackPosSub')}</Text>
-              </View>
-              <Switch
-                value={settings.rememberPlaybackPosition}
-                onValueChange={(val) => onUpdateSettings?.({ rememberPlaybackPosition: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('autoPlayLaunch')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('autoPlayLaunchSub')}</Text>
-              </View>
-              <Switch
-                value={settings.autoPlayOnLaunch}
-                onValueChange={(val) => onUpdateSettings?.({ autoPlayOnLaunch: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('resumeAfterInterruption')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('resumeAfterInterruptionSub')}</Text>
-              </View>
-              <Switch
-                value={settings.resumeOnHeadset}
-                onValueChange={(val) => onUpdateSettings?.({ resumeOnHeadset: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            {/* Carte d'état actuel */}
-            <View style={styles.statusCard}>
-              <Text style={styles.statusCardTitle}>{t('memoryStateTitle')}</Text>
-              <View style={styles.statusCardRow}>
-                <Text style={styles.statusCardLabel}>{t('memoryTrack')}</Text>
-                <Text numberOfLines={1} style={styles.statusCardValue}>
-                  {currentTrack ? `${currentTrack.title} (${currentTrack.artist})` : t('none')}
-                </Text>
-              </View>
-              <View style={styles.statusCardRow}>
-                <Text style={styles.statusCardLabel}>{t('memoryPosition')}</Text>
-                <Text style={styles.statusCardValue}>
-                  {formatTime(positionMillis / 1000)} / {formatTime(durationMillis / 1000)}
-                </Text>
-              </View>
-              <View style={styles.statusCardRow}>
-                <Text style={styles.statusCardLabel}>{t('memoryEqualizer')}</Text>
-                <Text style={styles.statusCardValue}>
-                  Preset "{dsp?.presetId || 'Défaut'}" • Vol {dsp?.volume ?? 75}%
-                </Text>
-              </View>
-            </View>
-
-            {resetSuccess ? (
-              <View style={styles.resetSuccessBox}>
-                <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
-                <Text style={styles.resetSuccessText}>{t('resetSessionSuccess')}</Text>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.resetSessionBtn}
-                onPress={() => {
-                  try {
-                    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                  } catch {}
-                  onClearSession?.();
-                  setResetSuccess(true);
-                  setTimeout(() => setResetSuccess(false), 2500);
-                }}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="trash-outline" size={16} color="#EF4444" />
-                <Text style={styles.resetSessionBtnText}>{t('resetSessionBtn')}</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        );
-
       case 'look_and_feel':
         return (
           <View style={styles.subModalOptions}>
-            {/* SÉLECTEUR DE LANGUE (Fonctionnel et réactif) */}
-            <View style={styles.optionSection}>
-              <Text style={styles.sectionLabel}>{t('languageSection')}</Text>
-              <View style={styles.chipRow}>
-                {LANGUAGES.map((l) => (
+            <View style={styles.languageGroup}>
+              {LANGUAGES.map((l, index) => {
+                const isActive = settings.language === l.code;
+                const isLast = index === LANGUAGES.length - 1;
+                return (
                   <TouchableOpacity
                     key={l.code}
                     style={[
-                      styles.choiceChip,
-                      settings.language === l.code && styles.choiceChipActive,
+                      styles.languageRow,
+                      isActive && styles.languageRowActive,
+                      !isLast && styles.languageRowBorder,
                     ]}
                     onPress={() => {
                       try {
-                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                       } catch {}
                       onUpdateSettings?.({ language: l.code });
                     }}
+                    activeOpacity={0.7}
                   >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        settings.language === l.code && styles.choiceChipTextActive,
-                      ]}
-                    >
-                      {l.flag} {l.label}
-                    </Text>
+                    <View style={styles.languageRowLeft}>
+                      <CountryFlag code={l.code} width={28} height={19} />
+                      <Text
+                        style={[
+                          styles.languageRowLabel,
+                          isActive && styles.languageRowLabelActive,
+                        ]}
+                      >
+                        {l.label}
+                      </Text>
+                    </View>
+
+                    {isActive && (
+                      <Ionicons name="checkmark" size={20} color="#FFFFFF" />
+                    )}
                   </TouchableOpacity>
-                ))}
-              </View>
+                );
+              })}
             </View>
 
-            <View style={styles.optionSection}>
-              <Text style={styles.sectionLabel}>{t('themeSection')}</Text>
-              <View style={styles.chipRow}>
-                {[
-                  { id: 'oled', label: t('themeOled') },
-                  { id: 'cyber', label: t('themeCyber') },
-                  { id: 'violet', label: t('themeViolet') },
-                  { id: 'carbon', label: t('themeCarbon') },
-                ].map((th) => (
-                  <TouchableOpacity
-                    key={th.id}
-                    style={[
-                      styles.choiceChip,
-                      settings.theme === th.id && styles.choiceChipActive,
-                    ]}
-                    onPress={() => onUpdateSettings?.({ theme: th.id as any })}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        settings.theme === th.id && styles.choiceChipTextActive,
-                      ]}
-                    >
-                      {th.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.optionSection}>
-              <Text style={styles.sectionLabel}>{t('visualizerSection')}</Text>
-              <View style={styles.chipRow}>
-                {[
-                  { id: 'vinyl', label: t('visuVinyl') },
-                  { id: 'bars', label: t('visuBars') },
-                  { id: 'wave', label: t('visuWave') },
-                ].map((v) => (
-                  <TouchableOpacity
-                    key={v.id}
-                    style={[
-                      styles.choiceChip,
-                      settings.visualizerStyle === v.id && styles.choiceChipActive,
-                    ]}
-                    onPress={() => onUpdateSettings?.({ visualizerStyle: v.id as any })}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        settings.visualizerStyle === v.id && styles.choiceChipTextActive,
-                      ]}
-                    >
-                      {v.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('techSpecsBadge')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('techSpecsBadgeSub')}</Text>
-              </View>
-              <Switch
-                value={settings.showTrackDetails}
-                onValueChange={(val) => onUpdateSettings?.({ showTrackDetails: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('richNotifs')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('richNotifsSub')}</Text>
-              </View>
-              <Switch
-                value={settings.richNotifications}
-                onValueChange={(val) => onUpdateSettings?.({ richNotifications: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
+            <Text style={styles.languageFootnote}>
+              {t('languageFootnote')}
+            </Text>
           </View>
         );
 
@@ -435,7 +352,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.crossfade}
                 onValueChange={(val) => onUpdateSettings?.({ crossfade: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -475,7 +392,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.replayGain}
                 onValueChange={(val) => onUpdateSettings?.({ replayGain: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -518,7 +435,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.dvc32Bit}
                 onValueChange={(val) => onUpdateSettings?.({ dvc32Bit: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -531,7 +448,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.hiResOutput}
                 onValueChange={(val) => onUpdateSettings?.({ hiResOutput: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -544,7 +461,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.ultraLowLatency}
                 onValueChange={(val) => onUpdateSettings?.({ ultraLowLatency: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -564,84 +481,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <Text style={styles.statusCardValue}>{t('engineActive')}</Text>
               </View>
             </View>
-          </View>
-        );
-
-      case 'visualization':
-        return (
-          <View style={styles.subModalOptions}>
-            <View style={styles.optionSection}>
-              <Text style={styles.sectionLabel}>{t('spectrumSection')}</Text>
-              <View style={styles.chipRow}>
-                {[
-                  { id: 'low', label: t('specLow') },
-                  { id: 'normal', label: t('specNormal') },
-                  { id: 'ultra', label: t('specUltra') },
-                ].map((s) => (
-                  <TouchableOpacity
-                    key={s.id}
-                    style={[
-                      styles.choiceChip,
-                      settings.spectrumReactive === s.id && styles.choiceChipActive,
-                    ]}
-                    onPress={() => onUpdateSettings?.({ spectrumReactive: s.id as any })}
-                  >
-                    <Text
-                      style={[
-                        styles.choiceChipText,
-                        settings.spectrumReactive === s.id && styles.choiceChipTextActive,
-                      ]}
-                    >
-                      {s.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.toggleRow}>
-              <View style={styles.toggleTextCol}>
-                <Text style={styles.toggleLabel}>{t('autoFadeTitle')}</Text>
-                <Text style={styles.toggleSubLabel}>{t('autoFadeSub')}</Text>
-              </View>
-              <Switch
-                value={settings.autoFadeControls}
-                onValueChange={(val) => onUpdateSettings?.({ autoFadeControls: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            {settings.autoFadeControls && (
-              <View style={styles.optionSection}>
-                <Text style={styles.sectionLabel}>{t('opacitySection')}</Text>
-                <View style={styles.chipRow}>
-                  {[
-                    { val: 0.2, label: t('op20') },
-                    { val: 0.4, label: t('op40') },
-                    { val: 0.7, label: t('op70') },
-                  ].map((o) => (
-                    <TouchableOpacity
-                      key={o.val}
-                      style={[
-                        styles.choiceChip,
-                        settings.fadedOpacity === o.val && styles.choiceChipActive,
-                      ]}
-                      onPress={() => onUpdateSettings?.({ fadedOpacity: o.val })}
-                    >
-                      <Text
-                        style={[
-                          styles.choiceChipText,
-                          settings.fadedOpacity === o.val && styles.choiceChipTextActive,
-                        ]}
-                      >
-                        {o.label}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
-            )}
           </View>
         );
 
@@ -716,7 +555,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.colorSaturation}
                 onValueChange={(val) => onUpdateSettings?.({ colorSaturation: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -729,16 +568,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.ambientParticles}
                 onValueChange={(val) => onUpdateSettings?.({ ambientParticles: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
           </View>
         );
 
-      case 'album_art':
+      case 'album_art': {
+        const tracksWithArt = tracks.filter((t) => Boolean(t.artwork && t.artwork.trim() !== '')).length;
+        const totalTracks = tracks.length;
+
         return (
           <View style={styles.subModalOptions}>
+            {/* Bouton d'action principal : Téléchargement des pochettes manquantes */}
+            <TouchableOpacity
+              style={styles.primaryActionBtn}
+              onPress={handleDownloadAlbumArt}
+              disabled={artDownloading}
+              activeOpacity={0.8}
+            >
+              {artDownloading ? (
+                <ActivityIndicator size="small" color="#000000" />
+              ) : (
+                <Ionicons name="cloud-download-outline" size={18} color="#000000" />
+              )}
+              <Text style={styles.primaryActionBtnText}>
+                {artDownloading ? t('artDownloading') : t('artDownloadBtn')}
+              </Text>
+            </TouchableOpacity>
+
+            {artDownloadResult && (
+              <View style={styles.resetSuccessBox}>
+                <Ionicons name="checkmark-circle" size={16} color="#4ADE80" />
+                <Text style={styles.resetSuccessText}>{artDownloadResult}</Text>
+              </View>
+            )}
+
+            {artClearResult && (
+              <View style={styles.resetSuccessBox}>
+                <Ionicons name="trash-outline" size={16} color="#38BDF8" />
+                <Text style={styles.resetSuccessText}>{t('artClearSuccess')}</Text>
+              </View>
+            )}
+
+            {/* Réglages à bascule */}
             <View style={styles.toggleRow}>
               <View style={styles.toggleTextCol}>
                 <Text style={styles.toggleLabel}>{t('artAutoDl')}</Text>
@@ -747,7 +621,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.autoDownloadArt}
                 onValueChange={(val) => onUpdateSettings?.({ autoDownloadArt: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -760,7 +634,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.preferEmbeddedArt}
                 onValueChange={(val) => onUpdateSettings?.({ preferEmbeddedArt: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -773,19 +647,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.highQualityArt}
                 onValueChange={(val) => onUpdateSettings?.({ highQualityArt: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
 
-            {/* La carte « cache de pochettes » et son bouton « vider » ont été
-                retirés : il n'existe aucun cache. Les pistes importées n'ont pas
-                de pochette sur natif, et la carte annonçait « 18 pochettes ·
-                3.2 Mo » avec un bouton de purge qui vidait rien. Un compteur de
-                cache qui ne compte rien est un mensonge d'interface ; il est plus
-                utile de ne pas avoir de bouton du tout. */}
+            {/* Carte de statut des pochettes */}
+            <View style={styles.statusCard}>
+              <Text style={styles.statusCardTitle}>{t('artStatusTitle')}</Text>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('artCountLabel')}</Text>
+                <Text style={styles.statusCardValue}>
+                  {tracksWithArt} / {totalTracks}
+                </Text>
+              </View>
+              <View style={styles.statusCardRow}>
+                <Text style={styles.statusCardLabel}>{t('artQualityLabel')}</Text>
+                <Text style={styles.statusCardValue}>
+                  {settings.highQualityArt !== false ? 'HD 600×600 px' : '300×300 px'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Action secondaire : vider les pochettes */}
+            {tracksWithArt > 0 && (
+              <TouchableOpacity
+                style={styles.dangerSecondaryBtn}
+                onPress={handleClearAlbumArt}
+                activeOpacity={0.75}
+              >
+                <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                <Text style={styles.dangerSecondaryBtnText}>
+                  {t('artClearCacheBtn')}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         );
+      }
 
       case 'library':
         return (
@@ -797,9 +696,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               activeOpacity={0.8}
             >
               {rescanLoading ? (
-                <ActivityIndicator size="small" color="#000000" />
+                <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <Ionicons name="refresh" size={18} color="#000000" />
+                <Ionicons name="refresh" size={18} color="#FFFFFF" />
               )}
               <Text style={styles.primaryActionBtnText}>
                 {rescanLoading ? t('libRescanning') : t('libRescanBtn')}
@@ -860,7 +759,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.ignoreShortAudio}
                 onValueChange={(val) => onUpdateSettings?.({ ignoreShortAudio: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -873,7 +772,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.clearQueueOnNewPlay}
                 onValueChange={(val) => onUpdateSettings?.({ clearQueueOnNewPlay: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -903,7 +802,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.pauseOnDisconnect}
                 onValueChange={(val) => onUpdateSettings?.({ pauseOnDisconnect: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -916,7 +815,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.resumeOnConnect}
                 onValueChange={(val) => onUpdateSettings?.({ resumeOnConnect: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -929,7 +828,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.headsetButtons}
                 onValueChange={(val) => onUpdateSettings?.({ headsetButtons: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -959,7 +858,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.lockScreenControls}
                 onValueChange={(val) => onUpdateSettings?.({ lockScreenControls: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -972,7 +871,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.lockScreenAlbumArt}
                 onValueChange={(val) => onUpdateSettings?.({ lockScreenAlbumArt: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -985,7 +884,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.lockScreenSeekButtons}
                 onValueChange={(val) => onUpdateSettings?.({ lockScreenSeekButtons: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
@@ -998,12 +897,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Switch
                 value={settings.keepScreenAwake}
                 onValueChange={(val) => onUpdateSettings?.({ keepScreenAwake: val })}
-                trackColor={{ false: '#27272A', true: '#38BDF8' }}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
                 thumbColor="#FFFFFF"
               />
             </View>
           </View>
         );
+
+
 
       default:
         return null;
@@ -1016,213 +917,243 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       animationType="slide"
       transparent={true}
       statusBarTranslucent={true}
-      onRequestClose={onClose}
+      onRequestClose={handleBack}
     >
       <StatusBar style="light" />
       <SafeAreaView
         style={styles.safeContainer}
         edges={['left', 'right', 'bottom']}
       >
-        {/* Header */}
-        <View
-          style={[
-            styles.header,
-            {
-              // Marge système mesurée : protège sous la barre d'état (notch/Dynamic Island/punch-hole)
-              // sur iOS et Android et préserve 14 px d'aération esthétique.
-              paddingTop: insetPadding(insets, 'top', 14),
-            },
-          ]}
-        >
-          <TouchableOpacity
-            style={styles.headerIconBtn}
-            onPress={onClose}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="arrow-back" size={24} color="#FFFFFF" />
-          </TouchableOpacity>
+        {/* Arrière-plan réactif appliquant en temps réel les réglages de l'utilisateur */}
+        <AnimeBackground
+          backgroundStyle={settings.backgroundStyle}
+          blurIntensity={settings.blurIntensity}
+          colorSaturation={settings.colorSaturation}
+          ambientParticles={settings.ambientParticles}
+        />
 
-          {isSearchActive ? (
-            <TextInput
-              style={styles.headerSearchInput}
-              placeholder={t('searchSettings')}
-              placeholderTextColor="#71717A"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              autoFocus
-            />
-          ) : (
-            <Text style={styles.headerTitle}>{t('settingsTitle')}</Text>
-          )}
-
-          <View style={styles.headerRightActions}>
-            <TouchableOpacity
-              style={styles.headerIconBtn}
-              onPress={() => {
-                setIsSearchActive(!isSearchActive);
-                if (isSearchActive) setSearchQuery('');
-              }}
-              activeOpacity={0.7}
-            >
-              <Ionicons
-                name={isSearchActive ? 'close-circle' : 'search'}
-                size={22}
-                color="#FFFFFF"
-              />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.headerIconBtn}
-              onPress={onClose}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="close" size={26} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Rescan Notification Banner — refléte le compte réel, jamais un succès par défaut */}
-        {rescanSuccess !== null && (
-          <View style={styles.rescanBanner}>
-            <Ionicons name="checkmark-circle" size={18} color="#4ADE80" />
-            <Text style={styles.rescanBannerText}>
-              {t('libRescanFound', undefined, { count: rescanSuccess })}
-            </Text>
-          </View>
-        )}
-
-        {/* Section Sub-header */}
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionHeaderText}>{t('sectionSettings')}</Text>
-        </View>
-
-        {/* Settings List */}
-        <ScrollView
-          style={styles.scrollList}
-          contentContainerStyle={[
-            styles.scrollContent,
-            {
-              // Le fond fixe de 40 px ne suffisait pas : sous Android 15 bord à bord il
-              // est plus court que la barre de navigation, et la dernière ligne
-              // passait dessous. `insetPaddingBelow` ajoute la marge mesurée
-              // sur Android sans la doubler sur iOS, où le SafeAreaView la
-              // pose déjà.
-              paddingBottom: insetPaddingBelow(insets, 24),
-            },
-          ]}
-          showsVerticalScrollIndicator={false}
-        >
-          {filteredItems.map((item) => (
-            <TouchableOpacity
-              key={item.id}
-              style={styles.settingRow}
-              onPress={() => handleItemPress(item)}
-              activeOpacity={0.7}
-            >
-              {/* Left Colored Icon */}
-              <View style={styles.iconWrapper}>
-                <MaterialCommunityIcons
-                  name={item.icon}
-                  size={26}
-                  color={item.iconColor}
-                />
-              </View>
-
-              {/* Middle Title and Subtitle */}
-              <View style={styles.textWrapper}>
-                <Text style={styles.itemTitleText}>{t(item.titleKey)}</Text>
-                <Text style={styles.itemSubtitleText}>{t(item.subtitleKey)}</Text>
-              </View>
-
-              <Feather name="chevron-right" size={18} color="#52525B" />
-            </TouchableOpacity>
-          ))}
-
-          {/* Information & Version simple et professionnelle */}
-          <View style={styles.aboutVersionCard}>
-            <View style={styles.aboutVersionHeader}>
-              <Image
-                source={require('../../assets/mas_icon_square.png')}
-                style={styles.aboutAppIcon}
-                resizeMode="contain"
-              />
-              <Text style={styles.aboutAppName}>{APP_NAME}</Text>
-              <View style={styles.aboutVersionBadge}>
-                <Text style={styles.aboutVersionBadgeText}>v{APP_VERSION}</Text>
-              </View>
-            </View>
-
-            <Text style={styles.aboutCopyrightText}>
-              © 2026 {APP_AUTHOR} • {t('allRightsReserved')}
-            </Text>
-          </View>
-        </ScrollView>
-
-        {/* Detail Sub-Panel Modal */}
-        {selectedSetting && (
-          <Modal
-            visible={!!selectedSetting}
-            animationType="fade"
-            transparent
-            statusBarTranslucent={true}
-            onRequestClose={() => setSelectedSetting(null)}
-          >
+        {selectedSetting ? (
+          /* ==============================================================
+             VUE PLEIN ÉCRAN DU SOUS-MENU — STYLE POWERAMP EXACT
+             (Flèche retour teal, titre teal, recherche teal, croix teal, pas de modale)
+             ============================================================== */
+          <View style={styles.subPageContainer}>
+            {/* Header Poweramp fidèle à la capture */}
             <View
               style={[
-                styles.subModalOverlay,
+                styles.header,
                 {
-                  // La boîte est centrée et plafonnée à 88 % : la marge libre
-                  // restante en bas vaut ~6 % de la hauteur, soit à peine la
-                  // barre gestuelle Android. On réserve la marge système pour
-                  // que le centrage se fasse dans la zone visible — un
-                  // paddingBottom fixe ne réglerait qu'une barre de 16 px.
-                  paddingBottom: insetPadding(insets, 'bottom', 16),
+                  paddingTop: insetPadding(insets, 'top', 14),
                 },
               ]}
             >
-              <View style={styles.subModalBox}>
-                <View style={styles.subModalHeader}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                    <MaterialCommunityIcons
-                      name={selectedSetting.icon}
-                      size={24}
-                      color={selectedSetting.iconColor}
-                    />
-                    <Text style={styles.subModalTitle}>{t(selectedSetting.titleKey)}</Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => setSelectedSetting(null)}
-                    style={{ padding: 4 }}
-                  >
-                    <Ionicons name="close" size={24} color="#FFFFFF" />
-                  </TouchableOpacity>
-                </View>
+              <TouchableOpacity
+                style={styles.headerIconBtn}
+                onPress={handleBack}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="arrow-back" size={24} color={POWERAMP_TEAL} />
+              </TouchableOpacity>
 
-                <Text style={styles.subModalSubtitle}>
-                  {t(selectedSetting.subtitleKey)}
+              {isSubSearchActive ? (
+                <TextInput
+                  style={styles.headerSearchInput}
+                  placeholder={t('searchSettings')}
+                  placeholderTextColor="#71717A"
+                  value={subSearchQuery}
+                  onChangeText={setSubSearchQuery}
+                  autoFocus
+                />
+              ) : (
+                <Text style={styles.subPageHeaderTitle} numberOfLines={1}>
+                  {t(selectedSetting.titleKey)}
                 </Text>
+              )}
 
-                <View style={styles.subModalDivider} />
-
-                <ScrollView
-                  style={styles.subModalScroll}
-                  contentContainerStyle={styles.subModalScrollContent}
-                  showsVerticalScrollIndicator={false}
+              <View style={styles.headerRightActions}>
+                <TouchableOpacity
+                  style={styles.headerIconBtn}
+                  onPress={() => {
+                    setIsSubSearchActive(!isSubSearchActive);
+                    if (isSubSearchActive) setSubSearchQuery('');
+                  }}
+                  activeOpacity={0.7}
                 >
-                  {renderCategoryContent()}
-                </ScrollView>
+                  <Ionicons
+                    name={isSubSearchActive ? 'close-circle' : 'search'}
+                    size={22}
+                    color={POWERAMP_TEAL}
+                  />
+                </TouchableOpacity>
 
                 <TouchableOpacity
-                  style={styles.closeSubModalBtn}
-                  onPress={() => setSelectedSetting(null)}
-                  activeOpacity={0.8}
+                  style={styles.headerIconBtn}
+                  onPress={() => {
+                    setSelectedSetting(null);
+                    setIsSubSearchActive(false);
+                    setSubSearchQuery('');
+                    onClose();
+                  }}
+                  activeOpacity={0.7}
                 >
-                  <Text style={styles.closeSubModalBtnText}>{t('close')}</Text>
+                  <Ionicons name="close" size={26} color={POWERAMP_TEAL} />
                 </TouchableOpacity>
               </View>
             </View>
-          </Modal>
+
+            {/* Contenu plein écran défilant */}
+            <ScrollView
+              style={styles.subPageScroll}
+              contentContainerStyle={[
+                styles.subPageScrollContent,
+                {
+                  paddingBottom: insetPaddingBelow(insets, 32),
+                },
+              ]}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.subPageDescription}>
+                {t(selectedSetting.subtitleKey)}
+              </Text>
+              <View style={styles.subPageDivider} />
+
+              {renderCategoryContent()}
+            </ScrollView>
+          </View>
+        ) : (
+          /* ==============================================================
+             LISTE PRINCIPALE DES PARAMÈTRES
+             ============================================================== */
+          <>
+            <View
+              style={[
+                styles.header,
+                {
+                  paddingTop: insetPadding(insets, 'top', 14),
+                },
+              ]}
+            >
+              <TouchableOpacity
+                style={styles.headerIconBtn}
+                onPress={onClose}
+                activeOpacity={0.7}
+              >
+                <Ionicons name="arrow-back" size={24} color={POWERAMP_TEAL} />
+              </TouchableOpacity>
+
+              {isSearchActive ? (
+                <TextInput
+                  style={styles.headerSearchInput}
+                  placeholder={t('searchSettings')}
+                  placeholderTextColor="#71717A"
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  autoFocus
+                />
+              ) : (
+                <Text style={styles.headerTitle}>{t('settingsTitle')}</Text>
+              )}
+
+              <View style={styles.headerRightActions}>
+                <TouchableOpacity
+                  style={styles.headerIconBtn}
+                  onPress={() => {
+                    setIsSearchActive(!isSearchActive);
+                    if (isSearchActive) setSearchQuery('');
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name={isSearchActive ? 'close-circle' : 'search'}
+                    size={22}
+                    color={POWERAMP_TEAL}
+                  />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.headerIconBtn}
+                  onPress={onClose}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="close" size={26} color={POWERAMP_TEAL} />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Rescan Notification Banner */}
+            {rescanSuccess !== null && (
+              <View style={styles.rescanBanner}>
+                <Ionicons name="checkmark-circle" size={18} color="#4ADE80" />
+                <Text style={styles.rescanBannerText}>
+                  {t('libRescanFound', undefined, { count: rescanSuccess })}
+                </Text>
+              </View>
+            )}
+
+            {/* Section Sub-header */}
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionHeaderText}>{t('sectionSettings')}</Text>
+            </View>
+
+            {/* Settings List */}
+            <ScrollView
+              style={styles.scrollList}
+              contentContainerStyle={[
+                styles.scrollContent,
+                {
+                  paddingBottom: insetPaddingBelow(insets, 24),
+                },
+              ]}
+              showsVerticalScrollIndicator={false}
+            >
+              {filteredItems.map((item) => (
+                <TouchableOpacity
+                  key={item.id}
+                  style={styles.settingRow}
+                  onPress={() => handleItemPress(item)}
+                  activeOpacity={0.7}
+                >
+                  {/* Left Colored Icon */}
+                  <View style={styles.iconWrapper}>
+                    <MaterialCommunityIcons
+                      name={item.icon}
+                      size={26}
+                      color={item.iconColor}
+                    />
+                  </View>
+
+                  {/* Middle Title and Subtitle */}
+                  <View style={styles.textWrapper}>
+                    <Text style={styles.itemTitleText}>{t(item.titleKey)}</Text>
+                    <Text style={styles.itemSubtitleText}>{t(item.subtitleKey)}</Text>
+                  </View>
+
+                  <Feather name="chevron-right" size={18} color="#52525B" />
+                </TouchableOpacity>
+              ))}
+
+
+            </ScrollView>
+          </>
         )}
+
+        {/* Modal À propos avec le design du Changelog */}
+        <AboutModal
+          visible={showAbout}
+          onClose={() => setShowAbout(false)}
+          language={lang}
+          onOpenChangelog={() => {
+            setShowAbout(false);
+            setShowChangelog(true);
+          }}
+        />
+
+        {/* Modal Changelog dédié inspiré de Poweramp (Bottom sheet glissant du bas vers le haut) */}
+        <ChangelogModal
+          visible={showChangelog}
+          onClose={() => setShowChangelog(false)}
+          language={lang}
+        />
       </SafeAreaView>
     </Modal>
   );
@@ -1231,7 +1162,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 const styles = StyleSheet.create({
   safeContainer: {
     flex: 1,
-    backgroundColor: 'rgba(5, 9, 20, 0.96)',
+    backgroundColor: '#000000',
   },
   header: {
     flexDirection: 'row',
@@ -1239,7 +1170,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingBottom: 16,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(0, 212, 255, 0.25)',
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
   headerIconBtn: {
     padding: 6,
@@ -1322,72 +1253,49 @@ const styles = StyleSheet.create({
   },
   itemSubtitleText: {
     fontSize: 12.5,
-    color: '#9E98A6',
+    color: '#94A3B8',
     marginTop: 3,
     lineHeight: 17,
   },
-  subModalOverlay: {
+  subPageContainer: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.8)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 16,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
   },
-  subModalBox: {
-    width: '100%',
-    maxWidth: 440,
-    maxHeight: '88%',
-    backgroundColor: '#1A191E',
-    borderRadius: 20,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#2F2E36',
-  },
-  subModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  subModalTitle: {
-    fontSize: 18,
+  subPageHeaderTitle: {
+    fontSize: 20,
     fontWeight: '700',
     color: '#FFFFFF',
+    marginLeft: 18,
+    flex: 1,
+    letterSpacing: -0.2,
   },
-  subModalSubtitle: {
-    fontSize: 12.5,
-    color: '#9E98A6',
-    marginBottom: 12,
+  subPageScroll: {
+    flex: 1,
   },
-  subModalDivider: {
+  subPageScrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  subPageDescription: {
+    fontSize: 13.5,
+    color: '#94A3B8',
+    lineHeight: 19,
+    marginBottom: 16,
+  },
+  subPageDivider: {
     height: 1,
-    backgroundColor: '#2E2D33',
-    marginBottom: 14,
-  },
-  subModalScroll: {
-    // Cette zone ne doit pas avoir de hauteur en dur. La boîte qui la contient est
-    // plafonnée à 88 % de l'écran, et 460 px fixes la dépassaient sur les écrans
-    // bas : le ScrollView ne se réduisait pas (flexShrink vaut 0 par défaut dans
-    // React Native), donc le bouton « Fermer » débordait sous la boîte — c'est-à-
-    // dire sous la barre de navigation du téléphone, où il était rogné. En
-    // paysage le panneau entier était tronqué.
-    //
-    // `flexShrink: 1` laisse le défilement absorber exactement l'espace restant
-    // après l'en-tête et le bouton : court contenu → panneau compact, contenu
-    // long → le panneau plafonne et défile, et le bouton reste toujours visible.
-    flexShrink: 1,
-  },
-  subModalScrollContent: {
-    paddingBottom: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    marginBottom: 18,
   },
   subModalOptions: {
-    gap: 16,
+    gap: 18,
   },
   optionSection: {
-    gap: 8,
+    gap: 10,
+    paddingVertical: 4,
   },
   sectionLabel: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
     color: '#94A3B8',
     letterSpacing: 0.8,
@@ -1398,30 +1306,77 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   choiceChip: {
-    backgroundColor: '#27262D',
+    backgroundColor: '#111317',
     paddingVertical: 7,
     paddingHorizontal: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#383742',
+    borderColor: '#262626',
   },
   choiceChipActive: {
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
-    borderColor: '#38BDF8',
+    backgroundColor: '#FFFFFF',
+    borderColor: '#FFFFFF',
   },
   choiceChipText: {
-    color: '#A1A1AA',
+    color: '#94A3B8',
     fontSize: 12.5,
     fontWeight: '600',
   },
   choiceChipTextActive: {
-    color: '#38BDF8',
+    color: '#000000',
+  },
+  languageGroup: {
+    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+    overflow: 'hidden',
+    marginTop: 4,
+  },
+  languageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    backgroundColor: 'transparent',
+  },
+  languageRowActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.07)',
+  },
+  languageRowBorder: {
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  languageRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  languageRowLabel: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: '#D4D4D8',
+    letterSpacing: -0.2,
+  },
+  languageRowLabelActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  languageFootnote: {
+    fontSize: 12.5,
+    color: '#71717A',
+    lineHeight: 18,
+    paddingHorizontal: 4,
+    marginTop: 4,
   },
   toggleRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 4,
+    paddingVertical: 8,
+    borderBottomWidth: 0.5,
+    borderBottomColor: 'rgba(255, 255, 255, 0.05)',
   },
   toggleTextCol: {
     flex: 1,
@@ -1429,28 +1384,28 @@ const styles = StyleSheet.create({
   },
   toggleLabel: {
     color: '#F4F4F5',
-    fontSize: 14.5,
+    fontSize: 15.5,
     fontWeight: '600',
   },
   toggleSubLabel: {
-    color: '#71717A',
-    fontSize: 12,
-    marginTop: 2,
-    lineHeight: 16,
+    color: '#94A3B8',
+    fontSize: 12.5,
+    marginTop: 3,
+    lineHeight: 17,
   },
   statusCard: {
-    backgroundColor: '#121114',
+    backgroundColor: 'rgba(12, 14, 18, 0.88)',
     borderRadius: 12,
-    padding: 12,
+    padding: 14,
     borderWidth: 1,
-    borderColor: '#27272A',
+    borderColor: '#262626',
     gap: 8,
-    marginTop: 4,
+    marginTop: 6,
   },
   statusCardTitle: {
-    fontSize: 11,
+    fontSize: 11.5,
     fontWeight: '700',
-    color: '#38BDF8',
+    color: '#FFFFFF',
     letterSpacing: 0.8,
     marginBottom: 2,
   },
@@ -1461,11 +1416,11 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   statusCardLabel: {
-    color: '#71717A',
+    color: '#94A3B8',
     fontSize: 12.5,
   },
   statusCardValue: {
-    color: '#E4E4E7',
+    color: '#FFFFFF',
     fontSize: 12.5,
     fontWeight: '500',
     flexShrink: 1,
@@ -1476,7 +1431,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: '#38BDF8',
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     paddingVertical: 12,
   },
@@ -1490,32 +1445,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.22)',
     borderRadius: 10,
     paddingVertical: 10,
     marginTop: 4,
   },
   actionBtnText: {
-    color: '#38BDF8',
-    fontSize: 13.5,
-    fontWeight: '600',
-  },
-  resetSessionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-    borderRadius: 10,
-    paddingVertical: 10,
-    marginTop: 4,
-  },
-  resetSessionBtnText: {
-    color: '#EF4444',
+    color: '#FFFFFF',
     fontSize: 13.5,
     fontWeight: '600',
   },
@@ -1549,6 +1487,23 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  dangerSecondaryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 11,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    marginTop: 6,
+  },
+  dangerSecondaryBtnText: {
+    color: '#EF4444',
+    fontSize: 13,
+    fontWeight: '600',
+  },
   closeSubModalBtn: {
     backgroundColor: '#27272A',
     borderRadius: 12,
@@ -1561,50 +1516,262 @@ const styles = StyleSheet.create({
     fontSize: 14.5,
     fontWeight: '600',
   },
+  // Styles À Propos & Spécifications (Vue Sub-Page)
+  aboutHeroCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#141820',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#222834',
+    gap: 14,
+  },
+  aboutHeroIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 12,
+  },
+  aboutHeroInfo: {
+    flex: 1,
+  },
+  aboutHeroTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  aboutHeroTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    letterSpacing: -0.2,
+  },
+  aboutHeroTagline: {
+    fontSize: 12,
+    color: POWERAMP_TEAL,
+    fontWeight: '600',
+    marginTop: 3,
+  },
+  aboutSectionCard: {
+    backgroundColor: '#141820',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#222834',
+    gap: 10,
+  },
+  aboutSectionTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#F1F5F9',
+    letterSpacing: 0.3,
+  },
+  aboutDescriptionText: {
+    fontSize: 13,
+    color: '#94A3B8',
+    lineHeight: 19,
+  },
+  aboutPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4,
+  },
+  techPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  techPillText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  aboutChangelogLargeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#141820',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#222834',
+    gap: 12,
+  },
+  aboutChangelogIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  aboutChangelogTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  aboutChangelogSub: {
+    fontSize: 11.5,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  aboutLegalCard: {
+    backgroundColor: '#141820',
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#222834',
+    gap: 8,
+  },
+
+  // Styles Signature Professionnelle (Bas de la liste principale)
   aboutVersionCard: {
-    backgroundColor: '#0F1218',
+    backgroundColor: '#10141C',
     borderRadius: 16,
-    padding: 18,
+    padding: 16,
     marginTop: 22,
     borderWidth: 1,
-    borderColor: '#1E2530',
-    alignItems: 'center',
+    borderColor: '#1D2432',
   },
   aboutVersionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 10,
+    marginBottom: 8,
   },
   aboutAppIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 6,
+    width: 34,
+    height: 34,
+    borderRadius: 8,
   },
   aboutAppName: {
     color: '#F3F4F6',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
-    letterSpacing: 0.5,
+    letterSpacing: 0.3,
   },
   aboutVersionBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderColor: 'rgba(255, 255, 255, 0.25)',
   },
   aboutVersionBadgeText: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
     fontSize: 11,
     fontWeight: '700',
   },
-  aboutCopyrightText: {
+  aboutAppTaglineText: {
+    fontSize: 11.5,
     color: '#94A3B8',
-    fontSize: 12.5,
     fontWeight: '500',
-    marginTop: 6,
+    marginTop: 2,
+  },
+  aboutOpenBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  aboutOpenBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  aboutBadgesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 4,
+    marginBottom: 8,
+  },
+  aboutMiniBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  aboutMiniBadgeText: {
+    color: '#94A3B8',
+    fontSize: 10,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  aboutAppShortDesc: {
+    fontSize: 12,
+    color: '#64748B',
+    lineHeight: 17,
+    marginBottom: 12,
+  },
+  aboutActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+    marginBottom: 8,
+  },
+  aboutDetailsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    gap: 6,
+  },
+  aboutDetailsBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  changelogBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.2)',
+    gap: 6,
+  },
+  changelogBtnText: {
+    color: '#F1F5F9',
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  changelogBadge: {
+    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  changelogBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  aboutCopyrightText: {
+    color: '#64748B',
+    fontSize: 11.5,
+    fontWeight: '500',
+    marginTop: 4,
     textAlign: 'center',
     letterSpacing: 0.2,
   },

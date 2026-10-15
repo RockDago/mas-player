@@ -7,6 +7,7 @@ import {
 import type { AudioPlayer } from 'expo-audio/build/AudioModule.types';
 import { getEffectiveEqualizerBands } from '../constants/presets';
 import { DSPState } from '../types/audio';
+import { AppSettings } from './storageService';
 import { WebAudioEngine } from './webAudioEngine';
 import { beatStore } from './beatStore';
 import { getLiveWebTrackUri } from './webAudioStorage';
@@ -31,7 +32,8 @@ export function resolveStereoWidth(eq: Partial<DSPState>): number {
   if (eq.mono) return -1.0;
   const crossfeed = (eq.crossfeed ?? 0) / 100;
   if (crossfeed > 0) return -crossfeed;
-  return (eq.stereoExpansion ?? 0) / 100;
+  const expansion = (eq.stereoExpansion ?? 0) / 100;
+  return expansion * 1.5;
 }
 
 export type PlaybackCallback = (status: {
@@ -155,7 +157,22 @@ class UniversalPlayerManager {
     };
   }
 
+  private currentMeta?: { title?: string; artist?: string; album?: string; artwork?: string };
+  private lockScreenSettings = {
+    controls: true,
+    albumArt: true,
+    seekButtons: false,
+  };
+  private headsetSettings = {
+    headsetButtons: true,
+    pauseOnDisconnect: true,
+    resumeOnConnect: false,
+  };
+
   private dispatchRemoteCommand(action: RemoteCommandAction) {
+    if (!this.headsetSettings.headsetButtons) {
+      return;
+    }
     this.remoteCommandListeners.forEach((fn) => {
       try {
         fn(action);
@@ -163,6 +180,66 @@ class UniversalPlayerManager {
         console.warn('Erreur listener commande distante:', e);
       }
     });
+  }
+
+  /**
+   * Configure dynamiquement les commandes de l'écran verrouillé et du centre de notification
+   */
+  applyLockScreenControls(meta?: { title?: string; artist?: string; album?: string; artwork?: string }) {
+    if (!this.player) return;
+    const targetMeta = meta || this.currentMeta;
+    if (this.lockScreenSettings.controls && targetMeta) {
+      try {
+        this.player.setActiveForLockScreen(
+          true,
+          {
+            title: targetMeta.title,
+            artist: targetMeta.artist,
+            albumTitle: targetMeta.album,
+            artworkUrl: this.lockScreenSettings.albumArt ? targetMeta.artwork : undefined,
+          },
+          {
+            showSeekBackward: Boolean(this.lockScreenSettings.seekButtons),
+            showSeekForward: Boolean(this.lockScreenSettings.seekButtons),
+          }
+        );
+      } catch (e) {
+        console.warn('setActiveForLockScreen error:', e);
+      }
+    } else {
+      try {
+        this.player.clearLockScreenControls();
+      } catch (_) {}
+    }
+  }
+
+  /**
+   * Met à jour les réglages de l'écran verrouillé, du casque et du Bluetooth
+   */
+  updateSettings(settings: Partial<AppSettings>) {
+    if (settings.lockScreenControls !== undefined) {
+      this.lockScreenSettings.controls = settings.lockScreenControls;
+    }
+    if (settings.lockScreenAlbumArt !== undefined) {
+      this.lockScreenSettings.albumArt = settings.lockScreenAlbumArt;
+    }
+    if (settings.lockScreenSeekButtons !== undefined) {
+      this.lockScreenSettings.seekButtons = settings.lockScreenSeekButtons;
+    }
+    if (settings.headsetButtons !== undefined) {
+      this.headsetSettings.headsetButtons = settings.headsetButtons;
+    }
+    if (settings.pauseOnDisconnect !== undefined) {
+      this.headsetSettings.pauseOnDisconnect = settings.pauseOnDisconnect;
+    }
+    if (settings.resumeOnConnect !== undefined) {
+      this.headsetSettings.resumeOnConnect = settings.resumeOnConnect;
+      this.setAutoResumeOnInterruption(settings.resumeOnConnect);
+    }
+
+    if (this.player && this.currentMeta) {
+      this.applyLockScreenControls(this.currentMeta);
+    }
   }
 
   /**
@@ -563,26 +640,9 @@ class UniversalPlayerManager {
       // Chaque nouvelle instance expo-audio doit reprendre le réglage courant.
       p.setPlaybackRate(this.currentPlaybackRate);
 
-      // Active les contrôles de notification et de l'écran verrouillé
-      if (meta) {
-        try {
-          p.setActiveForLockScreen(
-            true,
-            {
-              title: meta.title,
-              artist: meta.artist,
-              albumTitle: meta.album,
-              artworkUrl: meta.artwork,
-            },
-            {
-              showSeekBackward: false,
-              showSeekForward: false,
-            }
-          );
-        } catch (e) {
-          console.warn('setActiveForLockScreen error:', e);
-        }
-      }
+      // Active les contrôles de notification et de l'écran verrouillé selon les préférences
+      this.currentMeta = meta;
+      this.applyLockScreenControls(meta);
 
       // Les boutons précédent / suivant de la notification n'existent qu'en
       // amont : c'est ici qu'ils deviennent exécutables, en relayant vers la
@@ -800,17 +860,11 @@ class UniversalPlayerManager {
     }
   }
 
-  /** À appeler depuis un geste utilisateur pour lever le verrou d'autoplay. */
+  /** À appeler pour débloquer le contexte audio si nécessaire, sans forcer la lecture. */
   async resumeFromUserGesture() {
     if (Platform.OS !== 'web') return;
     if (this.webEngine) {
       await this.webEngine.resume();
-    } else if (this.webAudio) {
-      try {
-        await this.webAudio.play();
-      } catch {
-        /* refusé : rien de plus à faire */
-      }
     }
   }
 

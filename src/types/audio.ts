@@ -28,6 +28,8 @@ export interface Track {
   addedAt?: number;
 }
 
+export const RECENTLY_PLAYED_PLAYLIST_ID = 'recently_played';
+
 export interface Playlist {
   id: string;
   name: string;
@@ -35,6 +37,7 @@ export interface Playlist {
   trackIds: string[];
   createdAt: number;
   coverUri?: string;
+  isSystem?: boolean;
 }
 
 export interface EqualizerBand {
@@ -86,8 +89,18 @@ export interface DSPState {
   roomSize: number;
   damping: number;
   reverbMix: number;
+  reverbPreset?: string;
 
   // États des commandes TONE et LIMIT conservés pour l'interface.
   toneEnabled: boolean;
   limitEnabled: boolean;
 }
+
+export interface ReverbPreset {
+  id: string;
+  name: string;
+  roomSize: number;
+  damping: number;
+  reverbMix: number;
+}
+

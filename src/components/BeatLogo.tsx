@@ -197,11 +197,11 @@ const styles = StyleSheet.create({
   },
   ambientGlow: {
     position: 'absolute',
-    backgroundColor: '#0284C7',
-    opacity: 0.45,
-    shadowColor: '#00F0FF',
+    backgroundColor: '#FFFFFF',
+    opacity: 0.25,
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.95,
+    shadowOpacity: 0.8,
     shadowRadius: 35,
     elevation: 20,
     pointerEvents: 'none',
@@ -209,7 +209,7 @@ const styles = StyleSheet.create({
       ? ({
           filter: 'blur(30px)',
           backgroundImage:
-            'radial-gradient(circle, rgba(0, 240, 255, 0.55) 0%, rgba(37, 99, 235, 0.4) 45%, rgba(15, 23, 42, 0.2) 75%, transparent 100%)',
+            'radial-gradient(circle, rgba(255, 255, 255, 0.45) 0%, rgba(200, 200, 220, 0.25) 45%, rgba(15, 23, 42, 0.2) 75%, transparent 100%)',
         } as any)
       : {}),
   },
@@ -219,11 +219,11 @@ const styles = StyleSheet.create({
     pointerEvents: 'none',
   },
   waveRingInner: {
-    borderColor: 'rgba(0, 240, 255, 0.6)',
+    borderColor: 'rgba(255, 255, 255, 0.45)',
     borderStyle: 'solid',
   },
   waveRingOuter: {
-    borderColor: 'rgba(59, 130, 246, 0.45)',
+    borderColor: 'rgba(255, 255, 255, 0.25)',
     borderStyle: 'solid',
   },
   logoContainer: {
@@ -231,9 +231,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#0A0C10',
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#00F0FF',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.5,
+    shadowOpacity: 0.35,
     shadowRadius: 20,
     elevation: 15,
     pointerEvents: 'none',
@@ -245,7 +245,7 @@ const styles = StyleSheet.create({
   neonBorderOverlay: {
     ...StyleSheet.absoluteFill,
     borderWidth: 1.5,
-    borderColor: 'rgba(0, 212, 255, 0.45)',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
     pointerEvents: 'none',
   },
 });

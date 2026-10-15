@@ -250,6 +250,9 @@ class AudioDSPProcessor : BaseAudioProcessor() {
       }
 
       if (limit) {
+        l = softLimit(l)
+        r = softLimit(r)
+      } else {
         l = if (l > 1.0) 1.0 else if (l < -1.0) -1.0 else l
         r = if (r > 1.0) 1.0 else if (r < -1.0) -1.0 else r
       }
@@ -263,6 +266,16 @@ class AudioDSPProcessor : BaseAudioProcessor() {
 
     inputBuffer.position(limitBuffer)
     outputBuffer.flip()
+  }
+
+  private fun softLimit(sample: Double): Double {
+    val threshold = 0.85
+    val absX = kotlin.math.abs(sample)
+    if (absX <= threshold) return sample
+    val excess = absX - threshold
+    val margin = 1.0 - threshold
+    val compressed = threshold + margin * kotlin.math.tanh(excess / margin)
+    return if (sample < 0.0) -compressed else compressed
   }
 
   private fun updateCoefficients(gains: List<Double>) {

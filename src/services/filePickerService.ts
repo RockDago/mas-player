@@ -510,11 +510,9 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
       input.type = 'file';
       input.style.display = 'none';
 
-      if (!isMobileIOS) {
-        // Desktop Chrome, Edge, Firefox, macOS Safari : webkitdirectory permet de choisir le dossier
-        input.setAttribute('webkitdirectory', '');
-        input.setAttribute('directory', '');
-      }
+      // Sélecteur de dossiers (webkitdirectory)
+      input.setAttribute('webkitdirectory', '');
+      input.setAttribute('directory', '');
 
       // Toujours autoriser la sélection multiple et les formats audio + .zip
       input.setAttribute('multiple', '');
@@ -544,7 +542,7 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
 
         const filesArray = Array.from(files);
 
-        // A. Cas d'une archive .zip (ex: dossier d'album téléchargé sur iPhone / iPad)
+        // A. Cas d'une archive .zip (ex: dossier d'album téléchargé)
         const zipFile = filesArray.find((f) => f.name.toLowerCase().endsWith('.zip'));
         if (zipFile) {
           try {
@@ -576,16 +574,22 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
           return;
         }
 
-        // Détecter le nom du dossier
+        // Détecter le nom réel du dossier importé
         let detectedFolder = 'Dossier Musique';
         const sampleRelative = audioFiles[0].webkitRelativePath;
         if (sampleRelative) {
-          const parts = sampleRelative.split('/');
+          const parts = sampleRelative.split('/').filter(Boolean);
           if (parts.length > 1) {
             detectedFolder = parts[0];
           }
-        } else if (isMobileIOS) {
-          detectedFolder = 'Musique iPhone';
+        } else {
+          // Si le navigateur ne fournit pas webkitRelativePath, déduire un nom propre
+          const firstMeta = parseTrackMetadata(audioFiles[0].name, '');
+          if (firstMeta.artist && firstMeta.artist !== 'Artiste Inconnu' && firstMeta.artist !== 'MAS Player') {
+            detectedFolder = firstMeta.artist;
+          } else {
+            detectedFolder = 'Dossier Musique';
+          }
         }
 
         const tracks: Track[] = [];

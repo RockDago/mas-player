@@ -16,6 +16,8 @@ import * as Haptics from 'expo-haptics';
 import { useScreenInsets, insetPadding, insetPaddingBelow } from '../theme/insets';
 import { Track } from '../types/audio';
 import { formatTime } from '../services/audioService';
+import { AnimeBackground } from './AnimeBackground';
+import { LanguageCode, getTranslation } from '../i18n/translations';
 
 interface QueueDrawerModalProps {
   visible: boolean;
@@ -25,6 +27,7 @@ interface QueueDrawerModalProps {
   onRemoveFromQueue: (index: number) => void;
   onClearQueue: () => void;
   onMoveQueueItem: (fromIndex: number, toIndex: number) => void;
+  language?: LanguageCode;
 }
 
 export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
@@ -35,7 +38,12 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
   onRemoveFromQueue,
   onClearQueue,
   onMoveQueueItem,
+  language = 'fr',
 }) => {
+  const lang = language || 'fr';
+  const t = (k: string, fb?: string, params?: Record<string, string | number>) =>
+    getTranslation(lang, k, fb, params);
+
   // Marge système mesurée, lue par contexte : le tiroir est monté hors de
   // l'écran et n'en hérite pas. Voir src/theme/insets.ts.
   const insets = useScreenInsets();
@@ -61,6 +69,11 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
           style={styles.drawerContainer}
           edges={['left', 'right', 'bottom']}
         >
+          <AnimeBackground
+            overlayOpacity={0.68}
+            minOpacity={0.36}
+            maxOpacity={0.54}
+          />
           <View
             style={[
               styles.header,
@@ -70,10 +83,12 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
             ]}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-              <MaterialCommunityIcons name="clock-outline" size={26} color="#00F0FF" />
+              <MaterialCommunityIcons name="clock-outline" size={26} color="#FFFFFF" />
               <View>
-                <Text style={styles.headerTitle}>Lire plus tard</Text>
-                <Text style={styles.headerSub}>File d'attente ({queue.length})</Text>
+                <Text style={styles.headerTitle}>{t('queueTitle', 'Lire plus tard')}</Text>
+                <Text style={styles.headerSub}>
+                  {t('queueSub', "File d'attente ({count})", { count: queue.length })}
+                </Text>
               </View>
             </View>
 
@@ -88,7 +103,7 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
                     onClearQueue();
                   }}
                 >
-                  <Text style={styles.clearBtnText}>Vider</Text>
+                  <Text style={styles.clearBtnText}>{t('clearQueue', 'Vider')}</Text>
                 </TouchableOpacity>
               )}
               <TouchableOpacity style={styles.closeBtn} onPress={onClose}>
@@ -107,9 +122,12 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
                 size={54}
                 color="#52525B"
               />
-              <Text style={styles.emptyTitle}>File d'attente vide</Text>
+              <Text style={styles.emptyTitle}>{t('queueEmpty', "File d'attente vide")}</Text>
               <Text style={styles.emptySub}>
-                Pour programmer des morceaux à lire plus tard, maintenez votre doigt appuyé sur un morceau et sélectionnez "Lire plus tard" ou "Lire ensuite".
+                {t(
+                  'queueEmptySub',
+                  'Pour programmer des morceaux à lire plus tard, maintenez votre doigt appuyé sur un morceau et sélectionnez "Lire plus tard" ou "Lire ensuite".'
+                )}
               </Text>
             </View>
           ) : (
@@ -140,7 +158,7 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
                       <MaterialCommunityIcons
                         name="music-note"
                         size={20}
-                        color="#38BDF8"
+                        color="#FFFFFF"
                       />
                     )}
                   </View>
@@ -221,12 +239,12 @@ const styles = StyleSheet.create({
     width: '84%',
     maxWidth: 380,
     height: '100%',
-    backgroundColor: 'rgba(8, 14, 28, 0.96)',
+    backgroundColor: '#000000',
     borderRightWidth: 1,
-    borderRightColor: 'rgba(0, 212, 255, 0.35)',
-    shadowColor: '#00F0FF',
+    borderRightColor: 'rgba(255, 255, 255, 0.25)',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 4, height: 0 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.15,
     shadowRadius: 16,
     elevation: 20,
   },

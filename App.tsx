@@ -26,7 +26,7 @@ import {
   Feather,
 } from '@expo/vector-icons';
 
-import { Track, DSPState, EqualizerPreset, Playlist } from './src/types/audio';
+import { Track, DSPState, EqualizerPreset, Playlist, RECENTLY_PLAYED_PLAYLIST_ID } from './src/types/audio';
 import { DEFAULT_PRESETS, describePresetCurve } from './src/constants/presets';
 import { formatTime } from './src/services/audioService';
 import { playerManager } from './src/services/playerManager';
@@ -44,8 +44,10 @@ import { SettingsModal } from './src/components/SettingsModal';
 import { SongActionModal } from './src/components/SongActionModal';
 import { QueueDrawerModal } from './src/components/QueueDrawerModal';
 import { AppLoadingScreen } from './src/components/AppLoadingScreen';
+import { AnimeBackground } from './src/components/AnimeBackground';
 import { APP_VERSION } from './src/constants/version';
 import { getTranslation } from './src/i18n/translations';
+import { fetchAlbumArtForTrack } from './src/services/albumArtService';
 import { resolveTrackUri, deletePersistedAudioFile } from './src/utils/audioStorage';
 import { mergeTracks } from './src/utils/trackMerge';
 import { restoreWebAudioBlobs } from './src/services/webAudioStorage';
@@ -168,11 +170,6 @@ function MainApp() {
   const [isSleepTimerVisible, setIsSleepTimerVisible] = useState<boolean>(false);
   const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null);
 
-  // Vrai tant que le navigateur n'a pas autorisé la lecture (web uniquement)
-  const [needsUserGesture, setNeedsUserGesture] = useState<boolean>(
-    Platform.OS === 'web'
-  );
-
   // Equalizer & Tone DSP state (neutre par défaut : 0 dB, sans coloration initiale)
   const [dsp, setDsp] = useState<DSPState>({
     enabled: true,
@@ -192,6 +189,7 @@ function MainApp() {
     roomSize: 40,
     damping: 50,
     reverbMix: 25,
+    reverbPreset: 'studio',
     reverbEnabled: false,
     // TONE et LIMIT actifs. Le limiteur reste actif par défaut : il porte la
     // garantie anti-écrêtage, qu'un utilisateur n'a pas à réclamer.
@@ -277,6 +275,8 @@ hasTrackRef.current = hasTrack;
     dsp.treble,
     dsp.balance,
     dsp.stereoExpansion,
+    dsp.crossfeed,
+    dsp.mono,
     dsp.limitEnabled,
     dsp.reverbEnabled,
     dsp.roomSize,
@@ -284,7 +284,7 @@ hasTrackRef.current = hasTrack;
     dsp.reverbMix,
   ]);
 
-  // Auto-play audio & Restore previous session on startup
+  // Restauration de la dernière session au démarrage (en pause, aucun son automatique)
   useEffect(() => {
     let isMounted = true;
     (async () => {
@@ -319,11 +319,7 @@ hasTrackRef.current = hasTrack;
       if (savedSettings) {
         setAppSettings(savedSettings);
         appSettingsRef.current = savedSettings;
-        // Le mode audio est posé dans `playerManager.init()` AVANT ce point, et
-        // init() lit `autoResumeOnInterruption` — encore à sa valeur par défaut.
-        // Sans cet appel, un utilisateur qui a coupé la reprise dans les
-        // réglages la retrouverait activée à chaque lancement.
-        void playerManager.setAutoResumeOnInterruption(savedSettings.resumeOnHeadset);
+        playerManager.updateSettings(savedSettings);
       }
       if (savedDsp) {
         setDsp(savedDsp);
@@ -351,7 +347,17 @@ hasTrackRef.current = hasTrack;
       // stockage). Sans ce filtre, l'application continuerait de les afficher
       // indéfiniment, puisque rien ne les supprime du stockage — la seule
       // trace qui en reste est l'URI et l'identifiant.
-      currentTrackList = currentTrackList.filter((t) => !t.id.startsWith('demo-'));
+      currentTrackList = currentTrackList
+        .filter((t) => !t.id.startsWith('demo-'))
+        .map((t) => {
+          if (t.folder === 'Musique iPhone') {
+            return {
+              ...t,
+              folder: t.album && t.album !== 'Musique iPhone' ? t.album : 'Dossier Musique',
+            };
+          }
+          return t;
+        });
       if (currentTrackList.length > 0) {
         setTracks(currentTrackList);
         tracksRef.current = currentTrackList;
@@ -364,27 +370,52 @@ hasTrackRef.current = hasTrack;
       // sans rien jouer (`idx === -1`, sans `else`).
       // On ne garde donc que ce qui résout encore dans la bibliothèque.
       const validIds = new Set(currentTrackList.map((t) => t.id));
-      if (savedPlaylists && savedPlaylists.length > 0) {
-        const filteredPlaylists = savedPlaylists.map((pl) => ({
-          ...pl,
-          trackIds: pl.trackIds.filter((id) => validIds.has(id)),
-        }));
-        setPlaylists(filteredPlaylists);
-        playlistsRef.current = filteredPlaylists;
+      let initialPlaylists = savedPlaylists
+        ? savedPlaylists.map((pl) => ({
+            ...pl,
+            trackIds: pl.trackIds.filter((id) => validIds.has(id)),
+          }))
+        : [];
+
+      // S'assurer que la playlist système "Dernières pistes jouées" est toujours présente
+      const hasRecent = initialPlaylists.some((pl) => pl.id === RECENTLY_PLAYED_PLAYLIST_ID);
+      const initialRecentIds = savedLast?.trackId && validIds.has(savedLast.trackId)
+        ? [savedLast.trackId]
+        : [];
+      if (!hasRecent) {
+        initialPlaylists = [
+          {
+            id: RECENTLY_PLAYED_PLAYLIST_ID,
+            name: 'Dernières pistes jouées',
+            description: 'Historique des morceaux récemment écoutés',
+            trackIds: initialRecentIds,
+            createdAt: Date.now(),
+            isSystem: true,
+          },
+          ...initialPlaylists,
+        ];
+      } else if (savedLast?.trackId && validIds.has(savedLast.trackId)) {
+        initialPlaylists = initialPlaylists.map((pl) => {
+          if (pl.id === RECENTLY_PLAYED_PLAYLIST_ID && !pl.trackIds.includes(savedLast.trackId)) {
+            return { ...pl, trackIds: [savedLast.trackId, ...pl.trackIds] };
+          }
+          return pl;
+        });
       }
+
+      setPlaylists(initialPlaylists);
+      playlistsRef.current = initialPlaylists;
       if (savedQueue && savedQueue.length > 0) {
         const filteredQueue = savedQueue.filter((t) => validIds.has(t.id));
         setQueue(filteredQueue);
         queueRef.current = filteredQueue;
       }
 
-      // Restauration de la dernière musique et de la position d'écoute
+      // Restauration de la dernière musique et de la position d'écoute (intégrée par défaut)
       let targetIndex = 0;
       let resumePosMs = 0;
-      const shouldRemember = savedSettings?.rememberLastTrack ?? true;
-      const shouldAutoPlay = savedSettings?.autoPlayOnLaunch ?? false;
 
-      if (shouldRemember && savedLast) {
+      if (savedLast) {
         if (savedLast.activePlaylistId) {
           setActivePlaylistId(savedLast.activePlaylistId);
           activePlaylistIdRef.current = savedLast.activePlaylistId;
@@ -396,12 +427,12 @@ hasTrackRef.current = hasTrack;
           targetIndex = savedLast.trackIndex;
         }
 
-        if ((savedSettings?.rememberPlaybackPosition ?? true) && savedLast.positionMillis > 0) {
+        if (savedLast.positionMillis > 0) {
           resumePosMs = savedLast.positionMillis;
         }
       }
 
-      await loadTrack(targetIndex, shouldAutoPlay, resumePosMs, currentTrackList);
+      await loadTrack(targetIndex, false, resumePosMs, currentTrackList);
 
       // ── Verrou d'hydratation : ici, et pas 150 ms plus tôt ────────────────
       //
@@ -462,9 +493,8 @@ hasTrackRef.current = hasTrack;
     };
   }, []);
 
-  // Sauvegarde continue de la position d'écoute et de l'état
+  // Sauvegarde continue de la position d'écoute et de l'état (intégrée par défaut)
   const persistSession = () => {
-    if (!appSettingsRef.current.rememberLastTrack) return;
     const curTrack = tracksRef.current[currentTrackIndexRef.current];
     if (!curTrack) return;
 
@@ -572,72 +602,15 @@ hasTrackRef.current = hasTrack;
     const updated = await storageService.saveSettings(newSettings);
     setAppSettings(updated);
     appSettingsRef.current = updated;
-
-    // La reprise après interruption se décide AU NIVEAU DU MODE AUDIO, pas
-    // dans un rendu : sans cet appel, le réglage n'aurait d'effet qu'au
-    // prochain démarrage de l'app — l'utilisateur le couperait, verrait que la
-    // musique reprend quand même après un appel, et aurait raison de dire que
-    // ça ne marche pas.
-    if (newSettings.resumeOnHeadset !== undefined) {
-      void playerManager.setAutoResumeOnInterruption(newSettings.resumeOnHeadset);
-    }
+    playerManager.updateSettings(newSettings);
   };
 
-  const handleClearSession = async () => {
-    await storageService.clearAllSessionData();
-    setDsp({
-      enabled: true,
-      presetId: 'flat',
-      bass: 0,
-      treble: 0,
-      preamp: 0,
-      stereoExpansion: 0,
-      crossfeed: 0,
-      tempo: 1.0,
-      bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-      balance: 0.0,
-      volume: 100,
-      mono: false,
-      tempoEnabled: false,
-      // « Effacer la session » doit aussi silence la réverbération : la laisser
-      // active donnerait un morceau conservé dans une pièce qui n'existe plus.
-      roomSize: 40,
-      damping: 50,
-      reverbMix: 25,
-      reverbEnabled: false,
-      // Ces deux-là reviennent à l'état par défaut, c'est-à-dire actifs.
-      toneEnabled: true,
-      limitEnabled: true,
-    });
-    setRepeatMode('all');
-    setIsShuffle(false);
-    setQueue([]);
+  const handleUpdateTracks = async (updatedTracks: Track[]) => {
+    setTracks(updatedTracks);
+    tracksRef.current = updatedTracks;
+    await storageService.saveCustomTracks(updatedTracks);
   };
 
-  /**
-   * Les navigateurs refusent de démarrer un AudioContext et de jouer un média
-   * sans geste utilisateur préalable. Sur le web, `loadTrack(0, true)` ci-dessus
-   * échoue donc silencieusement au premier chargement et l'app paraît muette.
-   * Ce listener one-shot lève le verrou au premier clic/tap, puis disparaît.
-   */
-  useEffect(() => {
-    if (Platform.OS !== 'web') return;
-
-    const unlock = () => {
-      playerManager.resumeFromUserGesture().then(() => {
-        setNeedsUserGesture(false);
-      });
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
-    };
-
-    window.addEventListener('pointerdown', unlock);
-    window.addEventListener('keydown', unlock);
-    return () => {
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
-    };
-  }, []);
 
   const loadTrack = async (
     index: number,
@@ -659,6 +632,35 @@ hasTrackRef.current = hasTrack;
       const initialPos = initialPositionMs ?? 0;
       setPositionMillis(initialPos);
       positionMillisRef.current = initialPos;
+
+      // Mémoriser immédiatement le dernier morceau joué
+      storageService.saveLastPlayback({
+        trackId: targetTrack.id,
+        trackIndex: index,
+        positionMillis: initialPos,
+        durationMillis: (targetTrack.duration || 0) * 1000,
+        updatedAt: Date.now(),
+        activePlaylistId: activePlaylistIdRef.current,
+      });
+
+      // Mettre à jour l'historique des dernières pistes jouées dans la liste des playlists
+      setPlaylists((prev) => {
+        const existing = prev.find((p) => p.id === RECENTLY_PLAYED_PLAYLIST_ID);
+        const filteredIds = existing
+          ? existing.trackIds.filter((id) => id !== targetTrack.id)
+          : [];
+        const updatedTrackIds = [targetTrack.id, ...filteredIds].slice(0, 100);
+        const updatedRecent: Playlist = {
+          id: RECENTLY_PLAYED_PLAYLIST_ID,
+          name: 'Dernières pistes jouées',
+          description: 'Historique des morceaux récemment écoutés',
+          trackIds: updatedTrackIds,
+          createdAt: existing?.createdAt ?? Date.now(),
+          isSystem: true,
+        };
+        const others = prev.filter((p) => p.id !== RECENTLY_PLAYED_PLAYLIST_ID);
+        return [updatedRecent, ...others];
+      });
 
       const targetUri = resolveTrackUri(targetTrack.uri);
 
@@ -728,6 +730,32 @@ hasTrackRef.current = hasTrack;
 
       // Mémoriser dès le chargement du morceau
       persistSession();
+
+      // Téléchargement automatique de la pochette en arrière-plan si activé
+      if (
+        appSettingsRef.current.autoDownloadArt &&
+        (!targetTrack.artwork || targetTrack.artwork.trim() === '')
+      ) {
+        fetchAlbumArtForTrack(
+          targetTrack.title,
+          targetTrack.artist,
+          appSettingsRef.current.highQualityArt !== false
+        )
+          .then((artUrl) => {
+            if (artUrl) {
+              targetTrack.artwork = artUrl;
+              setTracks((prev) => {
+                const updated = prev.map((t) =>
+                  t.id === targetTrack.id ? { ...t, artwork: artUrl } : t
+                );
+                tracksRef.current = updated;
+                storageService.saveCustomTracks(updated);
+                return updated;
+              });
+            }
+          })
+          .catch(() => {});
+      }
     } catch (error) {
       console.warn('Erreur chargement audio:', error);
     } finally {
@@ -1121,6 +1149,14 @@ hasTrackRef.current = hasTrack;
   };
 
   const handleDeletePlaylist = (playlistId: string) => {
+    if (playlistId === RECENTLY_PLAYED_PLAYLIST_ID) {
+      setPlaylists((prev) =>
+        prev.map((pl) =>
+          pl.id === RECENTLY_PLAYED_PLAYLIST_ID ? { ...pl, trackIds: [] } : pl
+        )
+      );
+      return;
+    }
     if (activePlaylistId === playlistId) {
       setActivePlaylistId(null);
     }
@@ -1321,6 +1357,14 @@ hasTrackRef.current = hasTrack;
       >
         <StatusBar style="light" />
 
+        {/* Fond d'ambiance dynamique réactif aux paramètres d'arrière-plan */}
+        <AnimeBackground
+          backgroundStyle={appSettings.backgroundStyle}
+          blurIntensity={appSettings.blurIntensity}
+          colorSaturation={appSettings.colorSaturation}
+          ambientParticles={appSettings.ambientParticles}
+        />
+
         <View style={styles.appContainer}>
           {/* TAB 1: PLAYER SCREEN */}
           <View style={{ flex: 1, display: currentTab === 'player' ? 'flex' : 'none' }}>
@@ -1353,7 +1397,7 @@ hasTrackRef.current = hasTrack;
                   style={styles.topPlayerIconBtn}
                   activeOpacity={0.7}
                 >
-                  <MaterialCommunityIcons name="clock-outline" size={22} color="#38BDF8" />
+                  <MaterialCommunityIcons name="clock-outline" size={22} color="#FFFFFF" />
                   {queue.length > 0 && (
                     <View style={styles.queueBadge}>
                       <Text style={styles.queueBadgeText}>{queue.length}</Text>
@@ -1397,7 +1441,7 @@ hasTrackRef.current = hasTrack;
                     <Ionicons
                       name={currentTrack.isFavorite ? 'thumbs-up' : 'thumbs-up-outline'}
                       size={18}
-                      color={hasTrack ? (currentTrack.isFavorite ? '#38BDF8' : '#D1D5DB') : '#64748B'}
+                      color={hasTrack ? (currentTrack.isFavorite ? '#FFFFFF' : '#D1D5DB') : '#64748B'}
                     />
                   </TouchableOpacity>
 
@@ -1433,11 +1477,13 @@ hasTrackRef.current = hasTrack;
               >
                 <View style={styles.titlePill}>
                   <Text numberOfLines={1} style={styles.trackTitleText}>
-                    {currentTrack.title}
+                    {hasTrack ? currentTrack.title : getTranslation(appSettings.language, 'noTrack')}
                   </Text>
                 </View>
                 <Text numberOfLines={1} style={styles.trackSubtitleText}>
-                  {currentTrack.artist}{currentTrack.album ? ` - ${currentTrack.album}` : ''}
+                  {hasTrack
+                    ? `${currentTrack.artist}${currentTrack.album ? ` - ${currentTrack.album}` : ''}`
+                    : getTranslation(appSettings.language, 'noTrackSub')}
                 </Text>
               </View>
 
@@ -1483,7 +1529,7 @@ hasTrackRef.current = hasTrack;
                     <Ionicons
                       name={sleepTimerMinutes !== null ? 'time' : 'time-outline'}
                       size={isShortScreen ? 18 : 20}
-                      color={sleepTimerMinutes !== null ? '#38BDF8' : '#8A9AA8'}
+                      color={sleepTimerMinutes !== null ? '#FFFFFF' : '#8A9AA8'}
                     />
                   </TouchableOpacity>
                 </View>
@@ -1687,6 +1733,7 @@ hasTrackRef.current = hasTrack;
               onOpenQueueDrawer={() => setIsQueueDrawerVisible(true)}
               sort={appSettings.librarySort}
               ignoreShortAudio={appSettings.ignoreShortAudio}
+              language={appSettings.language}
             />
           </View>
 
@@ -1700,6 +1747,7 @@ hasTrackRef.current = hasTrack;
               customPresets={customPresets}
               onSaveCustomPreset={handleSaveCustomPreset}
               onDeleteCustomPreset={handleDeleteCustomPreset}
+              language={appSettings.language}
             />
 
             {/* Mini Player Bar above Dock on Equalizer screen */}
@@ -1720,10 +1768,12 @@ hasTrackRef.current = hasTrack;
               {/* Track Title and Artist */}
               <View style={styles.miniMetaBox}>
                 <Text numberOfLines={1} style={styles.miniTitleText}>
-                  {currentTrack.title}
+                  {hasTrack ? currentTrack.title : getTranslation(appSettings.language, 'noTrack')}
                 </Text>
                 <Text numberOfLines={1} style={styles.miniArtistText}>
-                  {currentTrack.artist} - {currentTrack.album}
+                  {hasTrack
+                    ? `${currentTrack.artist} - ${currentTrack.album}`
+                    : getTranslation(appSettings.language, 'noTrackSub')}
                 </Text>
               </View>
 
@@ -1778,7 +1828,8 @@ hasTrackRef.current = hasTrack;
               <MaterialCommunityIcons
                 name="view-grid"
                 size={isShortScreen ? 24 : 28}
-                color={currentTab === 'library' ? '#FFFFFF' : '#7D8A99'}
+                color={currentTab === 'library' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.45)'}
+                style={currentTab === 'library' ? styles.bulbGlowIcon : undefined}
               />
             </TouchableOpacity>
 
@@ -1796,7 +1847,8 @@ hasTrackRef.current = hasTrack;
               <MaterialCommunityIcons
                 name="chart-bar"
                 size={isShortScreen ? 24 : 28}
-                color={currentTab === 'equalizer' ? '#FFFFFF' : '#7D8A99'}
+                color={currentTab === 'equalizer' ? '#FFFFFF' : 'rgba(255, 255, 255, 0.45)'}
+                style={currentTab === 'equalizer' ? styles.bulbGlowIcon : undefined}
               />
             </TouchableOpacity>
 
@@ -1806,7 +1858,11 @@ hasTrackRef.current = hasTrack;
               style={styles.dockIconBtn}
               activeOpacity={0.7}
             >
-              <Ionicons name="search" size={isShortScreen ? 22 : 26} color="#7D8A99" />
+              <Ionicons
+                name="search"
+                size={isShortScreen ? 22 : 26}
+                color="rgba(255, 255, 255, 0.45)"
+              />
             </TouchableOpacity>
 
             {/* 4. Menu / Settings Icon (Matching image 2) */}
@@ -1823,7 +1879,7 @@ hasTrackRef.current = hasTrack;
               <MaterialCommunityIcons
                 name="menu"
                 size={isShortScreen ? 26 : 30}
-                color="#7D8A99"
+                color="rgba(255, 255, 255, 0.45)"
               />
             </TouchableOpacity>
           </View>
@@ -1849,7 +1905,9 @@ hasTrackRef.current = hasTrack;
           >
             <View style={styles.searchModalBox}>
               <View style={styles.presetsModalHeader}>
-                <Text style={styles.presetsModalTitle}>PRÉRÉGLAGES MAS PLAYER</Text>
+                <Text style={styles.presetsModalTitle}>
+                  {getTranslation(appSettings.language, 'eqPreset')} MAS PLAYER
+                </Text>
                 <TouchableOpacity onPress={() => setIsPresetsVisible(false)}>
                   <Ionicons name="close" size={24} color="#FFFFFF" />
                 </TouchableOpacity>
@@ -1864,14 +1922,14 @@ hasTrackRef.current = hasTrack;
                     <View style={styles.presetSectionHeaderRow}>
                       <Ionicons name="bookmark" size={16} color="#22C55E" />
                       <Text style={styles.presetSectionHeaderTitle}>
-                        MES PRÉRÉGLAGES ({customPresets.length})
+                        {getTranslation(appSettings.language, 'eqCustomPresets')} ({customPresets.length})
                       </Text>
                     </View>
 
                     {customPresets.length === 0 ? (
                       <View style={styles.presetEmptyBox}>
                         <Text style={styles.presetEmptyText}>
-                          Aucun préréglage personnalisé. Utilisez le bouton SAVE de l'égaliseur pour enregistrer votre courbe actuelle.
+                          {getTranslation(appSettings.language, 'eqNoCustomPresets')}
                         </Text>
                       </View>
                     ) : (
@@ -1926,9 +1984,9 @@ hasTrackRef.current = hasTrack;
 
                     {/* PRÉRÉGLAGES D'USINE SECTION HEADER */}
                     <View style={[styles.presetSectionHeaderRow, { marginTop: 16 }]}>
-                      <MaterialCommunityIcons name="equalizer" size={18} color="#38BDF8" />
+                      <MaterialCommunityIcons name="equalizer" size={18} color="#FFFFFF" />
                       <Text style={styles.presetSectionHeaderTitle}>
-                        PRÉRÉGLAGES D'USINE
+                        {getTranslation(appSettings.language, 'eqFactoryPresets')}
                       </Text>
                     </View>
                   </View>
@@ -1989,7 +2047,7 @@ hasTrackRef.current = hasTrack;
               <View style={styles.searchBarRow}>
                 <Ionicons name="search" size={22} color="#7D8A99" />
                 <TextInput
-                  placeholder="Rechercher un son, titre, artiste..."
+                  placeholder={getTranslation(appSettings.language, 'searchPlaceholder')}
                   placeholderTextColor="#64748B"
                   value={searchQuery}
                   onChangeText={setSearchQuery}
@@ -2005,7 +2063,9 @@ hasTrackRef.current = hasTrack;
                   onPress={() => setIsSearchVisible(false)}
                   style={styles.searchCancelBtn}
                 >
-                  <Text style={styles.searchCancelText}>Fermer</Text>
+                  <Text style={styles.searchCancelText}>
+                    {getTranslation(appSettings.language, 'searchClose')}
+                  </Text>
                 </TouchableOpacity>
               </View>
 
@@ -2036,7 +2096,7 @@ hasTrackRef.current = hasTrack;
                 ListEmptyComponent={
                   <View style={styles.searchEmptyBox}>
                     <Text style={styles.searchEmptyText}>
-                      Aucun morceau trouvé pour "{searchQuery}"
+                      {getTranslation(appSettings.language, 'searchNoResults', undefined, { query: searchQuery })}
                     </Text>
                   </View>
                 }
@@ -2054,20 +2114,18 @@ hasTrackRef.current = hasTrack;
           onSelectTrack={handleSelectTrack}
           onAddTracks={handleAddTracks}
           onTrackAction={openTrackAction}
+          language={appSettings.language}
         />
 
-        {/* Settings Modal matching Image 2 */}
+        {/* Settings Modal */}
         <SettingsModal
           visible={isSettingsVisible}
           onClose={() => setIsSettingsVisible(false)}
           onRescanLibrary={handleRescanLibrary}
           settings={appSettings}
           onUpdateSettings={handleUpdateSettings}
-          currentTrack={currentTrack}
-          positionMillis={positionMillis}
-          durationMillis={durationMillis}
-          dsp={dsp}
-          onClearSession={handleClearSession}
+          tracks={tracks}
+          onUpdateTracks={handleUpdateTracks}
         />
 
         {/* Song Context Menu (Éditer tags, Supprimer, Lire ensuite, Lire plus tard, Playlists) */}
@@ -2089,6 +2147,7 @@ hasTrackRef.current = hasTrack;
           onUpdateTrackTags={handleUpdateTrackTags}
           onDeleteTrack={handleDeleteTrack}
           onToggleFavorite={handleToggleFavorite}
+          language={appSettings.language}
         />
 
         {/* Left Queue Drawer (Lire plus tard) */}
@@ -2100,6 +2159,7 @@ hasTrackRef.current = hasTrack;
           onRemoveFromQueue={handleRemoveFromQueue}
           onClearQueue={handleClearQueue}
           onMoveQueueItem={handleMoveQueueItem}
+          language={appSettings.language}
         />
 
         {/* Sleep Timer Modal */}
@@ -2130,7 +2190,7 @@ hasTrackRef.current = hasTrack;
                 </TouchableOpacity>
               </View>
               <Text style={{ color: '#94A3B8', fontSize: 13, marginBottom: 14 }}>
-                Mettre la musique en pause automatiquement après :
+                {getTranslation(appSettings.language, 'sleepTimerDesc')}
               </Text>
               {[15, 30, 45, 60].map((mins) => (
                 <TouchableOpacity
@@ -2150,10 +2210,10 @@ hasTrackRef.current = hasTrack;
                       sleepTimerMinutes === mins && styles.presetItemNameActive,
                     ]}
                   >
-                    {mins} minutes
+                    {mins} {getTranslation(appSettings.language, 'minutes')}
                   </Text>
                   {sleepTimerMinutes === mins && (
-                    <Ionicons name="checkmark-circle" size={20} color="#38BDF8" />
+                    <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
                   )}
                 </TouchableOpacity>
               ))}
@@ -2166,27 +2226,13 @@ hasTrackRef.current = hasTrack;
                   }}
                 >
                   <Text style={[styles.presetItemName, { color: '#F87171' }]}>
-                    Désactiver la minuterie
+                    {getTranslation(appSettings.language, 'sleepTimerDisable')}
                   </Text>
                 </TouchableOpacity>
               )}
             </View>
           </View>
         </Modal>
-      {/*
-          Verrou d'autoplay du navigateur : tant qu'aucun geste utilisateur n'a
-          eu lieu, le contexte audio est suspendu et rien ne s'entend. L'overlay
-          disparaît au premier clic/tap, qui relance la lecture dans le
-          gestionnaire d'événements (et non ici, pour ne pas dépendre du
-          temps de rendu de React).
-        */}
-        {needsUserGesture && (
-          <View style={styles.autoplayGate}>
-            <Text style={styles.autoplayGateText}>
-              {getTranslation(appSettings.language, 'touchToPlay')}
-            </Text>
-          </View>
-        )}
 
         {/* Écran officiel de démarrage et chargement avec le logo MAS Player et mot Chargement */}
         {isAppLoadingVisible && (
@@ -2285,7 +2331,7 @@ const styles = StyleSheet.create({
   },
   appContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: 'transparent',
     justifyContent: 'space-between',
     width: '100%',
     paddingBottom: Platform.OS === 'android' ? 12 : (Platform.OS === 'ios' ? 8 : 4),
@@ -2322,16 +2368,16 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   topBrandVersionBadge: {
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     paddingHorizontal: 5,
     paddingVertical: 1.5,
     borderRadius: 5,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.28)',
+    borderColor: 'rgba(255, 255, 255, 0.28)',
     marginLeft: 2,
   },
   topBrandVersionText: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
     fontSize: 9.5,
     fontWeight: '700',
     letterSpacing: 0.3,
@@ -2344,7 +2390,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 2,
     right: 0,
-    backgroundColor: '#38BDF8',
+    backgroundColor: '#FFFFFF',
     borderRadius: 8,
     minWidth: 16,
     height: 16,
@@ -2399,7 +2445,7 @@ const styles = StyleSheet.create({
     width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: 'transparent',
     minHeight: 180,
     position: 'relative',
     overflow: 'hidden',
@@ -2445,16 +2491,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     alignSelf: 'flex-start',
     gap: 6,
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
     paddingVertical: 4,
     paddingHorizontal: 10,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.35)',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
     marginTop: 6,
   },
   activePlaylistPillText: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '700',
     maxWidth: 240,
@@ -2550,20 +2596,18 @@ const styles = StyleSheet.create({
   miniPlayerBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0F1115',
+    backgroundColor: '#000000',
     marginHorizontal: 12,
     marginBottom: 6,
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#1C2028',
   },
   miniCoverBox: {
     width: 38,
     height: 38,
     borderRadius: 6,
-    backgroundColor: '#202530',
+    backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2571,7 +2615,7 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 6,
-    backgroundColor: '#1E232B',
+    backgroundColor: '#000000',
   },
   miniMetaBox: {
     flex: 1,
@@ -2583,7 +2627,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   miniArtistText: {
-    color: '#8A9AA8',
+    color: 'rgba(255, 255, 255, 0.65)',
     fontSize: 11,
     marginTop: 1,
   },
@@ -2594,18 +2638,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-around',
-    backgroundColor: '#13161B',
+    backgroundColor: '#000000',
     marginHorizontal: 12,
     marginBottom: 8,
     paddingVertical: 12,
     borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#1C2128',
   },
   dockIconBtn: {
     padding: 8,
     justifyContent: 'center',
     alignItems: 'center',
+    borderRadius: 10,
+  },
+  bulbGlowIcon: {
+    textShadowColor: 'rgba(255, 255, 255, 0.45)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 6,
+    ...(Platform.OS === 'web'
+      ? ({
+          filter: 'drop-shadow(0 0 3px rgba(255, 255, 255, 0.5))',
+        } as any)
+      : {}),
   },
   searchModalOverlay: {
     flex: 1,
@@ -2680,27 +2733,6 @@ const styles = StyleSheet.create({
   searchEmptyText: {
     color: '#64748B',
     fontSize: 13,
-  },
-  autoplayGate: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    alignItems: 'center',
-    justifyContent: 'flex-end',
-    paddingBottom: 120,
-    pointerEvents: 'none',
-  },
-  autoplayGateText: {
-    color: '#8A9AA8',
-    fontSize: 13,
-    fontWeight: '600',
-    backgroundColor: 'rgba(0,0,0,0.65)',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 16,
-    overflow: 'hidden',
   },
   presetsModalHeader: {
     flexDirection: 'row',
@@ -2785,7 +2817,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     backgroundColor: 'rgba(24, 24, 27, 0.95)',
-    borderColor: '#38BDF8',
+    borderColor: '#FFFFFF',
     borderWidth: 1,
     paddingHorizontal: 16,
     paddingVertical: 9,
@@ -2823,7 +2855,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   errorBtn: {
-    backgroundColor: '#38BDF8',
+    backgroundColor: '#FFFFFF',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 12,

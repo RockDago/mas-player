@@ -15,6 +15,7 @@ import { MaterialCommunityIcons, Ionicons, Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Track, Playlist } from '../types/audio';
 import { formatTime } from '../services/audioService';
+import { LanguageCode, getTranslation } from '../i18n/translations';
 
 interface SongActionModalProps {
   visible: boolean;
@@ -30,6 +31,7 @@ interface SongActionModalProps {
   onUpdateTrackTags: (updatedTrack: Track) => void;
   onDeleteTrack: (track: Track) => void;
   onToggleFavorite: (track: Track) => void;
+  language?: LanguageCode;
 }
 
 export const SongActionModal: React.FC<SongActionModalProps> = ({
@@ -46,7 +48,11 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
   onUpdateTrackTags,
   onDeleteTrack,
   onToggleFavorite,
+  language = 'fr',
 }) => {
+  const lang = language || 'fr';
+  const t = (k: string, fb?: string, params?: Record<string, string | number>) =>
+    getTranslation(lang, k, fb, params);
   // Marge système mesurée. La modale est montée hors du `SafeAreaProvider`
   // de l'écran, elle la lit donc par contexte — voir src/theme/insets.ts.
   const insets = useScreenInsets();
@@ -93,12 +99,12 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
     } catch {}
     Alert.alert(
-      'Supprimer le morceau',
-      `Êtes-vous sûr de vouloir supprimer "${track.title}" de la bibliothèque ?`,
+      t('actionDeleteTrack', 'Supprimer le morceau'),
+      t('deleteFolderConfirmMsg', `Êtes-vous sûr de vouloir supprimer "${track.title}" de la bibliothèque ?`),
       [
-        { text: 'Annuler', style: 'cancel' },
+        { text: t('cancel', 'Annuler'), style: 'cancel' },
         {
-          text: 'Supprimer',
+          text: t('delete', 'Supprimer'),
           style: 'destructive',
           onPress: () => {
             onDeleteTrack(track);
@@ -137,7 +143,7 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
               {track.artwork ? (
                 <Image source={{ uri: track.artwork }} style={styles.trackThumb} />
               ) : (
-                <MaterialCommunityIcons name="music-box" size={32} color="#38BDF8" />
+                <MaterialCommunityIcons name="music-box" size={32} color="#FFFFFF" />
               )}
             </View>
 
@@ -186,10 +192,10 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
                 onClose();
               }}
             >
-              <MaterialCommunityIcons name="playlist-play" size={24} color="#38BDF8" />
+              <MaterialCommunityIcons name="playlist-play" size={24} color="#FFFFFF" />
               <View style={styles.actionTextWrapper}>
-                <Text style={styles.actionTitle}>Lire ensuite</Text>
-                <Text style={styles.actionSub}>Placer au début de la file d'attente</Text>
+                <Text style={styles.actionTitle}>{t('actionPlayNext', 'Lire ensuite')}</Text>
+                <Text style={styles.actionSub}>{t('actionPlayNextSub', "Placer au début de la file d'attente")}</Text>
               </View>
             </TouchableOpacity>
 
@@ -206,8 +212,8 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
             >
               <MaterialCommunityIcons name="clock-outline" size={24} color="#A78BFA" />
               <View style={styles.actionTextWrapper}>
-                <Text style={styles.actionTitle}>Lire plus tard</Text>
-                <Text style={styles.actionSub}>Programmer dans la file d'attente</Text>
+                <Text style={styles.actionTitle}>{t('actionPlayLater', 'Lire plus tard')}</Text>
+                <Text style={styles.actionSub}>{t('actionPlayLaterSub', "Programmer dans la file d'attente")}</Text>
               </View>
             </TouchableOpacity>
 
@@ -218,8 +224,8 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
             >
               <MaterialCommunityIcons name="playlist-plus" size={24} color="#34D399" />
               <View style={styles.actionTextWrapper}>
-                <Text style={styles.actionTitle}>Ajouter à une playlist</Text>
-                <Text style={styles.actionSub}>Sélectionner ou créer une liste de lecture</Text>
+                <Text style={styles.actionTitle}>{t('actionAddToPlaylist', 'Ajouter à une playlist')}</Text>
+                <Text style={styles.actionSub}>{t('actionAddToPlaylistSub', 'Sélectionner ou créer une liste de lecture')}</Text>
               </View>
             </TouchableOpacity>
 
@@ -235,9 +241,9 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
                 <MaterialCommunityIcons name="playlist-remove" size={24} color="#FB7185" />
                 <View style={styles.actionTextWrapper}>
                   <Text style={[styles.actionTitle, { color: '#FB7185' }]}>
-                    Retirer de cette playlist
+                    {t('actionRemoveFromPlaylist', 'Retirer de cette playlist')}
                   </Text>
-                  <Text style={styles.actionSub}>Enlever ce morceau de la playlist actuelle</Text>
+                  <Text style={styles.actionSub}>{t('actionRemoveFromPlaylistSub', 'Enlever ce morceau de la playlist actuelle')}</Text>
                 </View>
               </TouchableOpacity>
             )}
@@ -249,8 +255,8 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
             >
               <MaterialCommunityIcons name="tag-edit-outline" size={24} color="#FBBF24" />
               <View style={styles.actionTextWrapper}>
-                <Text style={styles.actionTitle}>Éditer les tags</Text>
-                <Text style={styles.actionSub}>Modifier titre, artiste, album, genre, année</Text>
+                <Text style={styles.actionTitle}>{t('actionTrackDetails', 'Éditer les tags')}</Text>
+                <Text style={styles.actionSub}>{t('actionTrackDetailsSub', 'Modifier titre, artiste, album, genre, année')}</Text>
               </View>
             </TouchableOpacity>
 
@@ -261,7 +267,7 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
             >
               <MaterialCommunityIcons name="information-outline" size={24} color="#94A3B8" />
               <View style={styles.actionTextWrapper}>
-                <Text style={styles.actionTitle}>Informations détaillées</Text>
+                <Text style={styles.actionTitle}>{t('actionTrackDetails', 'Informations détaillées')}</Text>
                 <Text style={styles.actionSub}>Fréquence, débit binaire, chemin de fichier</Text>
               </View>
             </TouchableOpacity>
@@ -274,16 +280,16 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
               <MaterialCommunityIcons name="trash-can-outline" size={24} color="#F87171" />
               <View style={styles.actionTextWrapper}>
                 <Text style={[styles.actionTitle, { color: '#F87171' }]}>
-                  Supprimer le morceau
+                  {t('actionDeleteTrack', 'Supprimer le morceau')}
                 </Text>
-                <Text style={styles.actionSub}>Retirer de la bibliothèque musicale</Text>
+                <Text style={styles.actionSub}>{t('actionDeleteTrackSub', 'Retirer de la bibliothèque musicale')}</Text>
               </View>
             </TouchableOpacity>
           </ScrollView>
 
           {/* Close Cancel button */}
           <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-            <Text style={styles.cancelBtnText}>Fermer</Text>
+            <Text style={styles.cancelBtnText}>{t('close', 'Fermer')}</Text>
           </TouchableOpacity>
         </View>
 
@@ -449,19 +455,21 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
                       style={styles.createPlaylistTriggerBtn}
                       onPress={() => setIsCreatingNewPlaylist(true)}
                     >
-                      <Ionicons name="add-circle" size={22} color="#38BDF8" />
+                      <Ionicons name="add-circle" size={22} color="#FFFFFF" />
                       <Text style={styles.createPlaylistTriggerText}>
                         Créer une nouvelle playlist
                       </Text>
                     </TouchableOpacity>
 
                     <ScrollView style={{ maxHeight: 260 }}>
-                      {playlists.length === 0 ? (
+                      {playlists.filter((p) => !p.isSystem).length === 0 ? (
                         <Text style={styles.emptyPlaylistText}>
                           Aucune playlist existante. Créez-en une ci-dessus !
                         </Text>
                       ) : (
-                        playlists.map((pl) => (
+                        playlists
+                          .filter((p) => !p.isSystem)
+                          .map((pl) => (
                           <TouchableOpacity
                             key={pl.id}
                             style={styles.playlistRow}
@@ -474,7 +482,7 @@ export const SongActionModal: React.FC<SongActionModalProps> = ({
                             <MaterialCommunityIcons
                               name="playlist-music"
                               size={22}
-                              color="#38BDF8"
+                              color="#FFFFFF"
                             />
                             <View style={{ flex: 1, marginLeft: 12 }}>
                               <Text style={styles.playlistRowName}>{pl.name}</Text>
@@ -590,10 +598,10 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderLeftWidth: 1,
     borderRightWidth: 1,
-    borderColor: 'rgba(0, 212, 255, 0.35)',
-    shadowColor: '#00F0FF',
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.25,
+    shadowOpacity: 0.15,
     shadowRadius: 16,
   },
   trackHeader: {
@@ -629,7 +637,7 @@ const styles = StyleSheet.create({
   },
   trackBadge: {
     fontSize: 11,
-    color: '#38BDF8',
+    color: '#E4E4E7',
     marginTop: 3,
     fontWeight: '500',
   },
@@ -689,10 +697,10 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     padding: 20,
     borderWidth: 1,
-    borderColor: 'rgba(0, 212, 255, 0.35)',
-    shadowColor: '#00F0FF',
+    borderColor: 'rgba(255, 255, 255, 0.25)',
+    shadowColor: '#FFFFFF',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.15,
     shadowRadius: 16,
   },
   subHeader: {
@@ -742,15 +750,15 @@ const styles = StyleSheet.create({
   },
   subSaveBtn: {
     flex: 1,
-    backgroundColor: '#0284C7',
+    backgroundColor: '#FFFFFF',
     borderRadius: 10,
     paddingVertical: 12,
     alignItems: 'center',
   },
   subSaveBtnText: {
-    color: '#FFFFFF',
+    color: '#000000',
     fontSize: 14.5,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   createPlaylistTriggerBtn: {
     flexDirection: 'row',
@@ -763,7 +771,7 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   createPlaylistTriggerText: {
-    color: '#38BDF8',
+    color: '#FFFFFF',
     fontSize: 14.5,
     fontWeight: '600',
   },

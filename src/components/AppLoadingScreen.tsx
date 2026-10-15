@@ -9,6 +9,7 @@ import {
   Dimensions,
   Platform,
 } from 'react-native';
+import { AnimeBackground } from './AnimeBackground';
 
 interface AppLoadingScreenProps {
   visible: boolean;
@@ -62,6 +63,8 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       }).start(() => {
         onFinish?.();
       });
+    } else {
+      fadeAnim.setValue(1);
     }
   }, [visible, fadeAnim, onFinish]);
 
@@ -75,13 +78,13 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       ]}
       pointerEvents={visible ? 'auto' : 'none'}
     >
-      {/* Background artwork du Monarque de l'Ombre */}
-      <Image
-        source={require('../../assets/94b2251aac48c727fbc774cd57da9714.jpg')}
-        style={StyleSheet.absoluteFill}
-        resizeMode="cover"
+      {/* Background artwork Solo Leveling avec respiration animée et aura bleue */}
+      <AnimeBackground
+        minOpacity={0.42}
+        maxOpacity={0.62}
+        overlayOpacity={0.52}
+        duration={3500}
       />
-      <View style={styles.darkBackdrop} />
 
       <View style={styles.content}>
         {/* Blason animé */}
@@ -105,9 +108,9 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
           <Text style={styles.appTitle}>MAS PLAYER</Text>
         </View>
 
-        {/* Section Chargement : Spinner néon + Statut */}
+        {/* Section Chargement : Spinner monochrome + Statut */}
         <View style={styles.loadingRow}>
-          <ActivityIndicator size="small" color="#00f0ff" style={styles.spinner} />
+          <ActivityIndicator size="small" color="#FFFFFF" style={styles.spinner} />
           <Text style={styles.loadingText}>{statusText}</Text>
         </View>
 
@@ -121,16 +124,12 @@ const LOGO_SIZE = Math.min(136, Math.round(SCREEN_WIDTH * 0.34));
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: '#040711',
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',
     zIndex: 99999,
     elevation: 99999,
-  },
-  darkBackdrop: {
-    ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(3, 7, 18, 0.78)',
   },
   content: {
     alignItems: 'center',
@@ -142,7 +141,9 @@ const styles = StyleSheet.create({
     height: LOGO_SIZE,
     borderRadius: LOGO_SIZE / 2,
     overflow: 'hidden',
-    backgroundColor: '#050a18',
+    backgroundColor: '#000000',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 255, 255, 0.25)',
   },
   logoImage: {
     width: '100%',
@@ -157,9 +158,9 @@ const styles = StyleSheet.create({
     fontSize: 22,
     fontWeight: '900',
     letterSpacing: 3,
-    textShadowColor: 'rgba(0, 212, 255, 0.8)',
+    textShadowColor: 'rgba(255, 255, 255, 0.4)',
     textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 12,
+    textShadowRadius: 10,
   },
   loadingRow: {
     flexDirection: 'row',
@@ -167,24 +168,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 28,
     gap: 10,
-    backgroundColor: 'rgba(10, 16, 32, 0.75)',
+    backgroundColor: 'rgba(10, 10, 12, 0.85)',
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(0, 212, 255, 0.25)',
+    borderColor: 'rgba(255, 255, 255, 0.22)',
   },
   spinner: {
     marginRight: 4,
   },
   loadingText: {
-    color: '#E0F2FE',
+    color: '#FFFFFF',
     fontSize: 14.5,
     fontWeight: '700',
     letterSpacing: 0.8,
   },
   subtext: {
-    color: '#7DD3FC',
+    color: '#94A3B8',
     fontSize: 11.5,
     marginTop: 14,
     textAlign: 'center',
@@ -192,3 +193,5 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
 });
+
+export default AppLoadingScreen;

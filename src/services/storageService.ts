@@ -4,12 +4,6 @@ import { Track, Playlist, DSPState, EqualizerPreset } from '../types/audio';
 import { normalizeTracks } from '../utils/audioStorage';
 
 export interface AppSettings {
-  // Mémorisation & Reprise
-  rememberLastTrack: boolean;
-  rememberPlaybackPosition: boolean;
-  autoPlayOnLaunch: boolean;
-  resumeOnHeadset: boolean;
-
   // Look & Feel
   theme: 'oled' | 'cyber' | 'violet' | 'carbon';
   visualizerStyle: 'vinyl' | 'bars' | 'wave';
@@ -69,11 +63,6 @@ export interface LastPlaybackSession {
 }
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
-  rememberLastTrack: true,
-  rememberPlaybackPosition: true,
-  autoPlayOnLaunch: false,
-  resumeOnHeadset: true,
-
   theme: 'oled',
   visualizerStyle: 'vinyl',
   richNotifications: true,
@@ -135,6 +124,7 @@ const DEFAULT_DSP: DSPState = {
   roomSize: 40,
   damping: 50,
   reverbMix: 25,
+  reverbPreset: 'studio',
 
   // États par défaut conservés pour l'affichage des commandes TONE et LIMIT.
   toneEnabled: true,
@@ -195,7 +185,7 @@ function normalizeDSP(raw: unknown): DSPState {
     presetId,
     bass: num(input.bass, DEFAULT_DSP.bass),
     treble: num(input.treble, DEFAULT_DSP.treble),
-    preamp: 0,
+    preamp: Math.max(-6, Math.min(6, num(input.preamp, DEFAULT_DSP.preamp))),
     stereoExpansion: num(input.stereoExpansion, DEFAULT_DSP.stereoExpansion),
     crossfeed: num(input.crossfeed, DEFAULT_DSP.crossfeed),
     tempo: num(input.tempo, DEFAULT_DSP.tempo),
@@ -211,6 +201,9 @@ function normalizeDSP(raw: unknown): DSPState {
     roomSize: num(input.roomSize, DEFAULT_DSP.roomSize),
     damping: num(input.damping, DEFAULT_DSP.damping),
     reverbMix: num(input.reverbMix, DEFAULT_DSP.reverbMix),
+    reverbPreset:
+      typeof input.reverbPreset === 'string' ? input.reverbPreset : DEFAULT_DSP.reverbPreset,
+
     // Les anciennes sauvegardes peuvent ne pas contenir ces deux commandes.
     toneEnabled:
       typeof input.toneEnabled === 'boolean' ? input.toneEnabled : DEFAULT_DSP.toneEnabled,

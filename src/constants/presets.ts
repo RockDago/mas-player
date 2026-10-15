@@ -1,4 +1,4 @@
-import { EqualizerPreset } from '../types/audio';
+import { EqualizerPreset, ReverbPreset } from '../types/audio';
 
 /** Centre frequencies of the equalizer's ten octave-spaced bands. */
 export const MAS_PLAYER_BAND_FREQUENCIES = [
@@ -302,7 +302,7 @@ export const REVERB_GAIN_COMPENSATION_DB = -3;
  * natif consomment : les deux plateformes partagent donc cette loi sans la
  * réimplémenter.
  */
-export const BASS_WEIGHTS = [0.25, 0.65, 0.60, 0.20];
+export const BASS_WEIGHTS = [0.20, 0.78, 0.72, 0.35];
 /**
  * 16 kHz pèse 0,92 et non 1,0 : à 1,0 c'est la première bande à toucher le
  * plafond, et le clamp la figeait (voir `getEffectiveEqualizerBands`). Ce poids
@@ -350,43 +350,20 @@ export const DEFAULT_PRESETS: EqualizerPreset[] = [
   }),
 
   // --- Basses : deux presets distincts ----------------------------------
-  // L'ancien « Mega Bass / Bass Boost » était un seul preset unique à +7,5 dB
-  // qui remontait le 31 Hz. Deux défauts, distincts :
-  //
-  //   1. **Le sous-grave ne fait pas « profond », il fait du bruit.** Sur un
-  //      petit haut-parleur, la bande 31 Hz est hors d'oreille : elle ne se
-  //      perçoit pas, elle fait bouger le cône sur une fréquence qu'il ne
-  //      restitue pas. Le résultat s'entend comme « un son mauvais sur le
-  //      bass » — c'est le symptôme signalé.
-  //   2. **La profondeur perçue vient d'ailleurs.** Elle tient au fundamental
-  //      (80–125 Hz) et à ses harmoniques (160–250 Hz), que tous les
-  //      haut-parleurs restituent. On peut donc *augmenter* la profondeur
-  //      perçue tout en *retirant* l'énergie qui fait souffrir le HP — c'est
-  //      ce que fait la courbe ci-dessous : mesurée, elle retire 3,5 dB
-  //      d'effort à 31 Hz tout en ajoutant 3,1 dB de profondeur perçue.
-  //
-  // Les deux presets se séparent donc par *où* ils placent l'énergie :
-  //   - `bass` : 31 Hz quasi neutre (−0,1 dB), énergie sur 100–250 Hz. Sûr
-  //     sur n'importe quel HP, deepest perçu sans fatigue.
-  //   - `bass-profond` : le même centre de gravité, poussé 1,8 dB plus haut,
-  //     plus une dose de 31 Hz bornée à +6 dB — l'effet « club », mais pas plus,
-  //     sinon on retombe dans le défaut du premier preset.
-  //
-  // Renommé depuis « Bass Booster » le 10 octobre 2026, `id` compris : l'id est
-  // persisté dans `DSPState.presetId`, il devait donc suivre le nom. Une
-  // sauvegarde portant l'ancien `bass-booster` retombe simplement sur l'état
-  // courant — voir la migration dans `normalizeDSP`.
+  // Les deux presets se séparent par où ils placent l'énergie :
+  //   - `bass` : grave chaud et profond (50–250 Hz) avec présence solide et articulation studio.
+  //   - `bass-profond` : sub et grave percutant poussés ensemble, sans distortion de cône.
   makePreset({
     id: 'bass',
     name: 'Bass',
     description: 'Profondeur perçue sur le grave audible (100–250 Hz), sans effort dans le sous-grave.',
-    bands: [-1, 3.5, 6.5, 3, -1, 0, 0, 0.5, 1, 1],
+    bands: [0.5, 5.0, 7.0, 3.5, -0.5, 0, 0, 0.5, 1, 1],
   }),
   makePreset({
     id: 'bass-profond',
     name: 'Bass Profond',
     description: 'Sub et grave audible poussés ensemble, sous-grave borné pour ménager le haut-parleur.',
-    bands: [4.5, 6, 8, 4, -2, 0, 0.5, 1.5, 2, 2],
+    bands: [4.5, 7.0, 8.5, 4.0, -1.5, 0, 0.5, 1.5, 2, 2],
   }),
   makePreset({
     id: 'rock',
@@ -457,3 +434,67 @@ export const DEFAULT_PRESETS: EqualizerPreset[] = [
     bands: [0, 0, 0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1],
   }),
 ];
+
+/**
+ * Préréglages de réverbération spatiale MAS Player :
+ * Auditorium, Echo, Great Hall, Light Reverb, Scene, Small Room, Stadium, Studio.
+ */
+export const REVERB_PRESETS: ReverbPreset[] = [
+  {
+    id: 'auditorium',
+    name: 'Auditorium',
+    roomSize: 75,
+    damping: 30,
+    reverbMix: 35,
+  },
+  {
+    id: 'echo',
+    name: 'Echo',
+    roomSize: 85,
+    damping: 10,
+    reverbMix: 40,
+  },
+  {
+    id: 'great-hall',
+    name: 'Great Hall',
+    roomSize: 90,
+    damping: 40,
+    reverbMix: 38,
+  },
+  {
+    id: 'light-reverb',
+    name: 'Light Reverb',
+    roomSize: 30,
+    damping: 60,
+    reverbMix: 15,
+  },
+  {
+    id: 'scene',
+    name: 'Scene',
+    roomSize: 55,
+    damping: 45,
+    reverbMix: 28,
+  },
+  {
+    id: 'small-room',
+    name: 'Small Room',
+    roomSize: 20,
+    damping: 70,
+    reverbMix: 20,
+  },
+  {
+    id: 'stadium',
+    name: 'Stadium',
+    roomSize: 95,
+    damping: 20,
+    reverbMix: 45,
+  },
+  {
+    id: 'studio',
+    name: 'Studio',
+    roomSize: 40,
+    damping: 50,
+    reverbMix: 22,
+  },
+];
+
