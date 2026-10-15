@@ -40,11 +40,11 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
     }
   };
 
-  // Chien de garde de secours absolu : ne jamais laisser l'utilisateur bloqué plus de 2.0s
+  // Chien de garde de secours absolu : ne jamais laisser l'utilisateur bloqué plus de 1.2s
   useEffect(() => {
     const safetyTimer = setTimeout(() => {
       safeFinish();
-    }, 2000);
+    }, 1200);
     return () => clearTimeout(safetyTimer);
   }, []);
 
@@ -92,6 +92,10 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       fadeAnim.setValue(1);
     }
   }, [visible]);
+
+  if (hasFinishedRef.current) {
+    return null;
+  }
 
   return (
     <Animated.View
@@ -150,7 +154,13 @@ const LOGO_SIZE = Math.min(136, Math.round(SCREEN_WIDTH * 0.34));
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
     backgroundColor: '#000000',
     justifyContent: 'center',
     alignItems: 'center',
@@ -158,12 +168,12 @@ const styles = StyleSheet.create({
     elevation: 99999,
   },
   content: {
+    ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
     zIndex: 10,
     elevation: 10,
-    position: 'relative',
   },
   logoWrapper: {
     width: LOGO_SIZE,

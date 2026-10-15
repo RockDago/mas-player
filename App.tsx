@@ -292,7 +292,7 @@ hasTrackRef.current = hasTrack;
   useEffect(() => {
     let isMounted = true;
 
-    // Chien de garde de secours absolu au démarrage (1600 ms max).
+    // Chien de garde de secours absolu au démarrage (1200 ms max).
     // Si une promesse native (permissions, initialisation audio, AsyncStorage)
     // tarde ou se suspend sur un premier lancement à froid, l'écran de chargement
     // est forcé à disparaître pour ne jamais bloquer l'utilisateur devant le logo.
@@ -303,7 +303,7 @@ hasTrackRef.current = hasTrack;
         setIsStartingUp(false);
         setIsAppLoadingVisible(false);
       }
-    }, 1600);
+    }, 1200);
 
     (async () => {
       // 1. Initialisation audio avec plafond temporel (1200 ms max)
@@ -483,22 +483,15 @@ hasTrackRef.current = hasTrack;
 
       if (isMounted) {
         isHydratedRef.current = true;
+        setIsStartingUp(false);
       }
-
-      clearTimeout(startupWatchdogTimer);
 
       // Fin du chargement initial : transition fluide vers le lecteur
       setTimeout(() => {
         if (isMounted) {
-          setIsStartingUp(false);
-          // Sécurité additionnelle : déverrouillage garanti de l'écran d'accueil
-          setTimeout(() => {
-            if (isMounted) {
-              setIsAppLoadingVisible(false);
-            }
-          }, 450);
+          setIsAppLoadingVisible(false);
         }
-      }, 250);
+      }, 350);
 
       // Demande de permission Android différée après la sortie de l'écran de chargement
       // Évite tout conflit de file de dialogue système ou gel de l'activité au premier démarrage.
@@ -2326,15 +2319,16 @@ hasTrackRef.current = hasTrack;
           </View>
         </Modal>
 
-        {/* Écran officiel de démarrage et chargement avec le logo MAS Player et mot Chargement */}
-        {isAppLoadingVisible && (
-          <AppLoadingScreen
-            visible={isStartingUp}
-            statusText={getTranslation(appSettings.language, 'loading')}
-            onFinish={handleAppLoadingFinish}
-          />
-        )}
       </SafeAreaView>
+
+      {/* Écran officiel de démarrage et chargement avec le logo MAS Player et mot Chargement */}
+      {isAppLoadingVisible && (
+        <AppLoadingScreen
+          visible={isStartingUp}
+          statusText={getTranslation(appSettings.language, 'loading')}
+          onFinish={handleAppLoadingFinish}
+        />
+      )}
     </View>
   );
 }
@@ -2413,6 +2407,7 @@ const styles = StyleSheet.create({
     height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
+    position: 'relative',
   },
   safeContainer: {
     flex: 1,
