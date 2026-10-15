@@ -40,11 +40,11 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
     }
   };
 
-  // Chien de garde de secours absolu : ne jamais laisser l'utilisateur bloqué plus de 2.8s
+  // Chien de garde de secours absolu : ne jamais laisser l'utilisateur bloqué plus de 2.0s
   useEffect(() => {
     const safetyTimer = setTimeout(() => {
       safeFinish();
-    }, 2800);
+    }, 2000);
     return () => clearTimeout(safetyTimer);
   }, []);
 
@@ -109,6 +109,7 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
         maxOpacity={0.62}
         overlayOpacity={0.52}
         duration={3500}
+        style={{ zIndex: 0 }}
       />
 
       <View style={styles.content}>
@@ -160,6 +161,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
+    zIndex: 10,
+    elevation: 10,
+    position: 'relative',
   },
   logoWrapper: {
     width: LOGO_SIZE,

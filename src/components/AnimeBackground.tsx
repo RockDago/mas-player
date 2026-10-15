@@ -182,6 +182,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
     backgroundColor: '#000000',
+    zIndex: 0,
   },
   image: {
     ...StyleSheet.absoluteFillObject,

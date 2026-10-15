@@ -292,7 +292,7 @@ hasTrackRef.current = hasTrack;
   useEffect(() => {
     let isMounted = true;
 
-    // Chien de garde de secours absolu au démarrage (2200 ms max).
+    // Chien de garde de secours absolu au démarrage (1600 ms max).
     // Si une promesse native (permissions, initialisation audio, AsyncStorage)
     // tarde ou se suspend sur un premier lancement à froid, l'écran de chargement
     // est forcé à disparaître pour ne jamais bloquer l'utilisateur devant le logo.
@@ -303,7 +303,7 @@ hasTrackRef.current = hasTrack;
         setIsStartingUp(false);
         setIsAppLoadingVisible(false);
       }
-    }, 2200);
+    }, 1600);
 
     (async () => {
       // 1. Initialisation audio avec plafond temporel (1200 ms max)
@@ -491,8 +491,14 @@ hasTrackRef.current = hasTrack;
       setTimeout(() => {
         if (isMounted) {
           setIsStartingUp(false);
+          // Sécurité additionnelle : déverrouillage garanti de l'écran d'accueil
+          setTimeout(() => {
+            if (isMounted) {
+              setIsAppLoadingVisible(false);
+            }
+          }, 450);
         }
-      }, 350);
+      }, 250);
 
       // Demande de permission Android différée après la sortie de l'écran de chargement
       // Évite tout conflit de file de dialogue système ou gel de l'activité au premier démarrage.
@@ -1392,23 +1398,23 @@ hasTrackRef.current = hasTrack;
 
   return (
     <View style={styles.rootBackground}>
+      <StatusBar style="light" />
+
+      {/* Fond d'ambiance dynamique plein écran en arrière-plan absolu (z-index 0) */}
+      <AnimeBackground
+        backgroundStyle={appSettings.backgroundStyle}
+        blurIntensity={appSettings.blurIntensity}
+        colorSaturation={appSettings.colorSaturation}
+        ambientParticles={appSettings.ambientParticles}
+      />
+
       <SafeAreaView
         style={styles.safeContainer}
         edges={Platform.OS === 'ios' ? ['top', 'bottom', 'left', 'right'] : ['left', 'right']}
       >
-        <StatusBar style="light" />
-
-        {/* Fond d'ambiance dynamique réactif aux paramètres d'arrière-plan */}
-        <AnimeBackground
-          backgroundStyle={appSettings.backgroundStyle}
-          blurIntensity={appSettings.blurIntensity}
-          colorSaturation={appSettings.colorSaturation}
-          ambientParticles={appSettings.ambientParticles}
-        />
-
         <View style={styles.appContainer}>
           {/* TAB 1: PLAYER SCREEN */}
-          <View style={{ flex: 1, display: currentTab === 'player' ? 'flex' : 'none' }}>
+          <View style={{ flex: 1, width: '100%', display: currentTab === 'player' ? 'flex' : 'none' }}>
             <ScrollView
               contentContainerStyle={{
                 flexGrow: 1,
@@ -2410,10 +2416,14 @@ const styles = StyleSheet.create({
   },
   safeContainer: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: 'transparent',
     width: '100%',
     maxWidth: 520, // Responsive clamp on large desktop / tablet screens
     height: '100%',
+    alignSelf: 'stretch',
+    position: 'relative',
+    zIndex: 10,
+    elevation: 10,
   },
   appContainer: {
     flex: 1,
@@ -2421,6 +2431,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     width: '100%',
     paddingBottom: Platform.OS === 'android' ? 12 : (Platform.OS === 'ios' ? 8 : 4),
+    position: 'relative',
+    zIndex: 10,
+    elevation: 10,
   },
   topPlayerBar: {
     flexDirection: 'row',
@@ -2429,7 +2442,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: Platform.OS === 'ios' ? 4 : 8,
     paddingBottom: 4,
-    zIndex: 10,
+    zIndex: 20,
+    elevation: 20,
   },
   topBrandPill: {
     flexDirection: 'row',
@@ -2746,6 +2760,8 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingVertical: 12,
     borderRadius: 14,
+    zIndex: 20,
+    elevation: 20,
   },
   dockIconBtn: {
     padding: 8,
