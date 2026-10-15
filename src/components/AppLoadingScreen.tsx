@@ -29,6 +29,24 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
 }) => {
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
+  const onFinishRef = useRef(onFinish);
+  onFinishRef.current = onFinish;
+  const hasFinishedRef = useRef(false);
+
+  const safeFinish = () => {
+    if (!hasFinishedRef.current) {
+      hasFinishedRef.current = true;
+      onFinishRef.current?.();
+    }
+  };
+
+  // Chien de garde de secours absolu : ne jamais laisser l'utilisateur bloqué plus de 2.8s
+  useEffect(() => {
+    const safetyTimer = setTimeout(() => {
+      safeFinish();
+    }, 2800);
+    return () => clearTimeout(safetyTimer);
+  }, []);
 
   // Animation de pulsation du logo
   useEffect(() => {
@@ -56,17 +74,24 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   // Fondu de sortie quand le chargement est terminé
   useEffect(() => {
     if (!visible) {
+      const fallbackTimer = setTimeout(() => {
+        safeFinish();
+      }, 450);
+
       Animated.timing(fadeAnim, {
         toValue: 0,
-        duration: 400,
+        duration: 380,
         useNativeDriver: true,
       }).start(() => {
-        onFinish?.();
+        clearTimeout(fallbackTimer);
+        safeFinish();
       });
+
+      return () => clearTimeout(fallbackTimer);
     } else {
       fadeAnim.setValue(1);
     }
-  }, [visible, fadeAnim, onFinish]);
+  }, [visible]);
 
   return (
     <Animated.View

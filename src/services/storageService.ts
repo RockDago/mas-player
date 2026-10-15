@@ -64,7 +64,7 @@ export interface LastPlaybackSession {
 
 export const DEFAULT_APP_SETTINGS: AppSettings = {
   theme: 'oled',
-  visualizerStyle: 'vinyl',
+  visualizerStyle: 'bars',
   richNotifications: true,
   language: 'fr',
 

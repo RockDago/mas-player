@@ -62,6 +62,13 @@ const SETTING_ITEMS: SettingCategory[] = [
     iconColor: '#38BDF8',
   },
   {
+    id: 'visualization',
+    titleKey: 'cat_visu_title',
+    subtitleKey: 'cat_visu_sub',
+    icon: 'sine-wave',
+    iconColor: '#A855F7',
+  },
+  {
     id: 'audio',
     titleKey: 'cat_audio_title',
     subtitleKey: 'cat_audio_sub',
@@ -338,6 +345,128 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <Text style={styles.languageFootnote}>
               {t('languageFootnote')}
             </Text>
+          </View>
+        );
+
+      case 'visualization':
+        return (
+          <View style={styles.subModalOptions}>
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('visualizerSection')}</Text>
+              <View style={styles.visuCardCol}>
+                {[
+                  {
+                    id: 'bars',
+                    title: t('visuBars'),
+                    desc:
+                      lang === 'fr'
+                        ? 'Spectre dynamique réactif aux fréquences & pics'
+                        : 'Frequency responsive audio spectrum & peak drops',
+                    icon: 'chart-bar' as const,
+                  },
+                  {
+                    id: 'wave',
+                    title: t('visuWave'),
+                    desc:
+                      lang === 'fr'
+                        ? 'Onde liquide néon & étincelles vibrantes'
+                        : 'Fluid neon sine wave & dancing sparks',
+                    icon: 'sine-wave' as const,
+                  },
+                  {
+                    id: 'vinyl',
+                    title: t('visuVinyl'),
+                    desc:
+                      lang === 'fr'
+                        ? 'Disque vinyle 33 tours & pochette animée'
+                        : '33 RPM spinning vinyl & album art',
+                    icon: 'disc' as const,
+                  },
+                ].map((item) => {
+                  const isSelected = (settings.visualizerStyle || 'bars') === item.id;
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={[
+                        styles.visuCard,
+                        isSelected && styles.visuCardActive,
+                      ]}
+                      onPress={() => {
+                        try {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        } catch {}
+                        onUpdateSettings?.({ visualizerStyle: item.id as any });
+                      }}
+                      activeOpacity={0.75}
+                    >
+                      <View style={[styles.visuCardIconBox, isSelected && styles.visuCardIconBoxActive]}>
+                        <MaterialCommunityIcons
+                          name={item.icon}
+                          size={24}
+                          color={isSelected ? '#000000' : '#FFFFFF'}
+                        />
+                      </View>
+                      <View style={styles.visuCardTextCol}>
+                        <Text style={[styles.visuCardTitle, isSelected && styles.visuCardTitleActive]}>
+                          {item.title}
+                        </Text>
+                        <Text style={styles.visuCardDesc}>{item.desc}</Text>
+                      </View>
+                      {isSelected && (
+                        <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={styles.optionSection}>
+              <Text style={styles.sectionLabel}>{t('spectrumSection')}</Text>
+              <View style={styles.chipRow}>
+                {[
+                  { id: 'low', label: t('specLow') },
+                  { id: 'normal', label: t('specNormal') },
+                  { id: 'ultra', label: t('specUltra') },
+                ].map((sp) => (
+                  <TouchableOpacity
+                    key={sp.id}
+                    style={[
+                      styles.choiceChip,
+                      settings.spectrumReactive === sp.id && styles.choiceChipActive,
+                    ]}
+                    onPress={() => {
+                      try {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      } catch {}
+                      onUpdateSettings?.({ spectrumReactive: sp.id as any });
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.choiceChipText,
+                        settings.spectrumReactive === sp.id && styles.choiceChipTextActive,
+                      ]}
+                    >
+                      {sp.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleTextCol}>
+                <Text style={styles.toggleLabel}>{t('autoFadeTitle')}</Text>
+                <Text style={styles.toggleSubLabel}>{t('autoFadeSub')}</Text>
+              </View>
+              <Switch
+                value={settings.autoFadeControls}
+                onValueChange={(val) => onUpdateSettings?.({ autoFadeControls: val })}
+                trackColor={{ false: '#27272A', true: POWERAMP_TEAL }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
           </View>
         );
 
@@ -1774,5 +1903,52 @@ const styles = StyleSheet.create({
     marginTop: 4,
     textAlign: 'center',
     letterSpacing: 0.2,
+  },
+  visuCardCol: {
+    gap: 10,
+    marginTop: 4,
+  },
+  visuCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#18181B',
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#27272A',
+    gap: 12,
+  },
+  visuCardActive: {
+    borderColor: '#FFFFFF',
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  visuCardIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: '#27272A',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  visuCardIconBoxActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  visuCardTextCol: {
+    flex: 1,
+  },
+  visuCardTitle: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  visuCardTitleActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  visuCardDesc: {
+    color: '#94A3B8',
+    fontSize: 11.5,
+    lineHeight: 15,
   },
 });

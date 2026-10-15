@@ -303,21 +303,23 @@ class UniversalPlayerManager {
 
   async init() {
     try {
-      await setAudioModeAsync({
-        playsInSilentMode: true,
-        shouldPlayInBackground: true,
-        interruptionMode: this.interruptionModeForPlatform(),
-      });
+      await Promise.race([
+        setAudioModeAsync({
+          playsInSilentMode: true,
+          shouldPlayInBackground: true,
+          interruptionMode: this.interruptionModeForPlatform(),
+        }),
+        new Promise((resolve) => setTimeout(resolve, 1200)),
+      ]);
     } catch (err) {
       console.warn('init audio mode warning:', err);
     }
 
     if (Platform.OS === 'android') {
-      try {
-        await requestNotificationPermissionsAsync();
-      } catch (err) {
+      // Déclenché en arrière-plan sans suspendre l'initialisation de l'application
+      void requestNotificationPermissionsAsync().catch((err) => {
         console.warn('Android notification permission warning:', err);
-      }
+      });
     }
   }
 

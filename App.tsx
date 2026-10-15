@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Animated,
   StyleSheet,
@@ -37,6 +37,7 @@ import {
 } from './src/services/storageService';
 import { EqualizerView } from './src/components/EqualizerView';
 import { NeonWaveVisualizer } from './src/components/NeonWaveVisualizer';
+import { VinylVisualizer } from './src/components/VinylVisualizer';
 import { ProgressBar } from './src/components/ProgressBar';
 import { TrackListModal } from './src/components/TrackListModal';
 import { LibraryView } from './src/components/LibraryView';
@@ -105,6 +106,9 @@ function MainApp() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isStartingUp, setIsStartingUp] = useState<boolean>(true);
   const [isAppLoadingVisible, setIsAppLoadingVisible] = useState<boolean>(true);
+  const handleAppLoadingFinish = useCallback(() => {
+    setIsAppLoadingVisible(false);
+  }, []);
   // Zéro et non une durée de démo : sur une bibliothèque vide, une barre de
   // progression affichant 0:10 / 3:29 pour une piste inexistante était un
   // mensonge visible. Ces valeurs ne sont plus écrites qu'à la lecture réelle.
@@ -287,13 +291,63 @@ hasTrackRef.current = hasTrack;
   // Restauration de la dernière session au démarrage (en pause, aucun son automatique)
   useEffect(() => {
     let isMounted = true;
-    (async () => {
-      if (Platform.OS === 'android') {
-        void requestAndroidStoragePermission();
-      }
-      await playerManager.init();
 
-      // Charger l'ensemble des données et paramètres sauvegardés
+    // Chien de garde de secours absolu au démarrage (2200 ms max).
+    // Si une promesse native (permissions, initialisation audio, AsyncStorage)
+    // tarde ou se suspend sur un premier lancement à froid, l'écran de chargement
+    // est forcé à disparaître pour ne jamais bloquer l'utilisateur devant le logo.
+    const startupWatchdogTimer = setTimeout(() => {
+      if (isMounted) {
+        console.warn('[Startup] Chien de garde déclenché : déblocage forcé de l’écran de chargement.');
+        isHydratedRef.current = true;
+        setIsStartingUp(false);
+        setIsAppLoadingVisible(false);
+      }
+    }, 2200);
+
+    (async () => {
+      // 1. Initialisation audio avec plafond temporel (1200 ms max)
+      try {
+        await Promise.race([
+          playerManager.init(),
+          new Promise((resolve) => setTimeout(resolve, 1200)),
+        ]);
+      } catch (err) {
+        console.warn('[Startup] Avertissement init audio:', err);
+      }
+
+      // 2. Charger l'ensemble des données sauvegardées avec plafond temporel (1500 ms max)
+      let savedData: [
+        AppSettings | null,
+        DSPState | null,
+        any,
+        Playlist[] | null,
+        Track[] | null,
+        Track[] | null,
+        LastPlaybackSession | null,
+        EqualizerPreset[] | null
+      ];
+      try {
+        savedData = await Promise.race([
+          Promise.all([
+            storageService.getSettings(),
+            storageService.getDSP(),
+            storageService.getPlaybackModes(),
+            storageService.getPlaylists(),
+            storageService.getQueue(),
+            storageService.getCustomTracks(),
+            storageService.getLastPlayback(),
+            storageService.getCustomPresets(),
+          ]),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Storage timeout')), 1500)
+          ),
+        ]);
+      } catch (e) {
+        console.warn('[Startup] Restauration du stockage accélérée par repli:', e);
+        savedData = [null, null, null, null, null, null, null, null];
+      }
+
       const [
         savedSettings,
         savedDsp,
@@ -303,16 +357,7 @@ hasTrackRef.current = hasTrack;
         savedCustomTracks,
         savedLast,
         savedCustomPresets,
-      ] = await Promise.all([
-        storageService.getSettings(),
-        storageService.getDSP(),
-        storageService.getPlaybackModes(),
-        storageService.getPlaylists(),
-        storageService.getQueue(),
-        storageService.getCustomTracks(),
-        storageService.getLastPlayback(),
-        storageService.getCustomPresets(),
-      ]);
+      ] = savedData;
 
       if (!isMounted) return;
 
@@ -411,84 +456,66 @@ hasTrackRef.current = hasTrack;
         queueRef.current = filteredQueue;
       }
 
-      // Restauration de la dernière musique et de la position d'écoute (intégrée par défaut)
-      let targetIndex = 0;
-      let resumePosMs = 0;
+      // Restauration de la dernière musique et de la position d'écoute (uniquement si des pistes existent)
+      if (currentTrackList.length > 0) {
+        let targetIndex = 0;
+        let resumePosMs = 0;
 
-      if (savedLast) {
-        if (savedLast.activePlaylistId) {
-          setActivePlaylistId(savedLast.activePlaylistId);
-          activePlaylistIdRef.current = savedLast.activePlaylistId;
-        }
-        const foundIdx = currentTrackList.findIndex((t) => t.id === savedLast.trackId);
-        if (foundIdx !== -1) {
-          targetIndex = foundIdx;
-        } else if (savedLast.trackIndex >= 0 && savedLast.trackIndex < currentTrackList.length) {
-          targetIndex = savedLast.trackIndex;
+        if (savedLast) {
+          if (savedLast.activePlaylistId) {
+            setActivePlaylistId(savedLast.activePlaylistId);
+            activePlaylistIdRef.current = savedLast.activePlaylistId;
+          }
+          const foundIdx = currentTrackList.findIndex((t) => t.id === savedLast.trackId);
+          if (foundIdx !== -1) {
+            targetIndex = foundIdx;
+          } else if (savedLast.trackIndex >= 0 && savedLast.trackIndex < currentTrackList.length) {
+            targetIndex = savedLast.trackIndex;
+          }
+
+          if (savedLast.positionMillis > 0) {
+            resumePosMs = savedLast.positionMillis;
+          }
         }
 
-        if (savedLast.positionMillis > 0) {
-          resumePosMs = savedLast.positionMillis;
-        }
+        await loadTrack(targetIndex, false, resumePosMs, currentTrackList).catch(() => {});
       }
 
-      await loadTrack(targetIndex, false, resumePosMs, currentTrackList);
-
-      // ── Verrou d'hydratation : ici, et pas 150 ms plus tôt ────────────────
-      //
-      // Il était posé par un `setTimeout(…, 150)` placé AVANT le
-      // `await loadTrack`. Un minuteur n'est pas une barrière : sur un
-      // démarrage natif à froid, `loadTrack` est encore en vol 150 ms plus
-      // tard — c'est le cas ordinaire, pas l'exception. Le verrou s'ouvrait donc
-      // pendant que la restauration n'était pas terminée.
-      //
-      // Ce qui pouvait alors écrire : l'abonnement au volume système (ligne
-      // ~800) appelle `setDsp(prev => ({ ...prev, volume }))` dès que iOS
-      // rapporte un niveau, ce qui arrive typiquement dans cette fenêtre. Cet
-      // effet déclenche `saveDSP`, protégé par `isHydratedRef` — donc la courbe
-      // d'égaliseur de l'utilisateur, relue à l'instant, était écrasée par un
-      // état construit sur les valeurs PAR DÉFAUT. Au lancement suivant, la
-      // courbe était plate. Aucune erreur, aucun signe : l'égaliseur se
-      // réinitialisait seul.
-      //
-      // Le curseur est donc posé ici, après le dernier `await` : à partir de
-      // cette ligne, tout ce que l'application a restauré est en place, et les
-      // effets de sauvegarde ne peuvent plus écrire que des changements réels.
       if (isMounted) {
         isHydratedRef.current = true;
       }
+
+      clearTimeout(startupWatchdogTimer);
 
       // Fin du chargement initial : transition fluide vers le lecteur
       setTimeout(() => {
         if (isMounted) {
           setIsStartingUp(false);
         }
-      }, 400);
+      }, 350);
+
+      // Demande de permission Android différée après la sortie de l'écran de chargement
+      // Évite tout conflit de file de dialogue système ou gel de l'activité au premier démarrage.
+      if (Platform.OS === 'android') {
+        setTimeout(() => {
+          if (isMounted) {
+            void requestAndroidStoragePermission();
+          }
+        }, 600);
+      }
     })().catch((e) => {
-      // Un rejet ICI avait un effet terminal : `setIsStartingUp(false)` n'est
-      // atteint qu'en fin de ce chemin, et le splash reste affiché tant que
-      // ce drapeau est vrai. Une seule promesse rejetée — un pont natif qui
-      // refuse, un fichier illisible — suffisait donc à boucher l'app au
-      // démarrage, sans message et sans issue.
-      //
-      // Le chargement a échoué, mais l'application est utilisable : on libère
-      // l'écran de chargement et on laisse l'utilisateur atteindre l'interface vide
-      // plutôt que de le garder devant un logo éternel.
       console.warn('Échec du démarrage, ouverture sur une bibliothèque vide:', e);
+      clearTimeout(startupWatchdogTimer);
       if (isMounted) {
-        // Le verrou doit être levé ICI aussi. `loadTrack` est le dernier await
-        // de l'hydratation : s'il rejette, la ligne qui le pose n'est jamais
-        // atteinte, et les cinq effets de sauvegarde resteraient bloqués
-        // indéfiniment. L'utilisateur pourrait changer tous ses réglages sans
-        // que rien ne soit jamais écrit sur le disque — le défaut inverse de
-        // celui qu'on corrige, et tout aussi silencieux.
         isHydratedRef.current = true;
         setIsStartingUp(false);
+        setIsAppLoadingVisible(false);
       }
     });
 
     return () => {
       isMounted = false;
+      clearTimeout(startupWatchdogTimer);
       playerManager.release();
     };
   }, []);
@@ -623,7 +650,10 @@ hasTrackRef.current = hasTrack;
       isAdvancingRef.current = false;
       const list = trackList || tracksRef.current;
       const targetTrack = list[index];
-      if (!targetTrack) return;
+      if (!targetTrack) {
+        setIsLoading(false);
+        return;
+      }
 
       setCurrentTrackIndex(index);
       currentTrackIndexRef.current = index;
@@ -1342,6 +1372,17 @@ hasTrackRef.current = hasTrack;
     else setRepeatMode('off');
   };
 
+  const handleCycleVisualizerStyle = () => {
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    } catch {}
+    const order: Array<AppSettings['visualizerStyle']> = ['bars', 'wave', 'vinyl'];
+    const currentStyle = appSettings.visualizerStyle || 'bars';
+    const currentIdx = order.indexOf(currentStyle);
+    const nextStyle = order[(currentIdx + 1) % order.length];
+    void handleUpdateSettings({ visualizerStyle: nextStyle });
+  };
+
   // Filtered tracks for search
   const filteredTracks = tracks.filter(
     (t) =>
@@ -1378,7 +1419,7 @@ hasTrackRef.current = hasTrack;
               bounces={false}
               scrollEnabled={screenHeight < 620}
             >
-              {/* Top Bar on Player Screen: Left Queue Drawer, Center MAS Logo & Right Cast */}
+              {/* Top Bar on Player Screen: Left Queue Drawer, Center Visualizer Switch Badge & Right Switch Button */}
               <View
                 style={[
                   styles.topPlayerBar,
@@ -1405,11 +1446,46 @@ hasTrackRef.current = hasTrack;
                   )}
                 </TouchableOpacity>
 
-                <View style={{ width: 34 }} />
+                {/* Badge interactif au centre affichant et alternant le style actif */}
+                <TouchableOpacity
+                  onPress={handleCycleVisualizerStyle}
+                  style={styles.topVisualizerBadge}
+                  activeOpacity={0.75}
+                >
+                  <MaterialCommunityIcons
+                    name={
+                      appSettings.visualizerStyle === 'vinyl'
+                        ? 'disc'
+                        : appSettings.visualizerStyle === 'wave'
+                        ? 'sine-wave'
+                        : 'chart-bar'
+                    }
+                    size={14}
+                    color="#FFFFFF"
+                  />
+                  <Text style={styles.topVisualizerBadgeText}>
+                    {appSettings.visualizerStyle === 'vinyl'
+                      ? getTranslation(appSettings.language, 'visuVinyl')
+                      : appSettings.visualizerStyle === 'wave'
+                      ? getTranslation(appSettings.language, 'visuWave')
+                      : getTranslation(appSettings.language, 'visuBars')}
+                  </Text>
+                </TouchableOpacity>
+
+                {/* Bouton de bascule rapide à droite */}
+                <TouchableOpacity
+                  onPress={handleCycleVisualizerStyle}
+                  style={styles.topPlayerIconBtn}
+                  activeOpacity={0.7}
+                >
+                  <MaterialCommunityIcons name="swap-horizontal" size={22} color="#FFFFFF" />
+                </TouchableOpacity>
               </View>
 
-              {/* Main Visualizer Area: visualiseur d'ondes néon réactif au rythme du son */}
-              <View
+              {/* Main Visualizer Area: Supporte Barres EQ, Onde Fluide et Disque Vinyle animé */}
+              <TouchableOpacity
+                activeOpacity={0.95}
+                onPress={handleCycleVisualizerStyle}
                 style={[
                   styles.centerStage,
                   {
@@ -1417,12 +1493,22 @@ hasTrackRef.current = hasTrack;
                   },
                 ]}
               >
-                <NeonWaveVisualizer
-                  isActive={hasTrack && isPlaying}
-                  hasTrack={hasTrack}
-                  spectrumReactive={appSettings.spectrumReactive}
-                />
-              </View>
+                {appSettings.visualizerStyle === 'vinyl' ? (
+                  <VinylVisualizer
+                    track={hasTrack ? currentTrack : null}
+                    isPlaying={hasTrack && isPlaying}
+                    hasTrack={hasTrack}
+                    onPress={handleCycleVisualizerStyle}
+                  />
+                ) : (
+                  <NeonWaveVisualizer
+                    mode={appSettings.visualizerStyle === 'wave' ? 'wave' : 'bars'}
+                    isActive={hasTrack && isPlaying}
+                    hasTrack={hasTrack}
+                    spectrumReactive={appSettings.spectrumReactive}
+                  />
+                )}
+              </TouchableOpacity>
 
               {/* Like / Dislike + 3-Dots Row matching latest user screenshot */}
               <View
@@ -2239,7 +2325,7 @@ hasTrackRef.current = hasTrack;
           <AppLoadingScreen
             visible={isStartingUp}
             statusText={getTranslation(appSettings.language, 'loading')}
-            onFinish={() => setIsAppLoadingVisible(false)}
+            onFinish={handleAppLoadingFinish}
           />
         )}
       </SafeAreaView>
@@ -2402,6 +2488,23 @@ const styles = StyleSheet.create({
     color: '#000000',
     fontSize: 10,
     fontWeight: '700',
+  },
+  topVisualizerBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#1E1D24',
+    paddingHorizontal: 12,
+    paddingVertical: 4.5,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#2D2B35',
+  },
+  topVisualizerBadgeText: {
+    color: '#F3F4F6',
+    fontSize: 11.5,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
   ratingActionsRow: {
     flexDirection: 'row',
