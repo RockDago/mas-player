@@ -19,7 +19,8 @@ import { Track } from '../types/audio';
 
 /** Décodage Base64 vers Uint8Array sans dépendance externe */
 function base64ToUint8Array(base64: string): Uint8Array {
-  const binaryString = atob(base64);
+  const cleanBase64 = base64.replace(/[\r\n\s]/g, '');
+  const binaryString = atob(cleanBase64);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
@@ -55,10 +56,10 @@ async function parseAudioHeaderDuration(uri: string): Promise<number> {
 
       while (offset + 8 <= bytes.length) {
         const chunkId = String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
-        const chunkSize = bytes[offset + 4] | (bytes[offset + 5] << 8) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 24);
+        const chunkSize = ((bytes[offset + 4] | (bytes[offset + 5] << 8) | (bytes[offset + 6] << 16) | (bytes[offset + 7] << 24)) >>> 0);
 
         if (chunkId === 'fmt ' && offset + 16 <= bytes.length) {
-          byteRate = bytes[offset + 16] | (bytes[offset + 17] << 8) | (bytes[offset + 18] << 16) | (bytes[offset + 19] << 24);
+          byteRate = ((bytes[offset + 16] | (bytes[offset + 17] << 8) | (bytes[offset + 18] << 16) | (bytes[offset + 19] << 24)) >>> 0);
         } else if (chunkId === 'data') {
           dataSize = chunkSize;
           break;
@@ -103,12 +104,12 @@ async function parseAudioHeaderDuration(uri: string): Promise<number> {
         let durationUnits = 0;
 
         if (version === 0 && i + 20 <= bytes.length) {
-          timescale = (bytes[i + 12] << 24) | (bytes[i + 13] << 16) | (bytes[i + 14] << 8) | bytes[i + 15];
-          durationUnits = (bytes[i + 16] << 24) | (bytes[i + 17] << 16) | (bytes[i + 18] << 8) | bytes[i + 19];
+          timescale = ((bytes[i + 12] << 24) | (bytes[i + 13] << 16) | (bytes[i + 14] << 8) | bytes[i + 15]) >>> 0;
+          durationUnits = ((bytes[i + 16] << 24) | (bytes[i + 17] << 16) | (bytes[i + 18] << 8) | bytes[i + 19]) >>> 0;
         } else if (version === 1 && i + 32 <= bytes.length) {
-          timescale = (bytes[i + 20] << 24) | (bytes[i + 21] << 16) | (bytes[i + 22] << 8) | bytes[i + 23];
-          const durHigh = (bytes[i + 24] << 24) | (bytes[i + 25] << 16) | (bytes[i + 26] << 8) | bytes[i + 27];
-          const durLow = (bytes[i + 28] << 24) | (bytes[i + 29] << 16) | (bytes[i + 30] << 8) | bytes[i + 31];
+          timescale = ((bytes[i + 20] << 24) | (bytes[i + 21] << 16) | (bytes[i + 22] << 8) | bytes[i + 23]) >>> 0;
+          const durHigh = ((bytes[i + 24] << 24) | (bytes[i + 25] << 16) | (bytes[i + 26] << 8) | bytes[i + 27]) >>> 0;
+          const durLow = ((bytes[i + 28] << 24) | (bytes[i + 29] << 16) | (bytes[i + 30] << 8) | bytes[i + 31]) >>> 0;
           durationUnits = durHigh * 4294967296 + durLow;
         }
 
@@ -196,10 +197,10 @@ async function parseAudioHeaderDuration(uri: string): Promise<number> {
             // Si le flag 0x0001 (frames count) est présent
             if (flags & 0x0001) {
               const framesCount =
-                (frameBytes[xingOffset + 8] << 24) |
+                ((frameBytes[xingOffset + 8] << 24) |
                 (frameBytes[xingOffset + 9] << 16) |
                 (frameBytes[xingOffset + 10] << 8) |
-                frameBytes[xingOffset + 11];
+                frameBytes[xingOffset + 11]) >>> 0;
 
               if (framesCount > 0 && sampleRate > 0) {
                 return Math.round((framesCount * samplesPerFrame) / sampleRate);
@@ -250,7 +251,7 @@ function getNativeAudioPlayerDuration(uri: string, timeoutMs: number = 1200): Pr
     }, timeoutMs);
 
     try {
-      p = createAudioPlayer(uri, { updateInterval: 100, keepAudioSessionActive: true });
+      p = createAudioPlayer(uri, { updateInterval: 100, keepAudioSessionActive: false });
 
       if (p?.duration && p.duration > 0) {
         settled = true;
