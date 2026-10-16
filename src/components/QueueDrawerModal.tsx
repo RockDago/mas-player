@@ -178,7 +178,7 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
                       {item.title}
                     </Text>
                     <Text numberOfLines={1} style={styles.trackArtist}>
-                      {item.artist} • {formatTime(item.duration || 180)}
+                      {item.artist} • {item.duration && item.duration > 0 ? formatTime(item.duration) : '--:--'}
                     </Text>
                   </TouchableOpacity>
 

@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import { Track } from '../types/audio';
 import { persistAudioFile } from '../utils/audioStorage';
 import { saveWebAudioBlob } from './webAudioStorage';
+import { getAudioDuration, enrichTracksWithDuration, getWebAudioDuration } from './audioDurationService';
 
 /**
  * Demande les permissions de stockage et d'accès aux fichiers audio sur Android.
@@ -116,57 +117,7 @@ export interface ImportFilesResult {
   count: number;
 }
 
-/**
- * Tente de déterminer la durée exacte d'un fichier audio via l'API Web Audio / HTML5 Audio
- */
-export function getWebAudioDuration(url: string, timeoutMs: number = 2000): Promise<number> {
-  return new Promise((resolve) => {
-    if (typeof Audio === 'undefined') {
-      resolve(0);
-      return;
-    }
-    const tempAudio = new Audio();
-    tempAudio.preload = 'metadata';
-    let settled = false;
-
-    const cleanup = () => {
-      tempAudio.onloadedmetadata = null;
-      tempAudio.onerror = null;
-      try {
-        tempAudio.src = '';
-      } catch (_) {}
-    };
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        cleanup();
-        resolve(0);
-      }
-    }, timeoutMs);
-
-    tempAudio.onloadedmetadata = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        const dur = Math.round(tempAudio.duration || 0);
-        cleanup();
-        resolve(dur);
-      }
-    };
-
-    tempAudio.onerror = () => {
-      if (!settled) {
-        settled = true;
-        clearTimeout(timer);
-        cleanup();
-        resolve(0);
-      }
-    };
-
-    tempAudio.src = url;
-  });
-}
+export { getAudioDuration, enrichTracksWithDuration, getWebAudioDuration };
 
 /**
  * Extrait le titre et l'artiste à partir du nom du fichier
@@ -304,12 +255,7 @@ async function extractZipArchive(
   }
 
   // Récupérer les durées réelles
-  await Promise.all(
-    tracks.map(async (t) => {
-      const dur = await getWebAudioDuration(t.uri, 2000);
-      if (dur > 0) t.duration = dur;
-    })
-  );
+  await enrichTracksWithDuration(tracks);
 
   return { tracks, folderName: detectedFolder };
 }
@@ -374,6 +320,9 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
             });
           }
 
+          // Enrichir avec les durées réelles avant renvoi
+          await enrichTracksWithDuration(tracks);
+
           return {
             tracks,
             folderName,
@@ -428,6 +377,9 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
                 addedAt: Date.now(),
               });
             }
+
+            // Enrichir avec les durées réelles avant renvoi
+            await enrichTracksWithDuration(tracks);
 
             return {
               tracks,
@@ -487,6 +439,9 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
             addedAt: Date.now(),
           });
         }
+
+        // Enrichir avec les durées réelles avant renvoi
+        await enrichTracksWithDuration(tracks);
 
         return {
           tracks,
@@ -642,12 +597,7 @@ export async function pickAudioFolder(existingTracks?: Track[]): Promise<ImportF
         }
 
         // Récupérer les durées réelles avant de renvoyer les morceaux
-        await Promise.all(
-          tracks.map(async (t) => {
-            const dur = await getWebAudioDuration(t.uri, 2000);
-            if (dur > 0) t.duration = dur;
-          })
-        );
+        await enrichTracksWithDuration(tracks);
 
         cleanup();
         resolve({
@@ -758,12 +708,7 @@ export async function pickAudioFiles(existingTracks?: Track[]): Promise<ImportFi
         }
 
         // Récupérer les durées réelles
-        await Promise.all(
-          tracks.map(async (t) => {
-            const dur = await getWebAudioDuration(t.uri, 2000);
-            if (dur > 0) t.duration = dur;
-          })
-        );
+        await enrichTracksWithDuration(tracks);
 
         cleanup();
         resolve({
@@ -826,6 +771,9 @@ export async function pickAudioFiles(existingTracks?: Track[]): Promise<ImportFi
           addedAt: Date.now(),
         });
       }
+
+      // Enrichir avec les durées réelles avant renvoi
+      await enrichTracksWithDuration(tracks);
 
       return {
         tracks,

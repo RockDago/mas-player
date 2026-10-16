@@ -1068,7 +1068,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({
                 </View>
 
                 <Text style={[styles.trackDurationText, isPlayingThis && { color: '#FFFFFF' }]}>
-                  {formatTime(item.duration || 0)}
+                  {item.duration && item.duration > 0 ? formatTime(item.duration) : '--:--'}
                 </Text>
 
                 {/* 3-dots Context menu trigger button */}

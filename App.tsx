@@ -54,6 +54,7 @@ import { resolveTrackUri, deletePersistedAudioFile } from './src/utils/audioStor
 import { mergeTracks } from './src/utils/trackMerge';
 import { restoreWebAudioBlobs } from './src/services/webAudioStorage';
 import { requestAndroidStoragePermission, pickAudioFiles } from './src/services/filePickerService';
+import { enrichTracksWithDuration } from './src/services/audioDurationService';
 import { useAutoFade } from './src/hooks/useAutoFade';
 import { useScreenInsets, insetPadding } from './src/theme/insets';
 
@@ -627,6 +628,35 @@ hasTrackRef.current = hasTrack;
     if (!isHydratedRef.current) return;
     storageService.saveCustomTracks(tracks);
   }, [tracks]);
+
+  // Enrichissement automatique en arrière-plan des durées manquantes
+  useEffect(() => {
+    if (!isHydratedRef.current || isStartingUp || tracks.length === 0) return;
+
+    const tracksMissingDuration = tracks.filter((t) => !t.duration || t.duration <= 0);
+    if (tracksMissingDuration.length === 0) return;
+
+    let cancelled = false;
+
+    // Lancer l'enrichissement en arrière-plan sans bloquer l'affichage
+    const timer = setTimeout(() => {
+      void enrichTracksWithDuration(tracksMissingDuration, (updated) => {
+        if (cancelled) return;
+        setTracks((prev) => {
+          const index = prev.findIndex((t) => t.id === updated.id);
+          if (index === -1 || prev[index].duration === updated.duration) return prev;
+          const next = [...prev];
+          next[index] = { ...next[index], duration: updated.duration };
+          return next;
+        });
+      });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [tracks.length, isStartingUp]);
 
   const handleUpdateSettings = async (newSettings: Partial<AppSettings>) => {
     const updated = await storageService.saveSettings(newSettings);
