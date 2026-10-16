@@ -150,7 +150,7 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
               ? ['rgba(8, 24, 43, 0.45)', 'rgba(3, 14, 27, 0.72)', 'rgba(0, 0, 0, 0.92)']
               : ['rgba(20, 20, 22, 0.45)', 'rgba(10, 10, 12, 0.75)', 'rgba(0, 0, 0, 0.94)']
           }
-          style={StyleSheet.absoluteFillObject}
+          style={StyleSheet.absoluteFill}
           start={{ x: 0, y: 0 }}
           end={{ x: 0.8, y: 1 }}
         />
@@ -160,7 +160,7 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
       {colorSaturation && (
         <View
           style={[
-            StyleSheet.absoluteFillObject,
+            StyleSheet.absoluteFill,
             { backgroundColor: 'rgba(56, 189, 248, 0.10)' },
           ]}
         />
@@ -169,7 +169,7 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
       {/* 4. CALQUE D'ASSOMBRISSEMENT POUR LA LISIBILITÉ DE L'INTERFACE */}
       <View
         style={[
-          StyleSheet.absoluteFillObject,
+          StyleSheet.absoluteFill,
           { backgroundColor: `rgba(0, 0, 0, ${finalOverlay})` },
         ]}
       />
@@ -179,13 +179,21 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     overflow: 'hidden',
     backgroundColor: '#000000',
     zIndex: 0,
   },
   image: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     width: '100%',
     height: '100%',
   },

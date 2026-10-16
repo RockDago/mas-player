@@ -34,6 +34,7 @@ import {
   storageService,
   AppSettings,
   DEFAULT_APP_SETTINGS,
+  LastPlaybackSession,
 } from './src/services/storageService';
 import { EqualizerView } from './src/components/EqualizerView';
 import { NeonWaveVisualizer } from './src/components/NeonWaveVisualizer';
@@ -478,7 +479,10 @@ hasTrackRef.current = hasTrack;
           }
         }
 
-        await loadTrack(targetIndex, false, resumePosMs, currentTrackList).catch(() => {});
+        await Promise.race([
+          loadTrack(targetIndex, false, resumePosMs, currentTrackList).catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 1000)),
+        ]);
       }
 
       if (isMounted) {

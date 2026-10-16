@@ -27,6 +27,7 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   statusText = 'Chargement...',
   onFinish,
 }) => {
+  const [isDismissed, setIsDismissed] = React.useState(false);
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const onFinishRef = useRef(onFinish);
@@ -36,6 +37,7 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
   const safeFinish = () => {
     if (!hasFinishedRef.current) {
       hasFinishedRef.current = true;
+      setIsDismissed(true);
       onFinishRef.current?.();
     }
   };
@@ -93,7 +95,7 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
     }
   }, [visible]);
 
-  if (hasFinishedRef.current) {
+  if (isDismissed || hasFinishedRef.current) {
     return null;
   }
 
@@ -168,7 +170,11 @@ const styles = StyleSheet.create({
     elevation: 99999,
   },
   content: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
