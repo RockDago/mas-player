@@ -321,7 +321,19 @@ class StorageService {
     try {
       const data = await getItem(STORAGE_KEYS.SETTINGS);
       if (data) {
-        return { ...DEFAULT_APP_SETTINGS, ...JSON.parse(data) };
+        const parsed = JSON.parse(data);
+        return {
+          ...DEFAULT_APP_SETTINGS,
+          ...parsed,
+          lockScreenControls:
+            typeof parsed.lockScreenControls === 'boolean'
+              ? parsed.lockScreenControls
+              : true,
+          lockScreenAlbumArt:
+            typeof parsed.lockScreenAlbumArt === 'boolean'
+              ? parsed.lockScreenAlbumArt
+              : true,
+        };
       }
     } catch (e) {
       console.warn('Erreur lecture paramètres:', e);

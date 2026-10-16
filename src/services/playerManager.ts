@@ -82,7 +82,7 @@ class UniversalPlayerManager {
    * play/pause/seek sur `MPRemoteCommandCenter` et n'émet rien à JS : il n'y a
    * donc pas d'abonnement à tenir de ce côté.
    */
-  private androidRemoteSub: { remove: () => void } | null = null;
+  private remoteSub: { remove: () => void } | null = null;
   private remoteCommandListeners = new Set<(action: RemoteCommandAction) => void>();
 
   // --- Détection de rythme -----------------------------------------
@@ -170,9 +170,6 @@ class UniversalPlayerManager {
   };
 
   private dispatchRemoteCommand(action: RemoteCommandAction) {
-    if (!this.headsetSettings.headsetButtons) {
-      return;
-    }
     this.remoteCommandListeners.forEach((fn) => {
       try {
         fn(action);
@@ -193,9 +190,9 @@ class UniversalPlayerManager {
         this.player.setActiveForLockScreen(
           true,
           {
-            title: targetMeta.title,
-            artist: targetMeta.artist,
-            albumTitle: targetMeta.album,
+            title: targetMeta.title || 'MAS Player',
+            artist: targetMeta.artist || '',
+            albumTitle: targetMeta.album || '',
             artworkUrl: this.lockScreenSettings.albumArt ? targetMeta.artwork : undefined,
           },
           {
@@ -324,43 +321,40 @@ class UniversalPlayerManager {
   }
 
   /**
-   * Branche les commandes de notification Android au lecteur courant.
+   * Branche les commandes de notification Android et iOS au lecteur courant.
    *
-   * Sur Android, c'est le service `AudioControlsService` d'expo-audio qui
-   * possède la session média : précédent et suivant y sont de purs relais
-   * vers JS, qui détient la file et le mélange aléatoire. Sans cet
-   * abonnement, les boutons de la notification existent mais ne commande
-   * rien.
+   * Précédent, pause, lecture et suivant y sont relayés vers JS, qui détient
+   * la file et le mélange aléatoire.
    *
    * L'abonnement est lié au lecteur, pas au module : un nouveau lecteur est
    * créé à chaque piste, donc chaque appel retire l'abonnement précédent.
    */
-  private subscribeAndroidRemoteCommands(player: AudioPlayer) {
-    this.unsubscribeAndroidRemoteCommands();
+  private subscribeRemoteCommands(player: AudioPlayer) {
+    this.unsubscribeRemoteCommands();
     try {
-      this.androidRemoteSub = (player as any).addListener('onRemoteCommand', (payload: any) => {
+      this.remoteSub = (player as any).addListener('onRemoteCommand', (payload: any) => {
         const action = payload?.action;
         if (action === 'next' || action === 'previous') {
           this.dispatchRemoteCommand(action);
         } else if (action === 'play') {
           this.play();
+          this.dispatchRemoteCommand('play');
         } else if (action === 'pause') {
           this.pause();
+          this.dispatchRemoteCommand('pause');
         }
       });
     } catch (err) {
-      // Non bloquant : la notification reste affichée, seule la commande
-      // précédent/suivant devient inerte.
-      console.warn('Android remote command subscription warning:', err);
+      console.warn('Remote command subscription warning:', err);
     }
   }
 
-  private unsubscribeAndroidRemoteCommands() {
-    if (this.androidRemoteSub) {
+  private unsubscribeRemoteCommands() {
+    if (this.remoteSub) {
       try {
-        this.androidRemoteSub.remove();
+        this.remoteSub.remove();
       } catch (_) {}
-      this.androidRemoteSub = null;
+      this.remoteSub = null;
     }
   }
 
@@ -403,7 +397,7 @@ class UniversalPlayerManager {
     if (this.player) {
       // Avant de détacher le lecteur : son abonnement aux commandes de
       // notification lui appartient et ne survit pas à `remove()`.
-      this.unsubscribeAndroidRemoteCommands();
+      this.unsubscribeRemoteCommands();
       try {
         this.player.pause();
       } catch (_) {}
@@ -452,6 +446,9 @@ class UniversalPlayerManager {
           interruptionMode: this.interruptionModeForPlatform(),
         });
       } catch (_) {}
+      if (Platform.OS === 'android') {
+        void requestNotificationPermissionsAsync().catch(() => {});
+      }
     }
 
     if (Platform.OS === 'web') {
@@ -649,8 +646,8 @@ class UniversalPlayerManager {
       // Les boutons précédent / suivant de la notification n'existent qu'en
       // amont : c'est ici qu'ils deviennent exécutables, en relayant vers la
       // file que JS détient.
-      if (Platform.OS === 'android') {
-        this.subscribeAndroidRemoteCommands(p);
+      if (Platform.OS !== 'web') {
+        this.subscribeRemoteCommands(p);
       }
 
       // En arrière-plan, aucun flux d'échantillons : `startNativeBeatSampling`
@@ -874,6 +871,9 @@ class UniversalPlayerManager {
     if (!this.currentUri) {
       return;
     }
+    if (Platform.OS === 'android') {
+      void requestNotificationPermissionsAsync().catch(() => {});
+    }
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.playbackRate = this.currentPlaybackRate;
       if (this.webEngine) {
@@ -1058,7 +1058,7 @@ class UniversalPlayerManager {
     beatStore.reset();
     this.systemVolumeListeners.clear();
     this.systemVolume = null;
-    this.unsubscribeAndroidRemoteCommands();
+    this.unsubscribeRemoteCommands();
     if (this.webAudio) {
       this.webAudio.pause();
       this.webAudio.src = '';
