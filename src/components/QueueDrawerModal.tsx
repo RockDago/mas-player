@@ -70,9 +70,7 @@ export const QueueDrawerModal: React.FC<QueueDrawerModalProps> = ({
           edges={['left', 'right', 'bottom']}
         >
           <AnimeBackground
-            overlayOpacity={0.68}
-            minOpacity={0.36}
-            maxOpacity={0.54}
+            backgroundStyle="oled"
           />
           <View
             style={[

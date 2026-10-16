@@ -589,7 +589,7 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
   actionSheet: {
-    backgroundColor: 'rgba(8, 14, 28, 0.96)',
+    backgroundColor: '#0A0A0A',
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     paddingHorizontal: 20,
@@ -693,7 +693,7 @@ const styles = StyleSheet.create({
   subBox: {
     width: '100%',
     maxWidth: 400,
-    backgroundColor: 'rgba(8, 14, 28, 0.96)',
+    backgroundColor: '#0A0A0A',
     borderRadius: 18,
     padding: 20,
     borderWidth: 1,

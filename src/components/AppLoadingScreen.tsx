@@ -109,12 +109,9 @@ export const AppLoadingScreen: React.FC<AppLoadingScreenProps> = ({
       ]}
       pointerEvents={visible ? 'auto' : 'none'}
     >
-      {/* Background artwork Solo Leveling avec respiration animée et aura bleue */}
+      {/* Arrière-plan noir absolu */}
       <AnimeBackground
-        minOpacity={0.42}
-        maxOpacity={0.62}
-        overlayOpacity={0.52}
-        duration={3500}
+        backgroundStyle="oled"
         style={{ zIndex: 0 }}
       />
 

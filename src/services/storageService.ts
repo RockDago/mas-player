@@ -80,10 +80,10 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoFadeControls: false,
   fadedOpacity: 0.4,
 
-  backgroundStyle: 'blur',
+  backgroundStyle: 'oled',
   blurIntensity: 'medium',
-  colorSaturation: true,
-  ambientParticles: true,
+  colorSaturation: false,
+  ambientParticles: false,
 
   autoDownloadArt: true,
   highQualityArt: true,

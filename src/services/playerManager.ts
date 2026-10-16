@@ -186,6 +186,12 @@ class UniversalPlayerManager {
     if (!this.player) return;
     const targetMeta = meta || this.currentMeta;
     if (this.lockScreenSettings.controls && targetMeta) {
+      const validArtwork =
+        this.lockScreenSettings.albumArt &&
+        typeof targetMeta.artwork === 'string' &&
+        targetMeta.artwork.trim().length > 0
+          ? targetMeta.artwork.trim()
+          : undefined;
       try {
         this.player.setActiveForLockScreen(
           true,
@@ -193,7 +199,7 @@ class UniversalPlayerManager {
             title: targetMeta.title || 'MAS Player',
             artist: targetMeta.artist || '',
             albumTitle: targetMeta.album || '',
-            artworkUrl: this.lockScreenSettings.albumArt ? targetMeta.artwork : undefined,
+            artworkUrl: validArtwork,
           },
           {
             showSeekBackward: Boolean(this.lockScreenSettings.seekButtons),
@@ -231,7 +237,6 @@ class UniversalPlayerManager {
     }
     if (settings.resumeOnConnect !== undefined) {
       this.headsetSettings.resumeOnConnect = settings.resumeOnConnect;
-      this.setAutoResumeOnInterruption(settings.resumeOnConnect);
     }
 
     if (this.player && this.currentMeta) {
@@ -243,39 +248,19 @@ class UniversalPlayerManager {
    * Reprise automatique après une interruption (appel entrant, alarme).
    *
    * `true` par défaut : la reprise est le comportement attendu d'un lecteur de
-   * musique, et couper cette option laisse la musique silencieuse après un appel
-   * jusqu'au toucher — c'est un choix de l'utilisateur, pas un défaut.
+   * musique.
    */
   private autoResumeOnInterruption = true;
 
   /**
-   * Android n'a pas besoin d'un événement natif pour cette feature, et c'est
-   * contre-intuitif : il n'y a rien à écouter, rien à notifier.
-   *
-   * Tout se joue sur le focus audio, que le module `expo-audio` gère déjà :
-   * `AUDIOFOCUS_LOSS_TRANSIENT` met `isPaused = true`, `AUDIOFOCUS_GAIN` remet
-   * `isPaused = false` et appelle `play()`. JS voit le résultat par la sonde
-   * d'état à 250 ms, qui relit `player.playing` — donc JS peut SAVOIR, mais pas
-   * EMPÊCHER.
-   *
-   * Le levier est `interruptionMode` :
-   *   - `'doNotMix'`     → demande le focus → pause puis reprise automatiques.
-   *   - `'mixWithOthers'` → ne demande aucun focus → aucune pause, donc aucune
-   *                         reprise automatique.
-   *
-   * Couper la reprise revient donc à ne plus demander le focus. C'est
-   * contre-intuitif parce que le mode mélangeur semble signifier « tolère les
-   * interruptions », alors qu'en réalité il supprime complètement la gestion
-   * du focus — mais le comportement observé est bien le voulu : avec
-   * `mixWithOthers`, une alarme ne met pas la musique en pause, donc il n'y a
-   * rien à reprendre.
-   *
+   * Sur iOS et Android, un lecteur audio exclusif DOIT TOUJOURS utiliser 'doNotMix'.
+   * 'mixWithOthers' désactive silencieusement MPRemoteCommandCenter, MPNowPlayingInfoCenter
+   * et les contrôles sur l'écran de verrouillage et le centre de notification iOS,
+   * et coupe la lecture en arrière-plan sur Android après 3 minutes.
    */
   private interruptionModeForPlatform(): 'doNotMix' | 'mixWithOthers' {
-    // Le web n'a pas de session audio : le mode y est ignoré, et en demander un
-    // chose n'aurait aucun effet mais pourrait brouiller les pistes de test.
     if (Platform.OS === 'web') return 'mixWithOthers';
-    return this.autoResumeOnInterruption ? 'doNotMix' : 'mixWithOthers';
+    return 'doNotMix';
   }
 
   /**

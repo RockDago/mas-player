@@ -400,10 +400,20 @@ if (fs.existsSync(sessionCallbackPath)) {
 if (fs.existsSync(iosMediaControllerPath)) {
   let mediaController = fs.readFileSync(iosMediaControllerPath, 'utf8');
 
-  // Ajout des commandes Next / Previous et propagation des événements vers JS
+  // 3a. Support des pochettes locales (file://) dans loadArtworkFromURL
+  if (!mediaController.includes('url.isFileURL')) {
+    mediaController = mediaController.replace(
+      /(private func loadArtworkFromURL\(url: URL, completion: @escaping \(MPMediaItemArtwork\?\) -> Void\) \{)/,
+      `$1\n    if url.isFileURL {\n      DispatchQueue.global(qos: .userInitiated).async {\n        if let data = try? Data(contentsOf: url), let image = UIImage(data: data) {\n          let artwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }\n          self.performOnMain { completion(artwork) }\n        } else {\n          self.performOnMain { completion(nil) }\n        }\n      }\n      return\n    }\n`
+    );
+  }
+
+  // 3b. Ajout des commandes Next / Previous et propagation des événements vers JS
   if (!mediaController.includes('nextTrackCommand.isEnabled = true')) {
     const playPauseTargetRegex = /remoteCommandCenter\.playCommand\.addTarget \{[\s\S]*?remoteCommandCenter\.togglePlayPauseCommand\.addTarget \{[\s\S]*?return \.success\s*\}/;
-    const newPlayPauseTarget = `remoteCommandCenter.playCommand.addTarget { [weak self] _ in
+    const newPlayPauseTarget = `disableRemoteCommands()
+
+    remoteCommandCenter.playCommand.addTarget { [weak self] _ in
       guard let player = self?.activePlayer else {
         return .commandFailed
       }
@@ -457,22 +467,22 @@ if (fs.existsSync(iosMediaControllerPath)) {
     }`;
 
     mediaController = mediaController.replace(playPauseTargetRegex, newPlayPauseTarget);
-
-    // Dans disableRemoteCommands
-    if (!mediaController.includes('nextTrackCommand.isEnabled = false')) {
-      mediaController = mediaController.replace(
-        /(remoteCommandCenter\.playCommand\.isEnabled = false)/,
-        `remoteCommandCenter.nextTrackCommand.isEnabled = false\n    remoteCommandCenter.previousTrackCommand.isEnabled = false\n    $1`
-      );
-      mediaController = mediaController.replace(
-        /(remoteCommandCenter\.playCommand\.removeTarget\(self\))/,
-        `remoteCommandCenter.nextTrackCommand.removeTarget(self)\n    remoteCommandCenter.previousTrackCommand.removeTarget(self)\n    $1`
-      );
-    }
-
-    fs.writeFileSync(iosMediaControllerPath, mediaController, 'utf8');
-    console.log('[patch-expo-audio-android] iOS MediaController.swift updated successfully.');
   }
+
+  // 3c. S'assurer que disableRemoteCommands et enableRemoteCommands utilisent removeTarget(nil) et activent les commandes
+  if (mediaController.includes('removeTarget(self)')) {
+    mediaController = mediaController.replace(/removeTarget\(self\)/g, 'removeTarget(nil)');
+  }
+
+  if (!mediaController.includes('remoteCommandCenter.nextTrackCommand.isEnabled = true\n    remoteCommandCenter.previousTrackCommand.isEnabled = true\n    remoteCommandCenter.changePlaybackPositionCommand')) {
+    mediaController = mediaController.replace(
+      /(remoteCommandCenter\.togglePlayPauseCommand\.isEnabled = true\n)/,
+      `$1    remoteCommandCenter.nextTrackCommand.isEnabled = true\n    remoteCommandCenter.previousTrackCommand.isEnabled = true\n`
+    );
+  }
+
+  fs.writeFileSync(iosMediaControllerPath, mediaController, 'utf8');
+  console.log('[patch-expo-audio-android] iOS MediaController.swift updated successfully.');
 }
 
 require('./patch-expo-audio-equalizer.cjs');

@@ -845,12 +845,15 @@ hasTrackRef.current = hasTrack;
   };
 
   const handleNextTrack = async () => {
-    if (!hasTrack) return;
+    if (!hasTrackRef.current && tracksRef.current.length === 0) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
 
-    const curList = currentPlaybackListRef.current;
+    const curList =
+      currentPlaybackListRef.current.length > 0
+        ? currentPlaybackListRef.current
+        : tracksRef.current;
     if (curList.length === 0) return;
 
     const curTrackId = tracksRef.current[currentTrackIndexRef.current]?.id;
@@ -873,12 +876,15 @@ hasTrackRef.current = hasTrack;
   };
 
   const handlePrevTrack = async () => {
-    if (!hasTrack) return;
+    if (!hasTrackRef.current && tracksRef.current.length === 0) return;
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     } catch {}
 
-    const curList = currentPlaybackListRef.current;
+    const curList =
+      currentPlaybackListRef.current.length > 0
+        ? currentPlaybackListRef.current
+        : tracksRef.current;
     if (curList.length === 0) return;
 
     if (positionMillisRef.current > 3000) {
@@ -1433,6 +1439,11 @@ hasTrackRef.current = hasTrack;
         blurIntensity={appSettings.blurIntensity}
         colorSaturation={appSettings.colorSaturation}
         ambientParticles={appSettings.ambientParticles}
+        source={
+          appSettings.backgroundStyle !== 'oled' && currentTrack?.artwork
+            ? { uri: currentTrack.artwork }
+            : undefined
+        }
       />
 
       <SafeAreaView
@@ -2984,7 +2995,7 @@ const styles = StyleSheet.create({
   },
   errorContainer: {
     flex: 1,
-    backgroundColor: '#080B10',
+    backgroundColor: '#000000',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
@@ -3017,7 +3028,7 @@ const styles = StyleSheet.create({
     borderColor: '#EF4444',
   },
   errorBtnText: {
-    color: '#080B10',
+    color: '#000000',
     fontSize: 14,
     fontWeight: '700',
   },

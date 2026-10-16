@@ -38,7 +38,7 @@ export const CHANGELOG_DATA: Record<'fr' | 'en', ChangelogRelease[]> = {
           items: [
             {
               isCheck: true,
-              text: 'Arrière-plan anime optimisé : réduction du flou et clarté nette de l’artwork Sung Jin-woo',
+              text: 'Arrière-plan noir absolu OLED pur (#000000) sur toutes les pages pour un confort visuel optimal',
             },
             {
               isCheck: true,
@@ -207,7 +207,7 @@ export const CHANGELOG_DATA: Record<'fr' | 'en', ChangelogRelease[]> = {
           items: [
             {
               isCheck: true,
-              text: 'Optimized anime background: reduced blur and crystal clear view of Sung Jin-woo artwork',
+              text: 'Pure OLED absolute black background (#000000) across all screens for optimal visual comfort',
             },
             {
               isCheck: true,

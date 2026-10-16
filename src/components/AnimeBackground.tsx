@@ -11,13 +11,13 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 
 export interface AnimeBackgroundProps {
-  /** Style d'arrière-plan appliqué sur l'image : 'blur' (flou réglable), 'oled' (contraste noir OLED), 'gradient' (dégradé superposé). */
+  /** Style d'arrière-plan appliqué : 'oled' (noir pur absolu #000000), 'blur' (pochette floutée si disponible), 'gradient' (dégradé neutre). */
   backgroundStyle?: 'blur' | 'oled' | 'gradient';
   /** Intensité du flou de l'image : 'low', 'medium', 'deep'. */
   blurIntensity?: 'low' | 'medium' | 'deep';
-  /** Saturation des couleurs / accentuation du halo néon bleu. */
+  /** Saturation des couleurs / accentuation. */
   colorSaturation?: boolean;
-  /** Respiration animée et pulsation de l'aura. */
+  /** Respiration animée de la pochette. */
   ambientParticles?: boolean;
   /** Opacité personnalisée du calque noir superposé. */
   overlayOpacity?: number;
@@ -27,33 +27,34 @@ export interface AnimeBackgroundProps {
   maxOpacity?: number;
   /** Durée d'une demi-période de respiration en ms (défaut: 3800). */
   duration?: number;
-  /** Activer ou non la respiration animée (défaut: true). */
+  /** Activer ou non la respiration animée (défaut: false). */
   animated?: boolean;
-  /** Source d'image personnalisée (facultatif, par défaut artwork Solo Leveling officiel). */
+  /** Source d'image personnalisée (facultatif, ex: pochette d'album). */
   source?: ImageSourcePropType;
   /** Style personnalisé pour le conteneur. */
   style?: StyleProp<ViewStyle>;
 }
 
 /**
- * Arrière-plan signature MAS Player (Solo Leveling / Sung Jin-woo aux yeux bleus).
- * NOTRE IMAGE DE FOND RESTE TOUJOURS PRÉSENTE.
- * Les options personnalisent son rendu (flou, contraste OLED ou dégradé superposé).
+ * Arrière-plan MAS Player :
+ * - Mode 'oled' (par défaut) ou absence de pochette : NOIR ABSOLU PUR (#000000).
+ * - Tout bleu ou image imposée a été retiré.
+ * - Si une pochette de morceau est fournie et que le mode n'est pas 'oled', elle peut être affichée en flou subtil.
  */
 export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
-  backgroundStyle = 'blur',
+  backgroundStyle = 'oled',
   blurIntensity = 'medium',
   colorSaturation = false,
-  ambientParticles,
+  ambientParticles = false,
   overlayOpacity,
-  minOpacity = 0.58,
-  maxOpacity = 0.78,
+  minOpacity = 0.35,
+  maxOpacity = 0.55,
   duration = 3800,
-  animated = true,
+  animated = false,
   source,
   style,
 }) => {
-  const isAnimated = ambientParticles !== undefined ? ambientParticles : animated;
+  const isAnimated = (ambientParticles || animated) && Boolean(source);
   const pulseAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -79,44 +80,41 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
     };
   }, [isAnimated, duration, pulseAnim]);
 
-  // Notre image officielle reste TOUJOURS la base de l'application
-  const imageSource = source || require('../../assets/4f2c947ea7f79ad4db4a99c26e6787eb.jpg');
+  // Si mode OLED ou aucune source d'image fournie : NOIR ABSOLU PUR garanti (#000000)
+  if (backgroundStyle === 'oled' || !source) {
+    return <View style={[styles.container, style]} pointerEvents="none" />;
+  }
 
-  // Rayon de flou selon le réglage de l'utilisateur (allégé pour une visibilité nette de l'artwork)
+  // Rayon de flou selon le réglage de l'utilisateur
   let blurRadius = 0;
   if (backgroundStyle === 'blur') {
     const blurRadiusMap = {
-      low: 0, // Image parfaitement nette sans aucun flou
-      medium: Platform.OS === 'ios' ? 3 : 2, // Flou très subtil et transparent
-      deep: Platform.OS === 'ios' ? 8 : 5, // Flou doux tout en conservant les détails
+      low: Platform.OS === 'ios' ? 12 : 8,
+      medium: Platform.OS === 'ios' ? 24 : 16,
+      deep: Platform.OS === 'ios' ? 44 : 28,
     };
-    blurRadius = blurRadiusMap[blurIntensity] ?? 2;
+    blurRadius = blurRadiusMap[blurIntensity] ?? 16;
   }
 
-  // Opacité d'assombrissement selon le style sélectionné (adoucie pour laisser transparaître l'illustration)
-  let baseOverlay = 0.32;
-  if (backgroundStyle === 'oled') {
-    // Mode OLED : Contraste profond tout en maintenant les détails de l'artwork
-    baseOverlay = 0.50;
-  } else if (backgroundStyle === 'gradient') {
-    baseOverlay = 0.28;
+  let baseOverlay = 0.65;
+  if (backgroundStyle === 'gradient') {
+    baseOverlay = 0.55;
   } else {
-    // Mode blur
     const overlayMap = {
-      low: 0.22,
-      medium: 0.32,
-      deep: 0.42,
+      low: 0.50,
+      medium: 0.65,
+      deep: 0.78,
     };
-    baseOverlay = overlayMap[blurIntensity] ?? 0.32;
+    baseOverlay = overlayMap[blurIntensity] ?? 0.65;
   }
 
   const finalOverlay = overlayOpacity ?? baseOverlay;
 
   return (
     <View style={[styles.container, style]} pointerEvents="none">
-      {/* 1. NOTRE IMAGE DE FOND OFFICIELLE (TOUJOURS LÀ ET ANIMÉE) */}
+      {/* Pochette de l'album en arrière-plan */}
       <Animated.Image
-        source={imageSource}
+        source={source}
         blurRadius={blurRadius}
         style={[
           styles.image,
@@ -130,7 +128,7 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
                   {
                     scale: pulseAnim.interpolate({
                       inputRange: [0, 1],
-                      outputRange: [1.0, 1.03],
+                      outputRange: [1.0, 1.02],
                     }),
                   },
                 ],
@@ -142,31 +140,17 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
         resizeMode="cover"
       />
 
-      {/* 2. DÉGRADÉ DYNAMIQUE SUPERPOSÉ SI LE MODE GRADIENT EST SÉLECTIONNÉ */}
+      {/* Dégradé sombre neutre (aucun bleu) */}
       {backgroundStyle === 'gradient' && (
         <LinearGradient
-          colors={
-            colorSaturation
-              ? ['rgba(8, 24, 43, 0.45)', 'rgba(3, 14, 27, 0.72)', 'rgba(0, 0, 0, 0.92)']
-              : ['rgba(20, 20, 22, 0.45)', 'rgba(10, 10, 12, 0.75)', 'rgba(0, 0, 0, 0.94)']
-          }
+          colors={['rgba(15, 15, 18, 0.45)', 'rgba(8, 8, 10, 0.75)', 'rgba(0, 0, 0, 0.95)']}
           style={StyleSheet.absoluteFill}
           start={{ x: 0, y: 0 }}
           end={{ x: 0.8, y: 1 }}
         />
       )}
 
-      {/* 3. CALQUE DE SATURATION ET REHAUSSEMENT NÉON BLEU */}
-      {colorSaturation && (
-        <View
-          style={[
-            StyleSheet.absoluteFill,
-            { backgroundColor: 'rgba(56, 189, 248, 0.10)' },
-          ]}
-        />
-      )}
-
-      {/* 4. CALQUE D'ASSOMBRISSEMENT POUR LA LISIBILITÉ DE L'INTERFACE */}
+      {/* Calque d'assombrissement pour contraste noir */}
       <View
         style={[
           StyleSheet.absoluteFill,
