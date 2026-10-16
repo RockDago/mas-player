@@ -402,7 +402,7 @@ if (fs.existsSync(iosMediaControllerPath)) {
 
   // Ajout des commandes Next / Previous et propagation des événements vers JS
   if (!mediaController.includes('nextTrackCommand.isEnabled = true')) {
-    const playPauseTargetRegex = /remoteCommandCenter\.playCommand\.addTarget \{[\s\S]*?player\.ref\.pause\(\)\s*return \.success\s*\}/;
+    const playPauseTargetRegex = /remoteCommandCenter\.playCommand\.addTarget \{[\s\S]*?remoteCommandCenter\.togglePlayPauseCommand\.addTarget \{[\s\S]*?return \.success\s*\}/;
     const newPlayPauseTarget = `remoteCommandCenter.playCommand.addTarget { [weak self] _ in
       guard let player = self?.activePlayer else {
         return .commandFailed
@@ -438,6 +438,21 @@ if (fs.existsSync(iosMediaControllerPath)) {
         return .commandFailed
       }
       player.emit(event: "onRemoteCommand", payload: ["action": "previous"])
+      return .success
+    }
+
+    remoteCommandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+      guard let player = self?.activePlayer else {
+        return .commandFailed
+      }
+
+      if player.isPlaying {
+        player.ref.pause()
+        player.emit(event: "onRemoteCommand", payload: ["action": "pause"])
+      } else {
+        player.play(at: Float(player.currentRate > 0 ? player.currentRate : 1.0))
+        player.emit(event: "onRemoteCommand", payload: ["action": "play"])
+      }
       return .success
     }`;
 
