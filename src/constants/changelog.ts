@@ -29,6 +29,30 @@ export interface ChangelogRelease {
 export const CHANGELOG_DATA: Record<'fr' | 'en', ChangelogRelease[]> = {
   fr: [
     {
+      buildRange: 'Builds 1033-1040',
+      version: '1.1.0',
+      date: 'Octobre 2026',
+      sections: [
+        {
+          header: 'Améliorations de l’Expérience Visuelle et Stabilité :',
+          items: [
+            {
+              isCheck: true,
+              text: 'Arrière-plan anime optimisé : réduction du flou et clarté nette de l’artwork Sung Jin-woo',
+            },
+            {
+              isCheck: true,
+              text: 'Démarrage instantané et sécurisé sur les builds natifs iOS (.ipa) et Android (.apk)',
+            },
+            {
+              boldTitle: 'Moteur de Rendu :',
+              text: 'contraste équilibré et lisibilité accrue sur tous les écrans AMOLED et LCD',
+            },
+          ],
+        },
+      ],
+    },
+    {
       buildRange: 'Builds 1026-1032',
       version: '1.0.0',
       date: 'Octobre 2026',
@@ -173,6 +197,30 @@ export const CHANGELOG_DATA: Record<'fr' | 'en', ChangelogRelease[]> = {
     },
   ],
   en: [
+    {
+      buildRange: 'Builds 1033-1040',
+      version: '1.1.0',
+      date: 'October 2026',
+      sections: [
+        {
+          header: 'Visual Experience & Stability Improvements:',
+          items: [
+            {
+              isCheck: true,
+              text: 'Optimized anime background: reduced blur and crystal clear view of Sung Jin-woo artwork',
+            },
+            {
+              isCheck: true,
+              text: 'Instant, reliable startup on iOS (.ipa) and Android (.apk) production builds',
+            },
+            {
+              boldTitle: 'Display Engine:',
+              text: 'balanced contrast and enhanced readability across AMOLED and LCD screens',
+            },
+          ],
+        },
+      ],
+    },
     {
       buildRange: 'Builds 1026-1032',
       version: '1.0.0',

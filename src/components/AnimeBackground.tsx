@@ -46,8 +46,8 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
   colorSaturation = false,
   ambientParticles,
   overlayOpacity,
-  minOpacity = 0.36,
-  maxOpacity = 0.54,
+  minOpacity = 0.58,
+  maxOpacity = 0.78,
   duration = 3800,
   animated = true,
   source,
@@ -82,32 +82,32 @@ export const AnimeBackground: React.FC<AnimeBackgroundProps> = ({
   // Notre image officielle reste TOUJOURS la base de l'application
   const imageSource = source || require('../../assets/4f2c947ea7f79ad4db4a99c26e6787eb.jpg');
 
-  // Rayon de flou selon le réglage de l'utilisateur
+  // Rayon de flou selon le réglage de l'utilisateur (allégé pour une visibilité nette de l'artwork)
   let blurRadius = 0;
   if (backgroundStyle === 'blur') {
     const blurRadiusMap = {
-      low: Platform.OS === 'ios' ? 8 : 6,
-      medium: Platform.OS === 'ios' ? 22 : 14,
-      deep: Platform.OS === 'ios' ? 42 : 24,
+      low: 0, // Image parfaitement nette sans aucun flou
+      medium: Platform.OS === 'ios' ? 3 : 2, // Flou très subtil et transparent
+      deep: Platform.OS === 'ios' ? 8 : 5, // Flou doux tout en conservant les détails
     };
-    blurRadius = blurRadiusMap[blurIntensity] || 22;
+    blurRadius = blurRadiusMap[blurIntensity] ?? 2;
   }
 
-  // Opacité d'assombrissement selon le style sélectionné
-  let baseOverlay = 0.62;
+  // Opacité d'assombrissement selon le style sélectionné (adoucie pour laisser transparaître l'illustration)
+  let baseOverlay = 0.32;
   if (backgroundStyle === 'oled') {
-    // Mode OLED : Image conservée avec assombrissement profond pour faire ressortir les contrastes purs
-    baseOverlay = 0.78;
-  } else if (backgroundStyle === 'gradient') {
+    // Mode OLED : Contraste profond tout en maintenant les détails de l'artwork
     baseOverlay = 0.50;
+  } else if (backgroundStyle === 'gradient') {
+    baseOverlay = 0.28;
   } else {
     // Mode blur
     const overlayMap = {
-      low: 0.48,
-      medium: 0.62,
-      deep: 0.76,
+      low: 0.22,
+      medium: 0.32,
+      deep: 0.42,
     };
-    baseOverlay = overlayMap[blurIntensity] || 0.62;
+    baseOverlay = overlayMap[blurIntensity] ?? 0.32;
   }
 
   const finalOverlay = overlayOpacity ?? baseOverlay;
