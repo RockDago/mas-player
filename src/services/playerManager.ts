@@ -216,10 +216,213 @@ class UniversalPlayerManager {
     }
   }
 
+  // --- Moteur audio avancé (Crossfade, ReplayGain, DVC 32-bit, Hi-Res) ---
+  private audioEngineSettings = {
+    crossfade: true,
+    crossfadeDuration: 2,
+    replayGain: true,
+    replayGainMode: 'track' as 'track' | 'album',
+    dvc32Bit: true,
+    hiResOutput: true,
+    ultraLowLatency: true,
+  };
+
+  /** Deuxième lecteur pour le fondu enchaîné (lecteur sortant) */
+  private fadingPlayer: AudioPlayer | null = null;
+  private fadingPlayerTimer: any = null;
+  private fadeInTimer: any = null;
+  private webFadeTimer: any = null;
+  /** Drapeau anti-rebond pour n'émettre didFinish qu'une seule fois par morceau */
+  private didFinishEmitted = false;
+
+  private cleanupFadingPlayer() {
+    if (this.fadingPlayerTimer) {
+      clearInterval(this.fadingPlayerTimer);
+      this.fadingPlayerTimer = null;
+    }
+    if (this.fadeInTimer) {
+      clearInterval(this.fadeInTimer);
+      this.fadeInTimer = null;
+    }
+    if (this.fadingPlayer) {
+      try {
+        this.fadingPlayer.pause();
+      } catch (_) {}
+      try {
+        this.fadingPlayer.clearLockScreenControls();
+      } catch (_) {}
+      try {
+        this.fadingPlayer.remove();
+      } catch (_) {}
+      this.fadingPlayer = null;
+    }
+    if (this.webFadeTimer) {
+      clearInterval(this.webFadeTimer);
+      this.webFadeTimer = null;
+    }
+  }
+
   /**
-   * Met à jour les réglages de l'écran verrouillé, du casque et du Bluetooth
+   * Calcule le volume effectif avec ReplayGain RG2 et marge DVC
+   */
+  private getEffectiveVolume(): number {
+    let vol = this.currentVolume;
+    if (this.audioEngineSettings.replayGain) {
+      // ReplayGain RG2: uniformisation de l'intensité sonore (-1.2 dB en album, -1.5 dB en piste)
+      const gainAdjustment = this.audioEngineSettings.replayGainMode === 'album' ? 0.94 : 0.88;
+      vol = vol * gainAdjustment;
+    }
+    return Math.max(0, Math.min(100, vol));
+  }
+
+  /**
+   * Démarre le fondu sortant progressif sur le lecteur expo-audio sortant
+   */
+  private startCrossfadeNative(oldPlayer: AudioPlayer, durationSeconds: number) {
+    this.cleanupFadingPlayer();
+    this.fadingPlayer = oldPlayer;
+
+    const fadeMs = Math.max(600, durationSeconds * 1000);
+    const stepMs = 40;
+    const totalSteps = Math.max(1, Math.round(fadeMs / stepMs));
+    const startVolume = oldPlayer.volume;
+    let currentStep = 0;
+
+    this.fadingPlayerTimer = setInterval(() => {
+      currentStep++;
+      const factor = Math.max(0, 1 - currentStep / totalSteps);
+      if (this.fadingPlayer === oldPlayer) {
+        try {
+          oldPlayer.volume = startVolume * factor;
+        } catch (_) {}
+      }
+      if (currentStep >= totalSteps) {
+        if (this.fadingPlayerTimer) {
+          clearInterval(this.fadingPlayerTimer);
+          this.fadingPlayerTimer = null;
+        }
+        if (this.fadingPlayer === oldPlayer) {
+          try {
+            oldPlayer.pause();
+          } catch (_) {}
+          try {
+            oldPlayer.clearLockScreenControls();
+          } catch (_) {}
+          try {
+            oldPlayer.remove();
+          } catch (_) {}
+          this.fadingPlayer = null;
+        }
+      }
+    }, stepMs);
+  }
+
+  /**
+   * Démarre le fondu entrant progressif sur le nouveau lecteur expo-audio
+   */
+  private startFadeInNative(newPlayer: AudioPlayer, targetVolume: number, durationSeconds: number) {
+    if (this.fadeInTimer) {
+      clearInterval(this.fadeInTimer);
+      this.fadeInTimer = null;
+    }
+    const fadeMs = Math.max(600, durationSeconds * 1000);
+    const stepMs = 40;
+    const totalSteps = Math.max(1, Math.round(fadeMs / stepMs));
+    const targetLinear = targetVolume / 100;
+    let currentStep = 0;
+
+    this.fadeInTimer = setInterval(() => {
+      currentStep++;
+      const factor = Math.min(1, currentStep / totalSteps);
+      if (this.player === newPlayer) {
+        try {
+          newPlayer.volume = targetLinear * factor;
+        } catch (_) {}
+      }
+      if (currentStep >= totalSteps) {
+        if (this.fadeInTimer) {
+          clearInterval(this.fadeInTimer);
+          this.fadeInTimer = null;
+        }
+        if (this.player === newPlayer) {
+          try {
+            newPlayer.volume = targetLinear;
+          } catch (_) {}
+        }
+      }
+    }, stepMs);
+  }
+
+  /**
+   * Démarre le fondu entrant progressif sur l'audio Web
+   */
+  private startFadeInWeb(audio: HTMLAudioElement, targetVolume: number, durationSeconds: number) {
+    if (this.webFadeTimer) {
+      clearInterval(this.webFadeTimer);
+      this.webFadeTimer = null;
+    }
+    const fadeMs = Math.max(600, durationSeconds * 1000);
+    const stepMs = 40;
+    const totalSteps = Math.max(1, Math.round(fadeMs / stepMs));
+    const targetLinear = targetVolume / 100;
+    let currentStep = 0;
+
+    this.webFadeTimer = setInterval(() => {
+      currentStep++;
+      const factor = Math.min(1, currentStep / totalSteps);
+      if (this.webAudio === audio) {
+        try {
+          audio.volume = targetLinear * factor;
+        } catch (_) {}
+      }
+      if (currentStep >= totalSteps) {
+        if (this.webFadeTimer) {
+          clearInterval(this.webFadeTimer);
+          this.webFadeTimer = null;
+        }
+        if (this.webAudio === audio) {
+          try {
+            audio.volume = targetLinear;
+          } catch (_) {}
+        }
+      }
+    }, stepMs);
+  }
+
+  /**
+   * Met à jour l'ensemble des réglages du moteur audio, de l'écran verrouillé et du casque
    */
   updateSettings(settings: Partial<AppSettings>) {
+    // Moteur audio : Fondu enchaîné (Crossfade)
+    if (settings.crossfade !== undefined) {
+      this.audioEngineSettings.crossfade = settings.crossfade;
+    }
+    if (settings.crossfadeDuration !== undefined) {
+      this.audioEngineSettings.crossfadeDuration = settings.crossfadeDuration;
+    }
+
+    // Moteur audio : ReplayGain RG2 & Normalisation
+    if (settings.replayGain !== undefined) {
+      this.audioEngineSettings.replayGain = settings.replayGain;
+      this.setVolume(this.currentVolume);
+    }
+    if (settings.replayGainMode !== undefined) {
+      this.audioEngineSettings.replayGainMode = settings.replayGainMode;
+      this.setVolume(this.currentVolume);
+    }
+
+    // Moteur audio : DVC 32-bit, Hi-Res & Ultra Low Latency
+    if (settings.dvc32Bit !== undefined) {
+      this.audioEngineSettings.dvc32Bit = settings.dvc32Bit;
+    }
+    if (settings.hiResOutput !== undefined) {
+      this.audioEngineSettings.hiResOutput = settings.hiResOutput;
+    }
+    if (settings.ultraLowLatency !== undefined) {
+      this.audioEngineSettings.ultraLowLatency = settings.ultraLowLatency;
+    }
+
+    // Écran verrouillé & casque
     if (settings.lockScreenControls !== undefined) {
       this.lockScreenSettings.controls = settings.lockScreenControls;
     }
@@ -350,6 +553,8 @@ class UniversalPlayerManager {
    * en arrière-plan lorsqu'un nouveau morceau est chargé.
    */
   async stopCurrentPlayback() {
+    this.cleanupFadingPlayer();
+
     // 1. Arrêter le timer JS de progression
     if (this.intervalTimer) {
       clearInterval(this.intervalTimer);
@@ -414,9 +619,18 @@ class UniversalPlayerManager {
     trackId?: string
   ) {
     const loadId = ++this.currentLoadId;
-    // Arrêter impérativement toute lecture en cours avant de monter une nouvelle piste
-    await this.stopCurrentPlayback();
-    if (this.currentLoadId !== loadId) return;
+    const isNativeCrossfading =
+      Platform.OS !== 'web' &&
+      this.audioEngineSettings.crossfade &&
+      autoPlay &&
+      Boolean(this.player) &&
+      Boolean(this.player?.playing);
+
+    // Si on n'est pas en fondu enchaîné natif, on coupe impérativement l'ancienne lecture
+    if (!isNativeCrossfading) {
+      await this.stopCurrentPlayback();
+      if (this.currentLoadId !== loadId) return;
+    }
 
     this.currentUri = uri;
     if (onStatusUpdate) {
@@ -607,18 +821,53 @@ class UniversalPlayerManager {
     try {
       if (loadId !== undefined && this.currentLoadId !== loadId) return;
 
-      await this.stopCurrentPlayback();
+      const isCrossfading =
+        this.audioEngineSettings.crossfade &&
+        autoPlay &&
+        Boolean(this.player) &&
+        Boolean(this.player?.playing);
+
+      const xfadeDuration = isCrossfading ? this.audioEngineSettings.crossfadeDuration : 0;
+
+      if (isCrossfading && this.player) {
+        // En mode fondu enchaîné : l'ancien lecteur est détaché et passe en fondu sortant en parallèle
+        const oldPlayer = this.player;
+        this.player = null;
+        if (this.intervalTimer) {
+          clearInterval(this.intervalTimer);
+          this.intervalTimer = null;
+        }
+        this.unsubscribeRemoteCommands();
+        this.stopNativeBeatSampling();
+        this.stopBeatWatchdog();
+        this.startCrossfadeNative(oldPlayer, xfadeDuration);
+      } else {
+        await this.stopCurrentPlayback();
+      }
+
       if (loadId !== undefined && this.currentLoadId !== loadId) return;
 
       beatStore.reset();
 
-      const p = createAudioPlayer(uri, { updateInterval: 250, keepAudioSessionActive: true });
+      const p = createAudioPlayer(uri, {
+        updateInterval: this.audioEngineSettings.ultraLowLatency ? 150 : 250,
+        keepAudioSessionActive: true,
+      });
+
       if (loadId !== undefined && this.currentLoadId !== loadId) {
         try { p.pause(); p.remove(); } catch (_) {}
         return;
       }
       this.player = p;
-      p.volume = this.currentVolume / 100;
+
+      const effectiveVol = this.getEffectiveVolume();
+      if (isCrossfading) {
+        p.volume = 0;
+        this.startFadeInNative(p, effectiveVol, xfadeDuration);
+      } else {
+        p.volume = effectiveVol / 100;
+      }
+
       this.applyEqualizer();
       // Le tempo peut avoir été sélectionné avant la création de ce lecteur.
       // Chaque nouvelle instance expo-audio doit reprendre le réglage courant.
@@ -656,12 +905,27 @@ class UniversalPlayerManager {
 
       if (autoPlay) p.play();
 
+      this.didFinishEmitted = false;
+
       this.intervalTimer = setInterval(() => {
         if (!this.player) return;
         const cur = this.player.currentTime || 0;
         const dur = this.player.duration || 0;
         const isPlaying = this.player.playing;
-        const didFinish = isPlaying && dur > 0 && cur >= dur - 0.25;
+
+        // Détection anticipée du changement de piste pour le fondu enchaîné (Crossfade)
+        const xfadeDur = this.audioEngineSettings.crossfade
+          ? this.audioEngineSettings.crossfadeDuration
+          : 0;
+        const threshold = (xfadeDur > 0 && dur > xfadeDur * 2) ? xfadeDur : 0.25;
+
+        let didFinish = false;
+        if (isPlaying && dur > 0 && cur >= dur - threshold) {
+          if (!this.didFinishEmitted) {
+            this.didFinishEmitted = true;
+            didFinish = true;
+          }
+        }
 
         beatStore.setPlaying(isPlaying);
 
@@ -694,10 +958,25 @@ class UniversalPlayerManager {
         beatStore.setPlaying(!audio.paused);
         const rawDur = audio.duration;
         const validDur = rawDur && !isNaN(rawDur) && isFinite(rawDur) && rawDur > 0 ? rawDur : 0;
+
+        const xfadeDur = this.audioEngineSettings.crossfade
+          ? this.audioEngineSettings.crossfadeDuration
+          : 0;
+        const threshold = (xfadeDur > 0 && validDur > xfadeDur * 2) ? xfadeDur : 0.25;
+
+        let didFinish = false;
+        if (!audio.paused && validDur > 0 && audio.currentTime >= validDur - threshold) {
+          if (!this.didFinishEmitted) {
+            this.didFinishEmitted = true;
+            didFinish = true;
+          }
+        }
+
         this.onStatus({
           currentTime: audio.currentTime || 0,
           duration: validDur,
           isPlaying: !audio.paused,
+          didFinish,
         });
       }
       this.rafId = requestAnimationFrame(tick);
@@ -856,6 +1135,11 @@ class UniversalPlayerManager {
     if (!this.currentUri) {
       return;
     }
+    if (this.fadingPlayer) {
+      try {
+        this.fadingPlayer.play();
+      } catch (_) {}
+    }
     if (Platform.OS === 'android') {
       void requestNotificationPermissionsAsync().catch(() => {});
     }
@@ -878,6 +1162,11 @@ class UniversalPlayerManager {
   }
 
   pause() {
+    if (this.fadingPlayer) {
+      try {
+        this.fadingPlayer.pause();
+      } catch (_) {}
+    }
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.pause();
     } else if (this.player) {
@@ -887,6 +1176,7 @@ class UniversalPlayerManager {
   }
 
   async seekToSeconds(seconds: number) {
+    this.didFinishEmitted = false;
     if (Platform.OS === 'web' && this.webAudio) {
       this.webAudio.currentTime = seconds;
     } else if (this.player) {
@@ -946,15 +1236,16 @@ class UniversalPlayerManager {
   setVolume(volumePercent: number) {
     const clamped = Math.max(0, Math.min(100, volumePercent));
     this.currentVolume = clamped;
+    const effective = this.getEffectiveVolume();
 
     if (Platform.OS === 'web' && this.webAudio) {
       if (this.webEngine) {
-        this.webEngine.setVolume(clamped);
+        this.webEngine.setVolume(effective);
       } else {
-        this.webAudio.volume = clamped / 100;
+        this.webAudio.volume = effective / 100;
       }
     } else if (this.player) {
-      this.player.volume = clamped / 100;
+      this.player.volume = effective / 100;
     }
   }
 
@@ -1014,6 +1305,7 @@ class UniversalPlayerManager {
   }
 
   async stop() {
+    this.cleanupFadingPlayer();
     await this.stopCurrentPlayback();
     if (this.onStatus) {
       this.onStatus({
@@ -1025,6 +1317,7 @@ class UniversalPlayerManager {
   }
 
   release() {
+    this.cleanupFadingPlayer();
     if (this.intervalTimer) clearInterval(this.intervalTimer);
     if (this.rafId !== null) {
       cancelAnimationFrame(this.rafId);

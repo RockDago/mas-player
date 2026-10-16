@@ -1439,11 +1439,6 @@ hasTrackRef.current = hasTrack;
         blurIntensity={appSettings.blurIntensity}
         colorSaturation={appSettings.colorSaturation}
         ambientParticles={appSettings.ambientParticles}
-        source={
-          appSettings.backgroundStyle !== 'oled' && currentTrack?.artwork
-            ? { uri: currentTrack.artwork }
-            : undefined
-        }
       />
 
       <SafeAreaView
